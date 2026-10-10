@@ -4,7 +4,7 @@
 
 ## 构建、安装与打包
 
-需要 C++17、CMake 3.16、Eigen3、nlohmann-json、yaml-cpp、Python3、已安装的 robotics interface headers、xgc2-math headers 和 FS150 SITL 资产。默认 `XSIM_ROS=ON` 还需要 ROS Noetic 的 `roscpp`、`geometry_msgs`、`sensor_msgs`、`nav_msgs`、`rosgraph_msgs`、`mavros_msgs`。先将传感器库 `scene/sensors/world_lidar/library` 安装到选定前缀。
+需要 C++17、CMake 3.16、Eigen3、nlohmann-json、yaml-cpp、Python3、xgc2-math headers 和 FS150 SITL 资产。默认 `XSIM_ROS=ON` 还需要 ROS Noetic 的 `roscpp`、`geometry_msgs`、`sensor_msgs`、`nav_msgs`、`rosgraph_msgs`、`mavros_msgs`。先将传感器库 `scene/sensors/world_lidar/library` 安装到选定前缀。
 
 以下命令在 xsim 仓根执行；将 `/private` 和源码占位路径替换为实际目录。
 
@@ -25,7 +25,7 @@ cmake --install /private/xsim-build
 cpack --config /private/xsim-build/CPackConfig.cmake
 ```
 
-`XSIM_ROS=OFF` 编译同一世界、机器人和传感器系统及 native Unix server，不查找或链接 ROS。`XSIM_TESTS=ON` 启用模型/世界检查；无 ROS 构建还运行 `xsim_native_headless`。提供 `XSIM_BASELINE_SOURCE` 等对应参考源选项时启用回放检查。`XSIM_ROS=OFF ./src/xsim/test.sh` 可选择无 ROS 构建。
+`XSIM_ROS=OFF` 编译同一世界、机器人和传感器系统及 native Unix server，不查找或链接 ROS。`XSIM_TESTS=ON` 启用模型/世界检查；无 ROS 构建还运行 `xsim_native_headless`。`XSIM_ROS=OFF ./src/xsim/test.sh` 可选择无 ROS 构建。
 
 安装后的程序为 `bin/xsim`，配置、FS150 资产来源记录和文档位于 `share/xsim`。归档包包含 xsim；外部 ROS 和 geometry 依赖需要单独安装。
 

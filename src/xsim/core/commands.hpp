@@ -56,7 +56,7 @@ struct Command {
   int64_t at = 0;
   int64_t arrival_ns = 0; // realtime arrival guard; not a coalescing/event key
   Eigen::Vector3d velocity{Eigen::Vector3d::Zero()}; // forward,left,yaw rate
-  xgc_position_target_v1 pva{};
+  PositionTarget pva{};
   FlightAttitudeSetpoint attitude;
   std::unique_ptr<Prepared> prepared;
   std::shared_ptr<Entity> retired;

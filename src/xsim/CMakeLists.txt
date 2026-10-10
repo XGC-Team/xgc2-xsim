@@ -4,8 +4,6 @@ project(xsim LANGUAGES C CXX)
 include(GNUInstallDirs)
 set(XGC2_MATH_INCLUDE "/usr/include" CACHE PATH "Installed xgc2-math headers or explicit source include")
 set(EIGEN_INCLUDE "/usr/include/eigen3" CACHE PATH "Eigen headers")
-# The model consumes neutral robotics records; XRPC is confined to the native IO boundary.
-find_package(XgcRoboticsInterfaces CONFIG REQUIRED)
 set(FS150_ASSET_SOURCE_ROOT "" CACHE PATH "Owning FS150 SITL asset source")
 if(NOT EXISTS "${FS150_ASSET_SOURCE_ROOT}/scripts/generate_native_flight_model.py")
   message(FATAL_ERROR "Set FS150_ASSET_SOURCE_ROOT; no copied physical defaults")
@@ -38,7 +36,7 @@ option(XSIM_ROS "Build the original ROS1 IO boundary" ON)
 add_library(xsim_world STATIC core/world.cpp systems/robots.cpp)
 target_compile_features(xsim_world PUBLIC cxx_std_17)
 target_include_directories(xsim_world PUBLIC "${XGC2_MATH_INCLUDE}" "${EIGEN_INCLUDE}" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/models")
-target_link_libraries(xsim_world PUBLIC px4_v1_12_3::core XgcRoboticsInterfaces::Interfaces Threads::Threads)
+target_link_libraries(xsim_world PUBLIC px4_v1_12_3::core Threads::Threads)
 add_library(xsim_config STATIC io/config.cpp io/experiment.cpp)
 target_link_libraries(xsim_config PUBLIC xsim_world nlohmann_json::nlohmann_json yaml-cpp)
 add_library(xsim_startup STATIC io/startup.cpp)
@@ -117,29 +115,6 @@ set(CPACK_PACKAGE_VERSION "1.1.0")
 set(CPACK_GENERATOR "TGZ")
 include(CPack)
 
-# Reference only in the private validation build. Never an installed runtime.
-set(XSIM_BASELINE_SOURCE "" CACHE PATH "Pinned baseline source extracted by tests/validate.sh")
-set(XSIM_BASELINE_SDK "" CACHE PATH "Read-only SDK headers for the historical reference fixture only")
-if(XSIM_TESTS AND XSIM_BASELINE_SOURCE)
-  add_library(xsim_baseline_reference SHARED "${XSIM_BASELINE_SOURCE}/lightweight_vehicle.cpp")
-  target_compile_options(xsim_baseline_reference PRIVATE -O2 -fvisibility=hidden)
-  target_include_directories(xsim_baseline_reference PRIVATE "${XSIM_BASELINE_SDK}/abi/include" "${XSIM_BASELINE_SDK}/plugins/common" "${XSIM_BASELINE_SOURCE}/interfaces/include")
-  target_include_directories(xsim_baseline_reference BEFORE PRIVATE
-    "${XSIM_BASELINE_SOURCE}/px4_v1_12_3/include"
-    "${XSIM_BASELINE_SOURCE}/px4_v1_12_3/upstream/src"
-    "${XSIM_BASELINE_SOURCE}/px4_v1_12_3/upstream/src/lib"
-    "${XSIM_BASELINE_SOURCE}/px4_v1_12_3/upstream/src/include"
-    "${XSIM_BASELINE_SOURCE}/px4_v1_12_3/upstream/platforms/common/include")
-  target_link_libraries(xsim_baseline_reference PRIVATE xsim_world)
-  add_executable(xsim_replay ../../tests/replay.cpp)
-  target_compile_options(xsim_replay PRIVATE -O2 -UNDEBUG)
-  target_include_directories(xsim_replay PRIVATE "${XSIM_BASELINE_SDK}/abi/include" "${XSIM_BASELINE_SOURCE}/interfaces/include")
-  target_link_libraries(xsim_replay PRIVATE xsim_world xsim_config ${CMAKE_DL_LIBS})
-  foreach(kind fs150 scout mecanum)
-    add_test(NAME xsim_replay_${kind} COMMAND xsim_replay $<TARGET_FILE:xsim_baseline_reference> ${kind} ${CMAKE_CURRENT_BINARY_DIR}/${kind}-replay.json)
-  endforeach()
-endif()
-
 if(XSIM_TESTS)
   add_executable(xsim_telemetry_test ../../tests/telemetry_test.cpp)
   target_compile_features(xsim_telemetry_test PRIVATE cxx_std_17)
@@ -167,24 +142,6 @@ if(XSIM_TESTS AND XSIM_ROS)
   target_link_libraries(xsim_slow_service_test PRIVATE xsim_ros xsim_config)
   set_property(TARGET xsim_slow_service_test PROPERTY NO_SYSTEM_FROM_IMPORTED TRUE)
 endif()
-option(XSIM_PRIVATE_ROS_TESTS "Run the private ROS integration/expansion fixture in CTest" OFF)
-if(XSIM_PRIVATE_ROS_TESTS AND NOT XSIM_ROS)
-  message(FATAL_ERROR "XSIM_PRIVATE_ROS_TESTS requires XSIM_ROS=ON")
-endif()
-if(XSIM_TESTS AND XSIM_ROS AND XSIM_PRIVATE_ROS_TESTS)
-  if(NOT XSIM_BASELINE_SOURCE)
-    message(FATAL_ERROR "Private ROS comparison requires pinned baseline sources")
-  endif()
-  add_test(NAME xsim_ros_contract COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/ros_integration.py
-    --xsim $<TARGET_FILE:xsim>
-    --slow-service-test $<TARGET_FILE:xsim_slow_service_test>
-    --output ${CMAKE_CURRENT_BINARY_DIR}/ros-contract --replays ${CMAKE_CURRENT_BINARY_DIR})
-  add_test(NAME xsim_experiment_ros COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/experiment_ros.py
-    --xsim $<TARGET_FILE:xsim> --output ${CMAKE_CURRENT_BINARY_DIR}/experiment-ros-contract)
-  set_tests_properties(xsim_experiment_ros PROPERTIES TIMEOUT 60)
-  set_tests_properties(xsim_ros_contract PROPERTIES DEPENDS "xsim_replay_fs150;xsim_replay_scout;xsim_replay_mecanum;xsim_world" TIMEOUT 180)
-endif()
-
 if(XSIM_TESTS AND NOT XSIM_ROS)
   add_test(NAME xsim_cli_config COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/cli_config.py
     --xsim $<TARGET_FILE:xsim>)

@@ -24,10 +24,9 @@ release:
   ref: main
   workflow: release.yml
   ci_workflow: ci.yml
-  requires: [libxgc2-math-dev, libxgc2-robotics-interfaces-dev, xgc2-xrpc]
+  requires: [libxgc2-math-dev, xgc2-xrpc]
   dependency_policy:
     xgc2-xrpc: rebuild
     libxgc2-math-dev: verify
-    libxgc2-robotics-interfaces-dev: rebuild
   apt_versions:
     focal: 1.1.0-3

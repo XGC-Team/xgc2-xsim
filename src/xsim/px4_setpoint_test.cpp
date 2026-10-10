@@ -42,8 +42,8 @@ Eigen::Quaterniond attitude(double yaw) {
          Eigen::AngleAxisd(0.37, Eigen::Vector3d::UnitY()) *
          Eigen::AngleAxisd(-0.28, Eigen::Vector3d::UnitX());
 }
-xgc_position_target_v1 command() {
-  xgc_position_target_v1 w{};
+PositionTarget command() {
+  PositionTarget w{};
   w.coordinate_frame = 1;
   const double p[] = {1.25, -2.5, 3.75}, v[] = {0.75, -0.5, 0.25}, a[] = {0.3, -0.4, 0.6};
   std::copy(p, p + 3, w.position);
@@ -53,7 +53,7 @@ xgc_position_target_v1 command() {
   w.yaw_rate = -0.23;
   return w;
 }
-MaskedPva decode(const xgc_position_target_v1 &w, double yaw = 0.63) {
+MaskedPva decode(const PositionTarget &w, double yaw = 0.63) {
   return decodePositionTarget(w, attitude(yaw), yaw);
 }
 void require_nan(const Eigen::Vector3d &v, const std::string &message) {

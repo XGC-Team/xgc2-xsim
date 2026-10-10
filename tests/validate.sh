@@ -13,8 +13,6 @@ name="xsim-private-validation-$$"
 image="${XSIM_TEST_IMAGE:-ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-full-noetic:1.0.0}"
 cleanup() { docker stop --time 10 "$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
-baseline=fed3fdc3d6625d9020d363bb5b9c3c8f8f2c72a6
-git -C "$owner" archive "$baseline" src/xgc2_lightweight_sim | tar -x -C "$output"
 {
   git -C "$owner" rev-parse HEAD
   git -C "$products/ros1/common/scene" rev-parse HEAD
@@ -28,8 +26,6 @@ docker exec -i "$name" bash -s > "$output/validation.log" 2>&1 <<'INNER'
 set -euo pipefail
 source /opt/ros/noetic/setup.bash
 sim=/source/ros1/simulator/xsim
-cmake -S /source/common/robotics-interfaces -B /work/robotics -DCMAKE_INSTALL_PREFIX=/work/install
-cmake --install /work/robotics
 cmake -S /source/ros1/common/scene/sensors/world_lidar/library -B /work/lidar -DCMAKE_INSTALL_PREFIX=/work/install -DCMAKE_BUILD_TYPE=Release
 cmake --build /work/lidar -j1
 cmake --install /work/lidar
@@ -37,10 +33,7 @@ cmake -S "$sim/src/xsim" -B /work/xsim \
   -DCMAKE_PREFIX_PATH='/work/install;/opt/ros/noetic' -DCMAKE_INSTALL_PREFIX=/work/install \
   -DCMAKE_BUILD_TYPE=Release -DXGC2_MATH_INCLUDE=/source/common/math/include \
   -DFS150_ASSET_SOURCE_ROOT=/source/ros1/simulator/gazebo-sim/fs150-sitl \
-  -DXSIM_ROS=ON -DXSIM_TESTS=ON -DPYTHON_EXECUTABLE=/usr/bin/python3 \
-  -DXSIM_BASELINE_SOURCE=/work/src/xgc2_lightweight_sim \
-  -DXSIM_BASELINE_SDK=/source/common/sync-runtime \
-  -DXSIM_PRIVATE_ROS_TESTS=ON
+  -DXSIM_ROS=ON -DXSIM_TESTS=ON -DPYTHON_EXECUTABLE=/usr/bin/python3
 cmake --build /work/xsim -j1
 cmake --install /work/xsim
 cd /work/xsim

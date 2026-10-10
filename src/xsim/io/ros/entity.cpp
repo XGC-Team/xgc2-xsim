@@ -176,7 +176,6 @@ void RosEntity::reconcile() {
           auto t = ticket(e, Op::Pva, gen);
           t->at = stamp;
           auto &p = t->pva;
-          p.stamp = m->header.stamp.toSec();
           p.coordinate_frame = m->coordinate_frame;
           p.type_mask = m->type_mask;
           p.position[0] = m->position.x;
