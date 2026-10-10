@@ -1,7 +1,6 @@
 #include "io/config.hpp"
 #include "io/native_rpc/server.hpp"
 #include <xgc2/xrpc/bootstrap.hpp>
-#include <xgc2/xrpc/runtime_policy.hpp>
 #include <fcntl.h>
 #include <unistd.h>
 #include <cstdlib>
@@ -13,7 +12,6 @@
 #include <array>
 #include <iostream>
 #include <limits>
-extern char **environ;
 namespace {
 struct OwnedFd {
   int value;
@@ -96,14 +94,7 @@ int main(int argc, char **argv) {
     xsim::RpcOptions rpc;
     rpc.target_id = std::string(binding.target_id());
     rpc.retained_parent_fd = runtime_fd.value;
-    xgc2::xrpc::RuntimePolicyOptions policy_options;
-    for (auto entry = environ; entry && *entry; ++entry) {
-      const std::string value(*entry);
-      const auto separator = value.find('=');
-      if (separator != std::string::npos)
-        policy_options.environment.emplace_back(value.substr(0, separator), value.substr(separator + 1));
-    }
-    rpc.limits = xgc2::xrpc::http_limits(xgc2::xrpc::resolve_runtime_policy(policy_options));
+    // The management host keeps the SDK's default HTTP limits (xgc2::xrpc::HttpLimits).
     xsim::Json config;
     if (has_experiment || has_experiment_stdin) {
       const auto frozen = has_experiment_stdin ? experiment_stdin() : xsim::load_json_object(experiment_path);

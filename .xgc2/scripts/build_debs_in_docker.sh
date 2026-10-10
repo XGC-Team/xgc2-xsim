@@ -42,9 +42,6 @@ docker create --name "$container_name" -i --cpus 2 --pids-limit 256 \
 container_created=true
 docker start -ai "$container_name" <<'XSIM_BUILD'
 set -euo pipefail
-# The shared Bootstrap API uses C++20. Use the Clang 10 toolchain already
-# provided by the Focal image, including its matching OpenMP runtime.
-export CC=/usr/bin/clang-10 CXX=/usr/bin/clang++-10
 # System development packages belong to the selected XGC2 build image.
 # Fail closed if the image lacks them; product CI does not bootstrap toolchains.
 dpkg-query -W libglfw3-dev libglm-dev libyaml-cpp-dev nlohmann-json3-dev >/dev/null
