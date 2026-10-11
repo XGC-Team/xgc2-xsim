@@ -27,7 +27,8 @@ docker exec -i "$name" bash -s > "$output/validation.log" 2>&1 <<'INNER'
 set -euo pipefail
 source /opt/ros/noetic/setup.bash
 sim=/source/ros1/simulator/xsim
-cmake -S /source/common/chassis-hold -B /work/hold -DCMAKE_INSTALL_PREFIX=/work/install -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+cmake -S /source/common/chassis-hold -B /work/hold -DCMAKE_INSTALL_PREFIX=/work/install -DCMAKE_BUILD_TYPE=Release \
+  -DXGC2_CHASSIS_HOLD_BUILD_HTTP=ON -DBUILD_TESTING=OFF
 cmake --build /work/hold -j1
 cmake --install /work/hold
 cmake -S /source/ros1/common/scene/sensors/world_lidar/library -B /work/lidar -DCMAKE_INSTALL_PREFIX=/work/install -DCMAKE_BUILD_TYPE=Release

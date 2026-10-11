@@ -11,7 +11,7 @@ apt:
   distribution: focal
   install: [xsim]
   packages: [xsim]
-  depends: [ros-noetic-roscpp, ros-noetic-mavros-msgs, ros-noetic-rosgraph-msgs, libglfw3, libxgc2-xrpc1, libxgc2-chassis-hold1]
+  depends: [ros-noetic-roscpp, ros-noetic-mavros-msgs, ros-noetic-rosgraph-msgs, libglfw3, libxgc2-xrpc2 (>= 0.2.0-1~focal), libxgc2-chassis-hold1 (>= 0.2.0-1~focal)]
 usage:
   install: sudo apt install xsim
   smoke_test: /opt/xgc2/xsim/bin/xsim --help
