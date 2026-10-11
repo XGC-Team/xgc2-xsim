@@ -14,9 +14,19 @@ int http_status(xgc2::chassis_hold::Status status) {
 }
 } // namespace
 
-// The whole transport binding of the chassis HOLD service. Everything else in the server is independent of it,
-// so a library adapter can replace it. The two host actions around the call stay with the host: running the
-// queued cmd_vel callbacks before a Release, and waking the world thread after an Engage.
+// The whole transport binding of the chassis HOLD service: the capability entry of the describe facts and the
+// method calls. Everything else in the server is independent of it, so a library adapter can replace both
+// functions. The two host actions around the call stay with the host: running the queued cmd_vel callbacks
+// before a Release, and waking the world thread after an Engage.
+
+// The capabilities this world serves and, for each, the entities it acts on (describe facts, xrpc.md method
+// addressing). The chassis are the entities of the HOLD roster, so the list follows the world as entities come
+// and go.
+Json Server::capabilities() {
+  Json chassis = Json::array();
+  for (const auto &robot : world_.hold().describe().robots) chassis.push_back(robot.robot_id);
+  return Json::array({Json{{"name", chassis_hold_capability}, {"entities", std::move(chassis)}}});
+}
 
 // POST /v1/call/<service>/<Method>: one method of a capability this world serves, with the JSON request as the
 // body. The reply is the JSON result, or the XRPC error envelope around the error object of the service.

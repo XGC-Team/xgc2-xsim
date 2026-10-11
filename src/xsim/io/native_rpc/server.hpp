@@ -54,6 +54,11 @@ private:
     std::weak_ptr<Entity> resource;
 
   };
+  // A describe call held until the service is ready (readiness contract, `wait_ready_ms`).
+  struct ReadyWaiter {
+    xgc2::xrpc::HttpReply reply;
+    Clock::time_point until;
+  };
   std::string instance_; // the incarnation of the world, shared by the HTTP binding and its HOLD domain
   std::string socket_path_;
   std::string target_id_;
@@ -65,6 +70,9 @@ private:
   Json entity_json(const std::string &, const PublicEntity &);
   Json entity_json(const std::string &, const PublicEntity &, const State *);
   Json describe();
+  Json facts();
+  bool ready() const;
+  void answer_ready_waiters();
   Json health() const;
   void change_health(const std::string &);
   void prune_waiters();
@@ -73,8 +81,10 @@ private:
   bool initialized_ = false, workers_started_ = false, outputs_started_ = false;
   bool shutting_down_ = false;
   std::vector<xgc2::xrpc::HttpReply> health_waiters_;
+  std::vector<ReadyWaiter> ready_waiters_;
   bool simulation_request(const xgc2::xrpc::HttpRequest &, const Json &, xgc2::xrpc::HttpReply);
   // The capabilities of the world, served through POST /v1/call/<service>/<Method> (chassis.cpp).
+  Json capabilities();
   bool capability_call(const xgc2::xrpc::HttpRequest &, const std::string &service, const std::string &method,
                        xgc2::xrpc::HttpReply);
   void respond(xgc2::xrpc::HttpReply, int, Json);
@@ -103,6 +113,7 @@ private:
   unsigned service_started_ = 0;
   bool output_started_ = false;
   std::atomic<bool> worker_failed_{false};
+  std::atomic<bool> frames_flowing_{false}; // the output thread has delivered a world frame
   std::exception_ptr worker_error_, cleanup_error_;
   void worker_failed() noexcept;
   std::unique_ptr<Prepared> prepare(const Json &, const std::string &public_id);

@@ -30,6 +30,18 @@ bool terminal(const Json &operation) {
   const auto state = operation.at("state").get<std::string>();
   return state == "succeeded" || state == "failed" || state == "cancelled";
 }
+// The only describe query: wait_ready_ms=<0..30000>, how long to hold the call while the service is not ready.
+std::chrono::milliseconds describe_wait(const std::string &query) {
+  if (query.empty()) return std::chrono::milliseconds::zero();
+  const std::string key = "wait_ready_ms=";
+  const auto digits = query.compare(0, key.size(), key) == 0 ? query.substr(key.size()) : std::string();
+  if (digits.empty() || digits.size() > 5 || (digits.size() > 1 && digits[0] == '0') ||
+      digits.find_first_not_of("0123456789") != std::string::npos)
+    throw std::invalid_argument("describe takes only wait_ready_ms=<integer>");
+  const auto milliseconds = std::stoul(digits);
+  if (milliseconds > 30000) throw std::invalid_argument("wait_ready_ms exceeds 30000");
+  return std::chrono::milliseconds(milliseconds);
+}
 std::vector<std::string> segments(const std::string &path) {
   std::vector<std::string> parts;
   std::size_t begin = 1;
@@ -66,8 +78,35 @@ Json Server::entity_json(const std::string &id, const PublicEntity &record, cons
   }
   return result;
 }
+bool Server::ready() const { return health_state_ == "ready" && frames_flowing_; }
+Json Server::facts() {
+  // xsim loads its one world when the process starts: world_generation is fixed, and a different world is a
+  // different process with another instance_id.
+  Json result{{"world_generation", 1}, {"frames_flowing", frames_flowing_.load()}, {"health", health_state_}};
+  result["capabilities"] = capabilities();
+  if (io_.facts) {
+    const auto io = io_.facts();
+    for (auto i = io.begin(); i != io.end(); ++i) result[i.key()] = i.value();
+  }
+  return result;
+}
+void Server::answer_ready_waiters() {
+  if (ready_waiters_.empty()) return;
+  const bool settled = ready() || health_state_ == "stopping";
+  const auto now = Clock::now();
+  Json current;
+  ready_waiters_.erase(std::remove_if(ready_waiters_.begin(), ready_waiters_.end(),
+      [&](const ReadyWaiter &waiter) {
+        if (waiter.reply.cancelled()) return true;
+        if (!settled && now < waiter.until) return false;
+        if (current.is_null()) current = describe();
+        respond(waiter.reply, 200, current);
+        return true;
+      }), ready_waiters_.end());
+}
 Json Server::describe() {
-  return {{"describe_path", "/v1/describe"},
+  return {{"service", "xgc2.simulation"}, {"api_version", "v1"}, {"ready", ready()}, {"facts", facts()},
+    {"describe_path", "/v1/describe"},
     {"service_ref", {{"target_id", target_id_}, {"service", "xgc2.simulation"}, {"api_version", "v1"},
       {"instance_id", instance_}, {"profile", "http.v1"}, {"endpoint", {{"kind", "unix"}, {"address", socket_path_}}}}},
     {"engine", {{"name", "xsim"}}},
@@ -90,8 +129,10 @@ Json Server::describe() {
 bool Server::simulation_request(const xgc2::xrpc::HttpRequest &request, const Json &body,
                                 xgc2::xrpc::HttpReply reply) {
   const auto &method = request.method;
-  const auto &path = request.target;
-  if (path.empty() || path.back() == '/') return false;
+  const auto query_at = request.target.find('?');
+  const std::string path = request.target.substr(0, query_at);
+  const std::string query = query_at == std::string::npos ? std::string() : request.target.substr(query_at + 1);
+  if (path.empty() || path.back() == '/' || (!query.empty() && path != "/v1/describe")) return false;
   const auto parts = segments(path);
   if (parts.size() < 2 || parts[0] != "v1") return false;
   auto error = [&](int status, const std::string &code, const std::string &message) {
@@ -102,7 +143,14 @@ bool Server::simulation_request(const xgc2::xrpc::HttpRequest &request, const Js
   harvest();
   prune_waiters();
   if (method == "GET" && path == "/v1/describe") {
-    fields(body, {}); respond(reply, 200, describe()); return true;
+    fields(body, {});
+    const auto wait = describe_wait(query);
+    if (wait.count() == 0 || ready()) respond(reply, 200, describe());
+    else {
+      if (ready_waiters_.size() >= waiter_limit) return error(503, "resource_exhausted", "describe waiter limit reached");
+      ready_waiters_.push_back({reply, std::min(Clock::now() + wait, request.deadline)});
+    }
+    return true;
   }
   if (method == "GET" && path == "/v1/health") {
     fields(body, {}); respond(reply, 200, health()); return true;

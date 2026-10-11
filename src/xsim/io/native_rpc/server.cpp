@@ -69,7 +69,7 @@ Server::Server(const Json &config, const std::string &path, RpcOptions options,
       [this](xgc2::xrpc::HttpRequest request, xgc2::xrpc::HttpReply reply) {
         http_request(std::move(request), std::move(reply));
       }, limits_, xgc2::xrpc::HttpIdentity{instance_, {"/v1/describe"}}, options.retained_parent_fd));
-  transport_->set_wakeup_handler([this] { harvest(); });
+  transport_->set_wakeup_handler([this] { harvest(); answer_ready_waiters(); });
 }
 
 Server::~Server() noexcept { shutdown(); }
@@ -108,6 +108,7 @@ void Server::run(const volatile sig_atomic_t &stopping) {
         e->io->reconcile();
     transport_->poll(std::chrono::milliseconds(1));
     prune_waiters();
+    answer_ready_waiters();
     if (Clock::now() >= next_expiry_) { harvest(); next_expiry_ = Clock::now() + std::chrono::seconds(1); }
   }
   shutdown();
@@ -250,6 +251,7 @@ void Server::shutdown() noexcept {
     entry.second.preparation.reset();
   }
   health_waiters_.clear();
+  ready_waiters_.clear();
   // Completes pending Engage replies with the state reached, so the drain does not wait for their timers.
   attempt([&] { hold_service_.reset(); });
   if (transport_) {
@@ -284,6 +286,7 @@ void Server::change_health(const std::string &state) {
   const auto snapshot = health();
   for (auto &reply : health_waiters_) respond(reply, 200, snapshot);
   health_waiters_.clear();
+  answer_ready_waiters();
 }
 
 void Server::output() {
@@ -297,6 +300,7 @@ void Server::output() {
   size_t sensor_cursor=0;
   while (output_running_) {
     if (world_.take_frame(frame)) {
+      if (!frames_flowing_.exchange(true)) transport_->wake(); // readiness may have changed
       sensors_.submit_frame(frame);
       {
         std::lock_guard<std::mutex> l(view_mutex_);
