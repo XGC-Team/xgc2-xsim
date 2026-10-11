@@ -8,7 +8,6 @@ Ticket request(World &w, Op op, Key k = {}) {
   auto t = std::make_shared<Command>();
   t->op = op;
   t->key = k;
-  if (op == Op::Velocity) t->received_ns = w.hold().now();
   return t;
 }
 void execute(World &w, const Ticket &t) {
@@ -36,14 +35,6 @@ void start(World &w, const std::shared_ptr<Entity> &e) {
       std::make_unique<Prepared>(Prepared{e, prepare_model(e->config)});
   execute(w, t);
   assert(t->result.success && e->enabled);
-  if (e->config.kind != Kind::FS150) {
-    const auto state = w.hold().domain().state({e->public_id}).robots.front();
-    if (state.held) {
-      const auto release = w.hold().domain().release(w.hold().instance_id(), {{e->public_id, state.revision}});
-      w.boundary();
-      assert(release.done() && release.results()[0].outcome == xgc2::chassis_hold::Outcome::released);
-    }
-  }
 }
 int main() {
   const auto rejected_ros_key = [](const char *kind, const char *key) {

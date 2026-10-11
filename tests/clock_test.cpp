@@ -158,11 +158,7 @@ int main() {
   start->key = {entity->id, entity->generation}; start->action = 1;
   start->prepared = std::make_unique<Prepared>(Prepared{entity, prepare_model(config)});
   execute(start);
-  const auto released = world.hold().domain().release(world.hold().instance_id(), {{entity->public_id, 1}});
-  world.boundary();
-  assert(released.done() && released.results()[0].outcome == xgc2::chassis_hold::Outcome::released);
   auto move = std::make_shared<Command>(); move->op = Op::Velocity;
-  move->received_ns = world.hold().now();
   move->key = {entity->id, entity->generation}; move->velocity = {1, 0, 0};
   execute(move);
   int64_t total = 0;
@@ -185,9 +181,6 @@ int main() {
   // A real paced fleet shares one elapsed interval and keeps constant-twist
   // geometry aligned with the committed clock, without per-entity clocks.
   World fleet(world.epoch);
-  fleet.metrics.paused = true;
-  std::vector<std::shared_ptr<Entity>> entities;
-  std::vector<xgc2::chassis_hold::ReleaseChange> changes;
   for (int i = 0; i < 1000; ++i) {
     Config c; c.kind = Kind::Mecanum; c.name = "fleet_" + std::to_string(i);
     auto e = std::make_shared<Entity>(c);
@@ -198,26 +191,12 @@ int main() {
     enable->key = {e->id, e->generation}; enable->action = 1;
     enable->prepared = std::make_unique<Prepared>(Prepared{e, prepare_model(c)});
     fleet.submit(enable); fleet.apply_commands(); assert(enable->result.success);
-    entities.push_back(e);
-    changes.push_back({e->public_id, 1});
-  }
-  fleet.start(); // the first and every subsequent HOLD tick runs on the fleet's world thread
-  const auto boot_release = fleet.hold().domain().release(fleet.hold().instance_id(), changes);
-  const auto release_deadline = Clock::now() + std::chrono::seconds(5);
-  while (!boot_release.done() && Clock::now() < release_deadline)
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  assert(boot_release.done());
-  for (const auto &result : boot_release.results())
-    assert(result.outcome == xgc2::chassis_hold::Outcome::released);
-  for (const auto &e : entities) {
     auto velocity = std::make_shared<Command>(); velocity->op = Op::Velocity;
     velocity->key = {e->id, e->generation}; velocity->velocity = {1, .2, .1};
-    velocity->received_ns = fleet.hold().now();
-    fleet.submit(velocity); assert(World::wait(velocity) && velocity->result.success);
+    fleet.submit(velocity); fleet.apply_commands(); assert(velocity->result.success);
   }
-  auto resume = std::make_shared<Command>(); resume->op = Op::Resume;
   const auto wall_begin = Clock::now();
-  fleet.submit(resume); assert(World::wait(resume) && resume->result.success);
+  fleet.start();
   std::this_thread::sleep_for(std::chrono::milliseconds(60));
   fleet.stop();
   const auto wall_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - wall_begin).count();

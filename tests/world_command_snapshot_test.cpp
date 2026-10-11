@@ -55,12 +55,8 @@ void toggle_without_reset(Kind kind, const char *name) {
   auto first = enabled(world, entity, true);
   assert(entity->generation == generation);
   if (kind != Kind::FS150) {
-    const auto released = world.hold().domain().release(world.hold().instance_id(), {{entity->public_id, 1}});
-    world.boundary(); // this deterministic fixture never starts a world thread
-    assert(released.done() && released.results()[0].outcome == xgc2::chassis_hold::Outcome::released);
     auto move = command(Op::Velocity, {entity->id, entity->generation});
     move->velocity = {1, .2, .1};
-    move->received_ns = world.hold().now();
     execute(world, move);
     assert(move->result.success && !move->result.has_state);
   }

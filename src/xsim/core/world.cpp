@@ -12,7 +12,6 @@ xgc2::chassis_hold::HoldOptions hold_options(std::string instance, World &world,
                                            xgc2::chassis_hold::FeedbackSource &feedback) {
   xgc2::chassis_hold::HoldOptions options;
   options.domain.instance_id = std::move(instance);
-  options.domain.boot_held = true;
   options.domain.wake = [&world] { world.wake(); };
   options.feedback = &feedback;
   return options;
@@ -746,7 +745,7 @@ void World::run() {
     physics_clock_.rebase(wall, time_);
     wall_offset_ns_ = time_ - wall;
     boundary();
-    // The startup boundary writes zero to the initial held robots before start returns. A saturated output
+    // The first HOLD tick runs on this world thread before start returns. A saturated output
     // pool must not be reported as initialized merely because its thread exists.
     emitted_stamp_ = -1;
     emitted_revision_ = UINT64_MAX;

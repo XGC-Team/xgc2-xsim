@@ -45,14 +45,13 @@ def initial_entities_use_one_tick_thread(binary, root):
     try:
         x.start()
         boot = x.hold_state()
-        assert all(r["held"] and r["revision"] == 1 and r["stage"] in ("zero_written", "stopped")
+        assert all(not r["held"] and r["revision"] == 0 and r["stage"] == "released"
                    for r in boot.values()), boot
-        assert all(x.release(robot_id, 1)["outcome"] == "released" for robot_id in boot)
         status, engaged = x.hold("Engage", {"all": True})
-        assert status == 200 and all(r["outcome"] == "engaged" and r["revision"] == 3
+        assert status == 200 and all(r["outcome"] == "engaged" and r["revision"] == 1
                                     for r in engaged["robots"]), engaged
         for robot_id in boot:
-            assert x.release(robot_id, 3)["outcome"] == "released"
+            assert x.release(robot_id, 1)["outcome"] == "released"
         assert x.process.poll() is None, "the final library must accept every tick on the world thread"
         x.stop()
     finally:
@@ -84,18 +83,15 @@ def run(x):
     assert roster["capabilities"] == ["engage", "release", "state"]
     assert x.call("POST", "/v1/call/%s/Describe" % HOLD)[0] == 200, "an empty request is {}"
     assert set(x.hold_state()) == {"mec", "ugv-a", "ugv-b"}
-    assert all(r["held"] is True and r["revision"] == 1 and r["stage"] in ("zero_written", "stopped")
+    assert all(r["held"] is False and r["revision"] == 0 and r["stage"] == "released"
                for r in x.hold_state().values())
-    for robot_id in roster["robots"]:
-        assert x.release(robot_id, 1)["outcome"] == "released"
-    assert all(r["held"] is False and r["revision"] == 2 for r in x.hold_state().values())
 
     # ---- engage: immediate, idempotent, zero written by the world, stopped from the entity's own twist
     x.enable("ugv-a")
     status, engaged = x.hold("Engage", {"robot_ids": ["ugv-a", "nobody"]})
     assert status == 200 and engaged["instance"] == x.instance, engaged
     first, missing = engaged["robots"]
-    assert first["outcome"] == "engaged" and first["held"] is True and first["revision"] == 3, first
+    assert first["outcome"] == "engaged" and first["held"] is True and first["revision"] == 1, first
     assert first["stage"] in ("gated", "zero_written"), first
     assert missing == {"robot_id": "nobody", "outcome": "unknown_robot"}, missing
     state = until(lambda: x.hold_state("ugv-a")["ugv-a"] if x.hold_state("ugv-a")["ugv-a"]["stage"] != "gated" else None,
@@ -105,7 +101,7 @@ def run(x):
     stopped = x.hold_state("ugv-a")["ugv-a"]
     assert stopped["stopped_at_ms"] >= stopped["zero_written_at_ms"] >= stopped["gated_at_ms"], stopped
     again = x.hold("Engage", {"robot_ids": ["ugv-a"]})[1]["robots"][0]
-    assert again["outcome"] == "already_held" and again["revision"] == 3, again
+    assert again["outcome"] == "already_held" and again["revision"] == 1, again
     assert x.hold_state("ugv-b")["ugv-b"]["held"] is False, "other robots are not held"
     # HOLD is not a disable: the entity stays enabled, so its sensors and publication keep running.
     assert x.call("GET", "/v1/entities/ugv-a")[1]["state"]["enabled"] is True
@@ -117,16 +113,16 @@ def run(x):
 
     # ---- release: compare and set on instance and revision
     wrong = x.release("ugv-a", 9)
-    assert wrong["outcome"] == "conflict" and wrong["held"] is True and wrong["revision"] == 3, wrong
-    stale = x.release("ugv-a", 3, instance=HEX32)
+    assert wrong["outcome"] == "conflict" and wrong["held"] is True and wrong["revision"] == 1, wrong
+    stale = x.release("ugv-a", 1, instance=HEX32)
     assert stale["outcome"] == "conflict" and stale["held"] is True, stale
-    assert x.release("ugv-b", 2)["outcome"] == "not_held"
-    released = x.release("ugv-a", 3)
-    assert released["outcome"] == "released" and released["held"] is False and released["revision"] == 4, released
+    assert x.release("ugv-b", 0)["outcome"] == "not_held"
+    released = x.release("ugv-a", 1)
+    assert released["outcome"] == "released" and released["held"] is False and released["revision"] == 2, released
     assert released["stage"] == "released"
-    assert x.release("ugv-a", 3)["outcome"] == "not_held", "a replayed release cannot apply twice"
-    assert x.hold("Engage", {"robot_ids": ["ugv-a"]})[1]["robots"][0]["revision"] == 5
-    assert x.release("ugv-a", 5)["revision"] == 6
+    assert x.release("ugv-a", 1)["outcome"] == "not_held", "a replayed release cannot apply twice"
+    assert x.hold("Engage", {"robot_ids": ["ugv-a"]})[1]["robots"][0]["revision"] == 3
+    assert x.release("ugv-a", 3)["revision"] == 4
 
     # ---- request validation: closed schemas, nothing changes on a rejected request
     for body in ({}, {"robot_ids": []}, {"robot_ids": ["ugv-a"], "all": True}, {"robot_ids": "ugv-a"},
@@ -155,12 +151,12 @@ def run(x):
     steps = x.call("GET", "/v1/world")[1]["steps"]
     status, engaged = x.hold("Engage", {"robot_ids": ["ugv-b"]})
     paused = engaged["robots"][0]
-    assert status == 200 and paused["held"] is True and paused["revision"] == 3, paused
+    assert status == 200 and paused["held"] is True and paused["revision"] == 1, paused
     assert x.hold_state("ugv-b")["ugv-b"]["held"] is True
     until(lambda: x.hold_state("ugv-b")["ugv-b"]["stage"] == "zero_written", "zero written while paused")
     assert x.call("GET", "/v1/world")[1]["steps"] == steps, "HOLD does not advance a paused world"
-    released = x.release("ugv-b", 3)
-    assert released["outcome"] == "released" and released["revision"] == 4, released
+    released = x.release("ugv-b", 1)
+    assert released["outcome"] == "released" and released["revision"] == 2, released
     assert x.hold_state("ugv-b")["ugv-b"]["held"] is False
     x.operation("POST", "/v1/world/resume")
 
@@ -178,7 +174,7 @@ def run(x):
         "asset": {"id": "mecanum-test", "realization": {"media_type": UNIT, "content": {"kind": "mecanum", "name": "mec2"}}}}})
     until(lambda: x.hold_state("mec")["mec"]["stage"] in ("zero_written", "stopped"), "zero written to the new model")
     back = x.hold_state("mec")["mec"]
-    assert back["held"] is True and back["revision"] == 3, back
+    assert back["held"] is True and back["revision"] == 1, back
     assert x.hold("Describe")[1]["robots"] == ["mec", "ugv-a", "ugv-b"]
     assert x.chassis() == ["mec", "ugv-a", "ugv-b"]
     # A live public ID cannot be taken by a second entity.
@@ -186,7 +182,7 @@ def run(x):
         "id": "mec", "role": "robot", "pose": {"position": [0, 8, 0], "orientation": [0, 0, 0, 1]},
         "asset": {"id": "mecanum-test", "realization": {"media_type": UNIT, "content": {"kind": "mecanum", "name": "mec3"}}}}})
     assert status == 409, (status, clash)
-    assert x.release("mec", 3)["outcome"] == "released"
+    assert x.release("mec", 1)["outcome"] == "released"
 
     # ---- restart: a new instance, no persisted HOLD state, a stale release is rejected
     x.hold("Engage", {"robot_ids": ["ugv-a", "mec"]})
@@ -199,11 +195,11 @@ def run(x):
     assert x.hold("State", {}, instance=old)[0] == 409, "the old incarnation is fenced by the transport"
     status, fresh = x.hold("State")
     assert status == 200 and fresh["instance"] == x.instance != old, fresh
-    assert all(r["held"] is True and r["revision"] == 1 for r in fresh["robots"]), fresh
+    assert all(r["held"] is False and r["revision"] == 0 for r in fresh["robots"]), fresh
     status, reply = x.hold("Release", {"expected_instance": old,
                                        "changes": [{"robot_id": "ugv-a", "expected_revision": 1}]})
     assert status == 200 and reply["instance"] == x.instance, reply
-    assert reply["robots"][0]["outcome"] == "conflict" and reply["robots"][0]["held"] is True, reply
+    assert reply["robots"][0]["outcome"] == "conflict" and reply["robots"][0]["held"] is False, reply
     x.hold("Engage", {"robot_ids": ["ugv-a"]})
     assert x.release("ugv-a", 1, instance=old)["outcome"] == "conflict"
     assert x.hold_state("ugv-a")["ugv-a"]["held"] is True
