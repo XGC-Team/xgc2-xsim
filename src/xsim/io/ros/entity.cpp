@@ -155,8 +155,16 @@ void RosEntity::reconcile() {
           auto e = weak.lock();
           if (!e || !current(e, gen))
             return;
+          // HOLD admission at receipt, stamped on the HOLD domain clock (not simulation time). The world
+          // asks again when the command would reach the model.
+          const auto received = world.hold().now();
+          if (!world.hold().admit(e->public_id, received)) {
+            ++world.metrics.hold_refused;
+            return;
+          }
           auto t = ticket(e, Op::Velocity, gen);
           t->velocity = {m->linear.x, m->linear.y, m->angular.z};
+          t->received_ns = received;
           world.submit(t);
         });
     return;
@@ -176,7 +184,6 @@ void RosEntity::reconcile() {
           auto t = ticket(e, Op::Pva, gen);
           t->at = stamp;
           auto &p = t->pva;
-          p.stamp = m->header.stamp.toSec();
           p.coordinate_frame = m->coordinate_frame;
           p.type_mask = m->type_mask;
           p.position[0] = m->position.x;

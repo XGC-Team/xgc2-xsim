@@ -4,10 +4,13 @@
 #include <csignal>
 #include <deque>
 #include <mutex>
+#include <xgc2/chassis_hold/service.hpp>
 #include <xgc2/xrpc/http.hpp>
 #include <thread>
 #include <unordered_map>
 namespace xsim {
+// The capability the world serves through generic method calls, POST /v1/call/<capability>/<Method>.
+inline constexpr const char *chassis_hold_capability = "xgc2.chassis.hold";
 struct RpcOptions {
   std::string target_id;
   xgc2::xrpc::HttpLimits limits;
@@ -51,7 +54,12 @@ private:
     std::weak_ptr<Entity> resource;
 
   };
-  std::string instance_;
+  // A describe call held until the service is ready (readiness contract, `wait_ready_ms`).
+  struct ReadyWaiter {
+    xgc2::xrpc::HttpReply reply;
+    Clock::time_point until;
+  };
+  std::string instance_; // the incarnation of the world, shared by the HTTP binding and its HOLD domain
   std::string socket_path_;
   std::string target_id_;
   xgc2::xrpc::HttpLimits limits_;
@@ -62,6 +70,9 @@ private:
   Json entity_json(const std::string &, const PublicEntity &);
   Json entity_json(const std::string &, const PublicEntity &, const State *);
   Json describe();
+  Json facts();
+  bool ready() const;
+  void answer_ready_waiters();
   Json health() const;
   void change_health(const std::string &);
   void prune_waiters();
@@ -70,7 +81,12 @@ private:
   bool initialized_ = false, workers_started_ = false, outputs_started_ = false;
   bool shutting_down_ = false;
   std::vector<xgc2::xrpc::HttpReply> health_waiters_;
+  std::vector<ReadyWaiter> ready_waiters_;
   bool simulation_request(const xgc2::xrpc::HttpRequest &, const Json &, xgc2::xrpc::HttpReply);
+  // The capabilities of the world, served through POST /v1/call/<service>/<Method> (chassis.cpp).
+  Json capabilities();
+  bool capability_call(const xgc2::xrpc::HttpRequest &, const std::string &service, const std::string &method,
+                       xgc2::xrpc::HttpReply);
   void respond(xgc2::xrpc::HttpReply, int, Json);
 
   RuntimeIO io_;
@@ -78,6 +94,7 @@ private:
   World &world_;
   Sensors &sensors_;
   std::unique_ptr<xgc2::xrpc::HttpServer> transport_;
+  std::unique_ptr<xgc2::chassis_hold::Service> hold_service_; // before the transport it replies on goes
   std::unordered_map<std::string, Request> requests_;
   std::mutex view_mutex_;
   std::shared_ptr<const Frame> latest_;
@@ -96,9 +113,10 @@ private:
   unsigned service_started_ = 0;
   bool output_started_ = false;
   std::atomic<bool> worker_failed_{false};
+  std::atomic<bool> frames_flowing_{false}; // the output thread has delivered a world frame
   std::exception_ptr worker_error_, cleanup_error_;
   void worker_failed() noexcept;
-  std::unique_ptr<Prepared> prepare(const Json &);
+  std::unique_ptr<Prepared> prepare(const Json &, const std::string &public_id);
   std::unique_ptr<Prepared> prepare(const std::shared_ptr<Entity> &, const Json &);
   void service_work();
   void shutdown() noexcept;

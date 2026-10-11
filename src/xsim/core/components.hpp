@@ -48,6 +48,7 @@ struct Frame {
 };
 struct Metrics {
   std::atomic<uint64_t> steps{0}, output_misses{0}, input_misses{0}, frame_array_grows{0};
+  std::atomic<uint64_t> hold_refused{0}; // velocity commands refused by chassis HOLD
   std::atomic<int64_t> sim_ns{0}, lag_ns{0}, step_latency_ns{0},
       max_step_latency_ns{0};
   std::atomic<int64_t> last_dt_ns{0}, scheduling_period_ns{2000000},

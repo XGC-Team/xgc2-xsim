@@ -1,4 +1,5 @@
 #include "world.hpp"
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <pthread.h>
@@ -7,10 +8,16 @@ namespace {
 bool continuous(Op op) {
   return op == Op::Pva || op == Op::Attitude || op == Op::Velocity;
 }
+xgc2::chassis_hold::DomainOptions hold_options(std::string instance) {
+  xgc2::chassis_hold::DomainOptions options;
+  options.instance_id = std::move(instance);
+  return options;
+}
 } // namespace
-World::World(int64_t e, int64_t d, int64_t o, unsigned c, int64_t maximum)
-    : epoch(e), dt(d), output_period(o), time_(e), next_output_(e),
-      catchup_(c), physics_clock_(d, maximum) {
+World::World(int64_t e, int64_t d, int64_t o, unsigned c, int64_t maximum,
+             std::string instance)
+    : epoch(e), dt(d), output_period(o), hold_(hold_options(std::move(instance))),
+      time_(e), next_output_(e), catchup_(c), physics_clock_(d, maximum) {
   if (e <= 0 || d <= 0 || o <= 0 || d > INT64_MAX-e || !c || e > INT64_MAX - o)
     throw std::invalid_argument(
         "explicit positive session epoch, step and output period required");
@@ -47,7 +54,11 @@ void World::submit(const Ticket &t) {
     }
     if (!replaced) inbox_.push_back(t);
   }
-  // Inbox publication precedes the wake revision under the wake mutex.
+  wake();
+}
+void World::wake() {
+  // What the caller published (an inbox entry, a HOLD state change) precedes the wake revision, which is taken
+  // under the wake mutex.
   {
     std::lock_guard<std::mutex> l(wake_mutex_);
     ++wake_revision_;
@@ -115,6 +126,12 @@ void World::cancel_pending_controls(Key key) {
   std::lock_guard<std::mutex> lock(input_mutex_);
   for (const auto &ticket : inbox_) cancel(ticket);
 }
+void World::zero_command(const Entity &e, size_t i) {
+  if (e.config.kind == Kind::Scout)
+    scouts_[i].model.command(scouts_[i].age, 0, 0);
+  else if (e.config.kind == Kind::Mecanum)
+    mecanums_[i].model.command(0, 0, 0);
+}
 void World::reset(Slot &s, Model &&m) {
   auto &e = *s.entity;
   const auto i = s.dense;
@@ -177,6 +194,13 @@ Result World::apply(Command &c) {
         r.reason = 4;
         return r;
       }
+    // Scout and Mecanum entities are the HOLD roster. An ID of a removed entity gets its HOLD state back.
+    const bool chassis = e->config.kind != Kind::FS150;
+    if (chassis && !hold_.add(e->public_id, true)) {
+      r.success = false;
+      r.reason = 4;
+      return r;
+    }
     e->id = next_id_++;
     e->generation_stamp = time_;
     size_t i;
@@ -201,6 +225,8 @@ Result World::apply(Command &c) {
       mecanum_ids_.push_back(e->id);
     }
     slots_.emplace(e->id, Slot{e, i});
+    if (chassis)
+      hold_ids_.emplace(e->public_id, e->id);
     e->alive = true;
     geometry_dirty_ = true;
     reserve_frames();
@@ -274,6 +300,10 @@ Result World::apply(Command &c) {
       erase(scouts_, scout_ids_, scout_poses_);
     else
       erase(mecanums_, mecanum_ids_, mecanum_poses_);
+    if (e.config.kind != Kind::FS150) {
+      hold_ids_.erase(e.public_id);
+      hold_.remove(e.public_id); // the HOLD state of the ID stays for a re-created entity
+    }
     slots_.erase(found);
     geometry_dirty_ = true;
     r.enabled = false;
@@ -287,10 +317,7 @@ Result World::apply(Command &c) {
   if (c.op == Op::SetEnabled) {
     if (!c.enabled) {
       cancel_pending_controls({e.id, e.generation});
-      if (e.config.kind == Kind::Scout)
-        scouts_[i].model.command(scouts_[i].age, 0, 0);
-      else if (e.config.kind == Kind::Mecanum)
-        mecanums_[i].model.command(0, 0, 0);
+      zero_command(e, i);
     }
     e.enabled = c.enabled;
     if (e.config.kind == Kind::FS150) {
@@ -310,10 +337,7 @@ Result World::apply(Command &c) {
         flights_[i].ever_started = true;
     } else if (c.action == 2) {
       e.enabled = false;
-      if (e.config.kind == Kind::Scout)
-        scouts_[i].model.command(scouts_[i].age, 0, 0);
-      if (e.config.kind == Kind::Mecanum)
-        mecanums_[i].model.command(0, 0, 0);
+      zero_command(e, i);
     } else if (c.action < 0 || c.action > 2) {
       r.success = false;
       r.reason = 2;
@@ -333,6 +357,15 @@ Result World::apply(Command &c) {
     if (!c.velocity.allFinite()) {
       r.success = false;
       r.reason = 2;
+      return r;
+    }
+    // The HOLD gate sits where the command would reach the model: a command that was queued before an
+    // engage, or received before the last release, never executes. It is separate from `enabled`: a held
+    // entity keeps its sensors and publication.
+    if (!hold_.admit(e.public_id, c.received_ns)) {
+      ++metrics.hold_refused;
+      r.success = false;
+      r.reason = 6;
       return r;
     }
     if (e.config.kind == Kind::Scout)
@@ -428,6 +461,36 @@ void World::boundary() {
     else
       finish(t, r);
   }
+  // The HOLD tick: after this boundary's commands, zero for every held entity, every boundary. The sink
+  // records each entity's twist; reported after the zero write, it is the feedback behind `stopped`.
+  hold_samples_.clear();
+  hold_.tick(*this);
+  if (!hold_samples_.empty()) {
+    const auto stamp = hold_.now();
+    for (const auto &sample : hold_samples_)
+      hold_.observe(slots_.at(sample.id).entity->public_id, sample.linear,
+                    sample.angular, stamp);
+  }
+}
+bool World::write_zero(const std::string &public_id, std::string &error) {
+  const auto roster = hold_ids_.find(public_id);
+  if (roster == hold_ids_.end()) {
+    error = "entity is not in the world";
+    return false;
+  }
+  const auto &slot = slots_.at(roster->second);
+  const auto &e = *slot.entity;
+  // Zero replaces the model's command and drops the velocity commands still waiting for their time.
+  cancel_pending_controls({e.id, e.generation});
+  zero_command(e, slot.dense);
+  if (e.config.kind == Kind::Scout) {
+    const auto twist = scouts_[slot.dense].model.velocity();
+    hold_samples_.push_back({e.id, std::abs(twist.linear_m_s), std::abs(twist.yaw_rad_s)});
+  } else {
+    const auto &m = mecanums_[slot.dense].model;
+    hold_samples_.push_back({e.id, m.body_velocity().norm(), std::abs(m.yaw_rate())});
+  }
+  return true;
 }
 void World::advance() { advance(dt); }
 void World::advance(int64_t elapsed_ns) {

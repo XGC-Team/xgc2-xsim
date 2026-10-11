@@ -22,7 +22,7 @@ bool safe_request_id(const std::string &text) {
 
 Server::Server(const Json &config, const std::string &path, RpcOptions options,
                World &world, Sensors &sensors, RuntimeIO io)
-    : instance_(xgc2::xrpc::new_instance_id()), socket_path_(path),
+    : instance_(world.hold().instance_id()), socket_path_(path),
       target_id_(std::move(options.target_id)), limits_(options.limits),
       io_(std::move(io)), world_(world), sensors_(sensors) {
   if (!safe_request_id(target_id_))
@@ -43,13 +43,6 @@ Server::Server(const Json &config, const std::string &path, RpcOptions options,
       {"publish_workers", config.value("publish_workers", 2u)},
       {"publish_clock", config.value("publish_clock", false)}};
   for (const auto &j : config.value("entities", Json::array())) {
-    auto t = std::make_shared<Command>();
-    t->op = Op::Add;
-    t->prepared = prepare(j);
-    world_.submit(t);
-    world_.boundary();
-    if (!t->result.success)
-      throw std::runtime_error("initial entity rejected");
     const auto name = j.at("name").get<std::string>();
     if (options.frozen_experiment && !options.robot_bindings.contains(name))
       throw std::invalid_argument("frozen robot binding is missing");
@@ -57,18 +50,26 @@ Server::Server(const Json &config, const std::string &path, RpcOptions options,
         ? options.robot_bindings.at(name).get<std::string>()
         : j.value("public_id", name);
     if (!safe_request_id(id)) throw std::invalid_argument("invalid public entity ID");
+    auto t = std::make_shared<Command>();
+    t->op = Op::Add;
+    t->prepared = prepare(j, id);
+    world_.submit(t);
+    world_.boundary();
+    if (!t->result.success)
+      throw std::runtime_error("initial entity rejected");
     Json spec = j.value("specification", Json{{"id", id}, {"role", "robot"}});
     if (!entities_.emplace(id, PublicEntity{next_generation_++, std::move(spec), t->prepared->entity}).second)
       throw std::invalid_argument("duplicate initial entity ID");
   }
   latest_ = std::make_shared<const Frame>(world_.capture());
   initialized_ = true;
+  hold_service_ = std::make_unique<xgc2::chassis_hold::Service>(world_.hold());
   xgc2::xrpc::UnixOptions endpoint; endpoint.path = path;
   transport_.reset(new xgc2::xrpc::HttpServer(endpoint,
       [this](xgc2::xrpc::HttpRequest request, xgc2::xrpc::HttpReply reply) {
         http_request(std::move(request), std::move(reply));
       }, limits_, xgc2::xrpc::HttpIdentity{instance_, {"/v1/describe"}}, options.retained_parent_fd));
-  transport_->set_wakeup_handler([this] { harvest(); });
+  transport_->set_wakeup_handler([this] { harvest(); answer_ready_waiters(); });
 }
 
 Server::~Server() noexcept { shutdown(); }
@@ -107,6 +108,7 @@ void Server::run(const volatile sig_atomic_t &stopping) {
         e->io->reconcile();
     transport_->poll(std::chrono::milliseconds(1));
     prune_waiters();
+    answer_ready_waiters();
     if (Clock::now() >= next_expiry_) { harvest(); next_expiry_ = Clock::now() + std::chrono::seconds(1); }
   }
   shutdown();
@@ -181,8 +183,8 @@ void Server::harvest() {
 
 }
 
-std::unique_ptr<Prepared> Server::prepare(const Json &j) {
-  auto e = std::make_shared<Entity>(parse_entity(j));
+std::unique_ptr<Prepared> Server::prepare(const Json &j, const std::string &public_id) {
+  auto e = std::make_shared<Entity>(parse_entity(j), public_id);
   return prepare(e, j);
 }
 
@@ -249,6 +251,9 @@ void Server::shutdown() noexcept {
     entry.second.preparation.reset();
   }
   health_waiters_.clear();
+  ready_waiters_.clear();
+  // Completes pending Engage replies with the state reached, so the drain does not wait for their timers.
+  attempt([&] { hold_service_.reset(); });
   if (transport_) {
     attempt([&] { transport_->drain(); });
     attempt([&] { transport_->set_wakeup_handler({}); });
@@ -281,6 +286,7 @@ void Server::change_health(const std::string &state) {
   const auto snapshot = health();
   for (auto &reply : health_waiters_) respond(reply, 200, snapshot);
   health_waiters_.clear();
+  answer_ready_waiters();
 }
 
 void Server::output() {
@@ -294,6 +300,7 @@ void Server::output() {
   size_t sensor_cursor=0;
   while (output_running_) {
     if (world_.take_frame(frame)) {
+      if (!frames_flowing_.exchange(true)) transport_->wake(); // readiness may have changed
       sensors_.submit_frame(frame);
       {
         std::lock_guard<std::mutex> l(view_mutex_);
@@ -346,6 +353,7 @@ Json Server::status() {
       {"frame_slots", World::frame_pool_size},
       {"frame_array_grows", m.frame_array_grows.load()},
       {"input_coalesced", m.input_misses.load()},
+      {"hold_refused_commands", m.hold_refused.load()},
       {"sensors", sensors_.status()},
       {"telemetry", telemetry_rates()},
       {"publication", io_.publication_status ? io_.publication_status() : Json::object()}};

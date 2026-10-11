@@ -7,16 +7,22 @@
 #include <list>
 #include <thread>
 #include <unordered_map>
+#include <xgc2/chassis_hold/domain.hpp>
 
 namespace xsim {
-class World {
+// The world is also the native output of its chassis HOLD domain: boundary() runs the HOLD tick, whose
+// zero output is write_zero().
+class World : private xgc2::chassis_hold::ZeroSink {
 public:
+  // `instance` is the 32 hex digit incarnation of this world process; empty draws a random one.
   World(int64_t epoch, int64_t dt = 2000000, int64_t output = 8000000,
-        unsigned catchup = 8, int64_t maximum_step = 10000000);
+        unsigned catchup = 8, int64_t maximum_step = 10000000,
+        std::string instance = {});
   ~World();
   World(const World &) = delete;
   void submit(const Ticket &); // nonworld threads; continuous inputs coalesce
                                // by entity/type/time
+  void wake(); // nonworld threads: have the world thread run a boundary now
   static bool wait(const Ticket &);
   void boundary(); // world owner only, also used by deterministic fixtures
   void advance();
@@ -27,6 +33,11 @@ public:
   bool take_frame(Frame &); // fixture-only copy, outside the output lock
   void start(); // returns after the first native boundary and output snapshot
   void stop();
+  // Chassis HOLD (the xgc2-chassis-hold contract). The roster is the Scout and Mecanum entities, keyed by their
+  // public ID; a removed entity keeps its HOLD state for its ID. HOLD refuses the entity's Velocity commands
+  // in apply() and boundary() writes zero for every held entity. State changes are immediate and thread
+  // safe; the zero output follows at the next boundary, which also runs while the world is paused.
+  xgc2::chassis_hold::Domain &hold() { return hold_; }
   Metrics metrics;
   const int64_t epoch, dt, output_period;
 
@@ -40,6 +51,13 @@ private:
     bool enabled = false;
     Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   };
+  struct HoldSample {
+    uint64_t id;
+    double linear, angular;
+  };
+  xgc2::chassis_hold::Domain hold_;
+  std::unordered_map<std::string, uint64_t> hold_ids_; // public ID -> entity ID of the roster
+  std::vector<HoldSample> hold_samples_; // twists of the entities zeroed by this boundary's tick
   std::unordered_map<uint64_t, Slot> slots_;
   std::vector<uint64_t> flight_ids_, scout_ids_, mecanum_ids_;
   BodyColumns bodies_;
@@ -76,6 +94,8 @@ private:
   std::exception_ptr startup_error_;
   State state(uint64_t, const Slot &) const;
   Result apply(Command &);
+  void zero_command(const Entity &, size_t dense);
+  bool write_zero(const std::string &, std::string &) override; // HOLD tick, world thread only
   void reset(Slot &, Model &&);
   void reserve_frames(); // topology changes; geometrical capacity growth
   void observe_geometry(Frame &);

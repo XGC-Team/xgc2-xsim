@@ -1,12 +1,12 @@
-# xsim 配置与接口参考
+# xsim configuration and interface reference
 
-`xsim` 是一个世界一个进程的仿真服务器，管理实体身份、物理状态、实体 generation 和仿真时钟。ROS1 是可选的输入输出边界；管理使用 Unix socket 上的 HTTP/JSON。配置示例见 [example.json](../config/example.json)，总览见 [README](../README.md)。
+`xsim` is a simulation server with one process per world. It manages entity identity, physical state, entity generations and the simulation clock. ROS1 is an optional input and output boundary; management uses HTTP/JSON on a Unix socket. See [example.json](../config/example.json) for a configuration example and the [README](../README.md) for an overview. The management service implements the [simulation service v1 contract](contracts/simulation-v1.md), including readiness and chassis HOLD.
 
-## 构建、安装与打包
+## Build, install and packaging
 
-需要 C++17、CMake 3.16、Eigen3、nlohmann-json、yaml-cpp、Python3、已安装的 robotics interface headers、xgc2-math headers 和 FS150 SITL 资产。默认 `XSIM_ROS=ON` 还需要 ROS Noetic 的 `roscpp`、`geometry_msgs`、`sensor_msgs`、`nav_msgs`、`rosgraph_msgs`、`mavros_msgs`。先将传感器库 `scene/sensors/world_lidar/library` 安装到选定前缀。
+Requires C++17, CMake 3.16, Eigen3, nlohmann-json, yaml-cpp, Python3, the xgc2-math headers, the XRPC SDK (`XgcXrpc`, components `http` and `bootstrap`), the chassis HOLD library (`XgcChassisHold` 1.0.0, component `core`) and the FS150 SITL assets. The default `XSIM_ROS=ON` also needs the ROS Noetic packages `roscpp`, `geometry_msgs`, `sensor_msgs`, `nav_msgs`, `rosgraph_msgs` and `mavros_msgs`. Install the sensor library `scene/sensors/world_lidar/library` into the chosen prefix first.
 
-以下命令在 xsim 仓根执行；将 `/private` 和源码占位路径替换为实际目录。
+The following commands run in the xsim repository root; replace `/private` and the source placeholder paths with real directories.
 
 ```sh
 cmake -S ../../common/scene/sensors/world_lidar/library -B /private/lidar-build \
@@ -25,13 +25,13 @@ cmake --install /private/xsim-build
 cpack --config /private/xsim-build/CPackConfig.cmake
 ```
 
-`XSIM_ROS=OFF` 编译同一世界、机器人和传感器系统及 native Unix server，不查找或链接 ROS。`XSIM_TESTS=ON` 启用模型/世界检查；无 ROS 构建还运行 `xsim_native_headless`。提供 `XSIM_BASELINE_SOURCE` 等对应参考源选项时启用回放检查。`XSIM_ROS=OFF ./src/xsim/test.sh` 可选择无 ROS 构建。
+`XSIM_ROS=OFF` builds the same world, robot and sensor systems and the native Unix server without finding or linking ROS. `XSIM_TESTS=ON` enables the model, world and chassis HOLD checks. The build without ROS also runs the Python checks of the running server: `xsim_cli_config`, `xsim_simulation_v1` and `xsim_chassis_hold_native` (HOLD and readiness over the management socket). The build with ROS runs `xsim_chassis_hold_ros`, which starts its own `roscore` on a private port and needs ROS Noetic's `roscore` and `rospy`. `XSIM_ROS=OFF ./src/xsim/test.sh` selects the build without ROS.
 
-安装后的程序为 `bin/xsim`，配置、FS150 资产来源记录和文档位于 `share/xsim`。归档包包含 xsim；外部 ROS 和 geometry 依赖需要单独安装。
+The installed program is `bin/xsim`; the configuration, the record of the FS150 asset origin and the documentation are in `share/xsim`. The archive package contains xsim; the external ROS and geometry dependencies must be installed separately.
 
-GPU 后端要求传感器库启用 `XGC_WORLD_LIDAR_GPU=ON`，xsim 启用 `XSIM_GPU=ON`，并提供 PCL、OpenCV、OpenGL、GLFW、GLM、OpenMP 和运行时可用的真实 GPU/GL context。后端不可用时明确失败，不回退到 CPU。GPU renderer 的 GPL 许可证随 shader 资产安装。
+The GPU backend requires the sensor library built with `XGC_WORLD_LIDAR_GPU=ON`, xsim built with `XSIM_GPU=ON`, and PCL, OpenCV, OpenGL, GLFW, GLM, OpenMP and a real GPU/GL context that is usable at run time. When the backend is unavailable it fails explicitly and does not fall back to the CPU. The license of the GPL GPU renderer is installed with the shader assets.
 
-## 进程与世界配置
+## Process and world configuration
 
 ```sh
 source /opt/ros/noetic/setup.bash
@@ -39,207 +39,227 @@ ROS_MASTER_URI=http://127.0.0.1:PRIVATE_PORT \
   /private/install/bin/xsim --bootstrap-input /private/bootstrap.json --config /private/world.json
 ```
 
-`--bootstrap-input` 必填；`--config`、`--experiment-file` 与 `--manifest` 必须且只能选择一个。Unix endpoint 来自共享 BootstrapInput；如显式传入 `--socket`，它必须与 binding 完全相同。ROS 构建的节点名为 `/xsim`。监督者负责冻结输入、ROS master 和时间域选择、进程启动、重启与崩溃恢复。
+`--bootstrap-input` is required; exactly one of `--config`, `--experiment-file` and `--manifest` must be given. The Unix endpoint comes from the shared BootstrapInput; an explicit `--socket` must be identical to it. The node name of the ROS build is `/xsim`. The supervisor is responsible for the frozen input, the choice of the ROS master and of the time domain, process start, restart and crash recovery.
 
-`--experiment-file` 使用公开冻结输入 `{instanceId:string, epochNs:string, robots:array, context:object, settings:object}`。`robots` 原样来自 `asset.experiment-robots@4`，同时保留 `authoredSimulationSensors` 的零值和字段存在性；既有 `simulationSensors` Runtime 默认值不会用于原生世界投影。`context.openingRunId` 和 `context.openingAcceptedAtEpochNs` 必须分别与 `instanceId`、`epochNs` 一致，纳秒为正的 int64 十进制字符串。`containerizedDeployment:false` 和 Core placement 必須明确存在；历史上下文缺少这些事实时不能补猜。`context.visualizationTopics` 按原 preset 顺序保存其声明数组，原生产品解释 reference-cloud 语义，不带其它 Action Inputs。产品据冻结场景参数、原始 roster 和 `settings.autoStartGazeboServer` 解析模型、时序、FCU、FNV 噪声 seed 与传感器，并拒绝未实现组合。它不回读可变资产，不用进程启动时钟替代 Session 时间。两种输入入口共用有界、拒绝重复键和符号链接的文件读取器，并同样接受可空的 `--scene-file`。
+`--experiment-file` uses the public frozen input `{instanceId:string, epochNs:string, robots:array, context:object, settings:object}`. `robots` comes unchanged from `asset.experiment-robots@4`, and the zero values and the field presence of `authoredSimulationSensors` are preserved; the existing `simulationSensors` Runtime defaults are not used for the native world projection. `context.openingRunId` and `context.openingAcceptedAtEpochNs` must equal `instanceId` and `epochNs` respectively, the nanoseconds being a positive int64 decimal string. `containerizedDeployment:false` and Core placement must be stated explicitly; where a historical context lacks these facts they are not guessed. `context.visualizationTopics` keeps its declared arrays in the original preset order, and the native product interprets the reference-cloud semantics; it carries no other Action Inputs. From the frozen scene parameters, the original roster and `settings.autoStartGazeboServer` the product resolves models, timing, FCU, the FNV noise seed and sensors, and rejects combinations it does not implement. It does not read back mutable assets and does not use the process start clock in place of the Session time. Both input paths share a bounded file reader that rejects duplicate keys and symbolic links, and both accept a nullable `--scene-file`.
 
-| 世界键 | 默认值 / 要求 | 含义 |
+| World key | Default / requirement | Meaning |
 |---|---|---|
-| `instance_id` | 必填、非空、会话内唯一 | 隔离不同世界实例的管理请求 |
-| `epoch_ns` | 必填、正整数 | 正式会话时间域的起点，单位 ns |
-| `model_step_ns` | `2000000` | 世界名义调度周期，500 Hz；暂停 Step 的单步时长 |
-| `max_model_step_ns` | `10000000` | 自适应周期和实际积分步的上限；名义周期 ≤ 上限 ≤ 20 ms |
-| `output_period_ns` | `8000000` | 遥测快照周期，8 ms，理论上限 125 Hz |
-| `catchup_batch` | `8` | 每批最多追赶的模型步数，须为正 |
-| `paused` | `false` | 初始世界暂停状态 |
-| `publish_clock` | `false` | ROS IO 是否发布 `/clock` |
-| `input_poll_ns` | `1000000` | ROS 输入队列轮询间隔 |
-| `sensor_workers` | `2` | 按需启动的 CPU 传感器工作线程数 |
-| `publish_workers` | `2`，整数 `1..8` | ROS 发布固定分片线程数；每个机器人由唯一线程处理 |
-| `scene` | 空对象 | 不可变世界几何与采样配置 |
-| `scene_file` | 可选 | YAML 场景文件，读入后作为 `scene.document` |
-| `reference_cloud_topic` | 空字符串 | 可选的一次性 latched 场景参考点云主题 |
-| `telemetry_rates_hz` | 下表 | 全世界共享的 ROS 遥测发布频率；配置提供的键覆盖对应默认值 |
-| `entities` | 空数组 | 初始机器人配置列表 |
+| `instance_id` | required, non-empty, unique within the session | isolates the management requests of different world instances |
+| `epoch_ns` | required, positive integer | start of the formal session time domain, in ns |
+| `model_step_ns` | `2000000` | nominal scheduling period of the world, 500 Hz; the duration of one step of a paused Step |
+| `max_model_step_ns` | `10000000` | upper bound of the adaptive period and of the actual integration step; nominal period ≤ upper bound ≤ 20 ms |
+| `output_period_ns` | `8000000` | telemetry snapshot period, 8 ms, theoretical limit 125 Hz |
+| `catchup_batch` | `8` | maximum number of model steps caught up per batch, must be positive |
+| `paused` | `false` | initial paused state of the world |
+| `publish_clock` | `false` | whether ROS IO publishes `/clock` |
+| `input_poll_ns` | `1000000` | polling interval of the ROS input queue |
+| `sensor_workers` | `2` | number of CPU sensor worker threads, started on demand |
+| `publish_workers` | `2`, integer `1..8` | number of fixed ROS publication shard threads; each robot is handled by exactly one thread |
+| `scene` | empty object | immutable world geometry and sampling configuration |
+| `scene_file` | optional | YAML scene file, read in and used as `scene.document` |
+| `reference_cloud_topic` | empty string | optional one-shot latched topic of the scene reference cloud |
+| `telemetry_rates_hz` | table below | ROS telemetry publication rates shared by the whole world; keys given in the configuration override the corresponding defaults |
+| `entities` | empty array | list of the initial robot configurations |
 
-世界主时钟以 `steady_clock` 的墙钟经过时间作为目标，所有机器人完成共享实际 dt 后才提交 `epoch_ns + Σdt`；步数仅为计数，时间戳和回执由累计积分间隔确定。会话 epoch 仍由监督者显式指定，示例值仅为示例。dt 以整数 ns 累加，每次全世界积分仅转换一次秒数供模型使用；不足 1 µs 的余量保留到后续步，名义周期不得小于 1 µs。
+The main clock of the world takes the elapsed wall time of `steady_clock` as its target; `epoch_ns + Σdt` is committed only after all robots have completed the shared actual dt. The step count is only a counter; timestamps and receipts are determined by the accumulated integration interval. The session epoch is still given explicitly by the supervisor; the example value is only an example. dt is accumulated in integer ns, and the whole world converts it to seconds only once per integration for the models; a remainder shorter than 1 µs is carried over to later steps, and the nominal period must not be smaller than 1 µs.
 
-正常唤醒的微小抖动直接包含在实际 dt 中；单步不超过当前自适应周期的 1.25 倍，并受 `max_model_step_ns` 限制。短时落后按 `catchup_batch` 和每批约 4 ms 运算预算追赶，批间阻塞让出 100 µs。持续运算负载每 100 ms 评估，连续两窗超过 80% 才将周期增加 25%；连续五窗低于 50% 后逐窗减少 5%，回到名义周期。空闲时等待绝对 deadline，暂停时等待管理事件，无忙轮询。达到步长上限仍不足以实时运行时，保持真实 lag，不丢物理时间、不伪造墙钟时间戳。
+Small jitter of a normal wake-up is included directly in the actual dt; one step is at most 1.25 times the current adaptive period and is bounded by `max_model_step_ns`. A short lag is caught up within `catchup_batch` and a budget of about 4 ms of computation per batch, and the world yields for 100 µs between batches. The computational load is evaluated every 100 ms: only after two consecutive windows above 80% does the period grow by 25%, and after five consecutive windows below 50% it shrinks by 5% per window back to the nominal period. An idle world waits for an absolute deadline and a paused world waits for management events, without busy polling. When even the maximum step is not enough to run in real time, the real lag is kept; physical time is not dropped and wall-clock timestamps are not faked.
 
-Pause 冻结时钟；Resume 仅在 paused 转为 running 时重置墙钟锚点，不追赶暂停期间的时间。已经运行时的 Resume 为幂等操作，保持当前墙钟到仿真时间的映射。暂停 Step N 仍确定地前进 N 个名义步。Step 尚未完成时 Resume 被拒绝。实时连续输入带到达时间下界，在下一世界边界生效，不提前作用于历史债务；未来时间戳同样允许到下一边界才生效。输入不按逐机器人的微秒到达时刻切分整群积分。
+Pause freezes the clock; Resume resets the wall-clock anchor only on the transition from paused to running and does not catch up the time spent paused. Resume of a world that is already running is idempotent and keeps the current mapping from wall clock to simulation time. A paused Step N still deterministically advances N nominal steps. Resume is rejected while a Step is unfinished. Real-time continuous inputs carry a lower bound on their arrival time and take effect at the next world boundary; they do not act on past debt, and inputs with a future timestamp likewise take effect only at the next boundary. Inputs do not split the integration of the whole fleet at the microsecond arrival time of each robot.
 
-`publish_clock=true` 时，监督者必须保证该 ROS 图内只有一个 `/clock` 发布者，并为消费者一致设置 `/use_sim_time`。`/clock` 属于 ROS IO，在任何机器人 Provider 启用前即可发布；无 ROS 构建仍保留世界整数时钟。
+With `publish_clock=true` the supervisor must ensure that there is exactly one `/clock` publisher in this ROS graph and must set `/use_sim_time` consistently for the consumers. `/clock` belongs to ROS IO and can be published before any robot is enabled; the build without ROS still keeps the integer world clock.
 
-Unix socket 权限为 `0600`；缺失父目录由服务器以 `0700` 创建，既有父目录权限不被改写。已有 socket 路径会使启动失败，不会被隐式删除。SIGINT/SIGTERM 触发各自线程退出并 join、关闭 ROS 和客户端连接，只删除服务器自身创建的 socket。崩溃后确认并清理残留 socket 由监督者负责。
+The Unix socket has mode `0600`; a missing parent directory is created by the server with mode `0700`, and the mode of an existing parent directory is not rewritten. An existing socket path makes the startup fail and is not removed implicitly. SIGINT/SIGTERM make every thread exit and be joined, close ROS and the client connections, and remove only the socket that the server created itself. The supervisor is responsible for confirming and cleaning up a socket left behind by a crash.
 
-## 机器人配置与生命周期
+## Robot configuration and lifecycle
 
-| 实体键 | 默认值 / 要求 | 含义 |
+| Entity key | Default / requirement | Meaning |
 |---|---|---|
-| `name` | 必填、非空且唯一 | ROS namespace segment，仅字母、数字、下划线 |
-| `kind` | 必填 | `fs150`、`scout` 或 `mecanum` |
-| `position` | `[0,0,0]` | 世界 ENU 中机器人 base origin 的初始位置 |
-| `yaw` | `0` | 初始偏航角，rad |
-| `local_origin` | `[0,0,0]` | FS150 本地坐标原点的世界轴平移 |
-| `ground_z` | `0` | 地面高度 |
-| `fcu_parameters` | 可选，仅 FS150 | 经校验的 PX4 参数名/值对象 |
-| `ros` | 空对象 | ROS 名称、frame 和公共定位噪声配置 |
-| `sensor` | 空对象 | 可选传感器配置；空对象不创建传感器 |
+| `name` | required, non-empty and unique | ROS namespace segment, only letters, digits and underscores |
+| `public_id` | the `name` | identity of the entity in the management API and in the chassis HOLD roster (1–128 characters of `[A-Za-z0-9._:-]`); a frozen Experiment takes the robot ID of its roster instead |
+| `kind` | required | `fs150`, `scout` or `mecanum` |
+| `position` | `[0,0,0]` | initial position of the robot base origin in world ENU |
+| `yaw` | `0` | initial yaw, rad |
+| `local_origin` | `[0,0,0]` | translation of the FS150 local origin along the world axes |
+| `ground_z` | `0` | ground height |
+| `fcu_parameters` | optional, FS150 only | object of validated PX4 parameter names and values |
+| `ros` | empty object | ROS names, frames and public-localization noise configuration |
+| `sensor` | empty object | optional sensor configuration; an empty object creates no sensor |
 
-`local_origin` 仅平移世界轴：MAVROS local pose 为世界位置减该向量；frame-1 local PVA 位置加回该向量。它不旋转 ENU 轴，不重复变换 body setpoint。
+`local_origin` only translates along the world axes: the MAVROS local pose is the world position minus this vector, and a frame-1 local PVA position adds it back. It does not rotate the ENU axes and does not transform body setpoints again.
 
-新实体初始禁用，公开 EntityRef 使用正 generation。冻结实验按公开机器人 ID 建立实体对应关系，不从 namespace 猜测机器人身份。`GET /v1/entities/<id>` 读取实际 ref 和状态；状态修改必须携带此 ref 的 generation。`state.enabled` 只切换运行状态，reset 才重置模型，且不回退时钟。删除后重建的公开 generation 改变；旧 ref 被拒绝。
+A new entity is initially disabled, and the public EntityRef uses a positive generation. A frozen Experiment establishes the correspondence of entities by public robot ID and does not guess the robot identity from the namespace. `GET /v1/entities/<id>` reads the actual ref and state; a state change must carry the generation of this ref. `state.enabled` only switches the run state; only reset resets the model, and it does not roll the clock back. The public generation changes after a delete and re-create; the old ref is rejected.
 
 
-## ROS 话题与服务
+## ROS topics and services
 
-表中的路径为完整默认名称；`<name>` 是机器人名称。实体 `ros` 下的配置键可替换相应名称，每项只创建一个实际 topic/service。FS150 的 `frame` 默认 `map`，UGV 默认 `world`；`body_frame` 默认 `base_link`。公共 pose/twist 始终使用世界坐标，frame 为 `world`。
+The paths in the tables are the complete default names; `<name>` is the robot name. A configuration key under the `ros` of an entity can replace the corresponding name, and each item creates exactly one actual topic or service. The `frame` of FS150 defaults to `map` and that of UGVs to `world`; `body_frame` defaults to `base_link`. The public pose/twist always use world coordinates, with frame `world`.
 
-### 控制输入
+### Control inputs
 
-| 机器人 | `ros` 配置键 | 默认话题 | 类型 / 含义 |
+| Robot | `ros` key | Default topic | Type / meaning |
 |---|---|---|---|
-| FS150 | `setpoint_topic` | `/<name>/mavros/setpoint_raw/local` | `mavros_msgs/PositionTarget`，PVA、mask 和 frame |
-| FS150 | `attitude_topic` | `/<name>/mavros/setpoint_raw/attitude` | `mavros_msgs/AttitudeTarget`，姿态、角速度、推力和 mask |
-| Scout / Mecanum | `cmd_vel_topic` | `/<name>/cmd_vel` | `geometry_msgs/Twist`，body forward/left/yaw rate；Scout 忽略 left |
+| FS150 | `setpoint_topic` | `/<name>/mavros/setpoint_raw/local` | `mavros_msgs/PositionTarget`, PVA, mask and frame |
+| FS150 | `attitude_topic` | `/<name>/mavros/setpoint_raw/attitude` | `mavros_msgs/AttitudeTarget`, attitude, body rate, thrust and mask |
+| Scout / Mecanum | `cmd_vel_topic` | `/<name>/cmd_vel` | `geometry_msgs/Twist`, body forward/left/yaw rate; Scout ignores left |
 
-### 状态与测量输出
+### State and measurement outputs
 
-| 机器人 | `ros` 配置键 | 默认话题 | 类型 / 含义 |
+| Robot | `ros` key | Default topic | Type / meaning |
 |---|---|---|---|
-| 全部 | `localization_pose_topic` | `/<name>/pose` | `geometry_msgs/PoseStamped`，世界系公共定位 |
-| 全部 | `localization_twist_topic` | `/<name>/twist` | `geometry_msgs/TwistStamped`，世界系速度 |
-| FS150 | `pose_topic` | `/<name>/mavros/local_position/pose` | `geometry_msgs/PoseStamped`，local-origin 平移后的位姿 |
-| FS150 | `velocity_topic` | `/<name>/mavros/local_position/velocity_local` | `geometry_msgs/TwistStamped`，世界轴速度 |
-| FS150 | `odometry_topic` | `/<name>/mavros/local_position/odom` | `nav_msgs/Odometry`，twist 转入 body child frame |
-| FS150 | `imu_topic` | `/<name>/mavros/imu/data` | `sensor_msgs/Imu`，姿态、body specific force 和 gyro |
-| FS150 | `raw_imu_topic` | `/<name>/mavros/imu/data_raw` | `sensor_msgs/Imu`，specific force/gyro；orientation covariance 为 -1 |
-| Scout | `raw_imu_topic` | `/<name>/imu/data_raw` | `sensor_msgs/Imu`，body specific force/gyro；orientation covariance 为 -1 |
-| Mecanum | `imu_topic` | `/<name>/imu` | `sensor_msgs/Imu`，实际偏航姿态、body specific force/gyro |
-| FS150 | `state_topic` | `/<name>/mavros/state` | `mavros_msgs/State`，Provider/FCU 状态 |
-| FS150 | `extended_state_topic` | `/<name>/mavros/extended_state` | `mavros_msgs/ExtendedState`，落地状态 |
-| FS150 | `target_attitude_topic` | `/<name>/mavros/setpoint_raw/target_attitude` | `mavros_msgs/AttitudeTarget`，实际级联控制器输出 |
+| all | `localization_pose_topic` | `/<name>/pose` | `geometry_msgs/PoseStamped`, public localization in the world frame |
+| all | `localization_twist_topic` | `/<name>/twist` | `geometry_msgs/TwistStamped`, velocity in the world frame |
+| FS150 | `pose_topic` | `/<name>/mavros/local_position/pose` | `geometry_msgs/PoseStamped`, pose after the local-origin translation |
+| FS150 | `velocity_topic` | `/<name>/mavros/local_position/velocity_local` | `geometry_msgs/TwistStamped`, velocity on the world axes |
+| FS150 | `odometry_topic` | `/<name>/mavros/local_position/odom` | `nav_msgs/Odometry`, twist rotated into the body child frame |
+| FS150 | `imu_topic` | `/<name>/mavros/imu/data` | `sensor_msgs/Imu`, attitude, body specific force and gyro |
+| FS150 | `raw_imu_topic` | `/<name>/mavros/imu/data_raw` | `sensor_msgs/Imu`, specific force/gyro; orientation covariance is -1 |
+| Scout | `raw_imu_topic` | `/<name>/imu/data_raw` | `sensor_msgs/Imu`, body specific force/gyro; orientation covariance is -1 |
+| Mecanum | `imu_topic` | `/<name>/imu` | `sensor_msgs/Imu`, actual yaw attitude, body specific force/gyro |
+| FS150 | `state_topic` | `/<name>/mavros/state` | `mavros_msgs/State`, provider/FCU state |
+| FS150 | `extended_state_topic` | `/<name>/mavros/extended_state` | `mavros_msgs/ExtendedState`, landed state |
+| FS150 | `target_attitude_topic` | `/<name>/mavros/setpoint_raw/target_attitude` | `mavros_msgs/AttitudeTarget`, the actual output of the cascaded controller |
 
-同一模型步的状态输出使用同一整数时钟 stamp。`ros.mocap_noise: [sx,sy,sz]` 配置公共 pose 发布边界的高斯位置噪声，各轴标准差须为有限非负数；`ros.mocap_seed` 默认 `1`。噪声独立于物理真值和本地 FCU 反馈；MAVROS local、IMU 和 twist 保持无测量噪声。`/<name>/{pose,twist}` 由 xsim 直接发布，Adapter 的 xsim profile 直接订阅这些定位话题。
+State outputs of the same model step use the same integer clock stamp. `ros.mocap_noise: [sx,sy,sz]` configures Gaussian position noise at the publication boundary of the public pose; each axis standard deviation must be a finite non-negative number, and `ros.mocap_seed` defaults to `1`. The noise is independent of the physical truth and of the local FCU feedback; MAVROS local, IMU and twist stay free of measurement noise. `/<name>/{pose,twist}` are published directly by xsim, and the xsim profile of the Adapter subscribes to these localization topics directly.
 
-IMU 的 frame 为 `body_frame`，轴为前/左/上，gyro 单位 rad/s，linear_acceleration 为含重力的比力 `Rᵀ(a_world − g_world)`，单位 m/s²。两种车采用平面姿态，静止时 z 为 `+9.8066`；平面加速度由实际积分 dt、模型实际速度变化及转弯项计算。Mecanum 的直接速度模型在换速那一步表现为有限步长下的加速度，不模拟轮胎或悬架冲击。Raw IMU 不提供姿态估计，orientation covariance 首项为 `-1`。
+The IMU frame is `body_frame`, the axes are forward/left/up, gyro is in rad/s, and linear_acceleration is the specific force including gravity, `Rᵀ(a_world − g_world)`, in m/s². Both vehicles use a planar attitude, so z is `+9.8066` at rest; the planar acceleration is computed from the actual integration dt, the actual velocity change of the model and the turning term. The direct velocity model of the Mecanum shows an acceleration over a finite step at the step where the velocity changes; tyre or suspension impacts are not simulated. Raw IMU provides no attitude estimate, and the first entry of its orientation covariance is `-1`.
 
-### 遥测发布频率
+### Telemetry publication rates
 
-`telemetry_rates_hz` 按话题组配置，全群机器人使用同一组设置；它不改变模型积分周期、话题名称或传感器 `rate_hz`。
+`telemetry_rates_hz` is configured per topic group and all robots of the fleet use the same settings; it does not change the model integration period, the topic names or the sensor `rate_hz`.
 
-| 键 | 默认 Hz | 发布内容 |
+| Key | Default Hz | Published content |
 |---|---|---|
-| `localization` | `125` | 全部机器人的公共 pose 和 twist |
-| `local` | `30` | FS150 local pose、velocity 和 odometry |
-| `imu` | `30` | FS150 `/mavros/imu/data`、Mecanum `/imu` |
-| `imu_raw` | `30` | FS150 `/mavros/imu/data_raw`、Scout `/imu/data_raw` |
+| `localization` | `125` | public pose and twist of all robots |
+| `local` | `30` | FS150 local pose, velocity and odometry |
+| `imu` | `30` | FS150 `/mavros/imu/data`, Mecanum `/imu` |
+| `imu_raw` | `30` | FS150 `/mavros/imu/data_raw`, Scout `/imu/data_raw` |
 | `state` | `1` | FS150 `/mavros/state` |
 | `extended_state` | `1` | FS150 `/mavros/extended_state` |
 | `target` | `10` | FS150 `/mavros/setpoint_raw/target_attitude` |
 
-值须为有限的 `0..1000` Hz，正频率的周期必须能表示为整数 ns；`0` 关闭该组的周期发布，话题仍保留。发布使用共同世界 epoch 相位的整数 deadline，不补发错过的旧样本。每组实际周期发布上限受输出快照频率约束；默认 `output_period_ns=8000000` 对应理论上限 `125` Hz。世界或输出线程落后时，实际可用快照频率还会降低；请求频率与理论 cap 不代表接收者实际收到的频率。
+Values must be finite and within `0..1000` Hz, and the period of a positive rate must be representable as an integer number of ns; `0` turns the periodic publication of that group off while the topic is kept. Publication uses integer deadlines with the phase of the common world epoch and does not resend missed old samples. The actual periodic rate of each group is limited by the output snapshot rate; the default `output_period_ns=8000000` corresponds to a theoretical limit of `125` Hz. When the world or the output thread lags, the usable snapshot rate drops further; the requested rate and the theoretical cap do not represent the rate a receiver actually gets.
 
-暂停时不重复发布冻结的数值测量。新 generation 或时间戳回退会重置发布 deadline；Provider/FCU 状态或落地状态变化会立即发布相应状态组，`state` 和 `extended_state` 设为 `0` 时也保留变化通知。频率由原生配置中的 `telemetry_rates_hz` 指定。
+While paused, frozen numerical measurements are not published repeatedly. A new generation or a timestamp going backwards resets the publication deadlines; a change of the provider/FCU state or of the landed state immediately publishes the corresponding state group, and the change notification is also kept when `state` and `extended_state` are set to `0`. The rates are given by `telemetry_rates_hz` in the native configuration.
 
-### FS150 服务
+### FS150 services
 
-| `ros` 配置键 | 默认服务 | 类型 / 含义 |
+| `ros` key | Default service | Type / meaning |
 |---|---|---|
-| `arming_service` | `/<name>/mavros/cmd/arming` | `mavros_msgs/CommandBool`，arm/disarm |
-| `mode_service` | `/<name>/mavros/set_mode` | `mavros_msgs/SetMode`，custom mode |
-| `command_service` | `/<name>/mavros/cmd/command` | `mavros_msgs/CommandLong`，仅 command 400（arm/disarm） |
+| `arming_service` | `/<name>/mavros/cmd/arming` | `mavros_msgs/CommandBool`, arm/disarm |
+| `mode_service` | `/<name>/mavros/set_mode` | `mavros_msgs/SetMode`, custom mode |
+| `command_service` | `/<name>/mavros/cmd/command` | `mavros_msgs/CommandLong`, only command 400 (arm/disarm) |
 
-Arm 返回模型实际结果；空中 disarm 被拒绝，强制操作不支持。`CommandLong` 要求 `param1` 为 0 或 1，不接受 broadcast、confirmation 或无关参数。
+Arm returns the actual result of the model; disarming in the air is rejected and forced operations are not supported. `CommandLong` requires `param1` to be 0 or 1 and accepts no broadcast, confirmation or unrelated parameters.
 
-Mode 要求 `base_mode=0` 和有效非空 `custom_mode`。模型支持 `OFFBOARD`、`POSCTL`、`ALTCTL`、`AUTO.LOITER`、`AUTO.LAND`。MAVROS `mode_sent` 表示请求已传送：有效请求即使因 OFFBOARD stream 不足或模式不受支持而被模型拒绝，也可能返回 true；实际模式以 `state` 为准。
+Mode requires `base_mode=0` and a valid non-empty `custom_mode`. The model supports `OFFBOARD`, `POSCTL`, `ALTCTL`, `AUTO.LOITER` and `AUTO.LAND`. MAVROS `mode_sent` means that the request was transmitted: a valid request may return true even if the model rejects it because the OFFBOARD stream is insufficient or the mode is not supported; the actual mode is given by `state`.
 
-服务响应等待 world 执行边界。超时仍未 claimed 的请求会被原子取消；已 claimed 的请求等待并返回实际完成结果。
+Service responses wait for the world execution boundary. A request that has not been claimed by the timeout is atomically cancelled; a claimed request is awaited and its actual completion result is returned.
 
-订阅和 FCU service callback 绑定实体 ID/generation。Reset 使旧 callback、队列命令和旧传感器样本失效。无 stamp 的 Twist 不携带发送者 generation；外部发送者须先停旧 stream，再重启 Provider。外部订阅者已经排入 TCPROS 的数据无法撤回。
+Subscriptions and FCU service callbacks are bound to the entity ID/generation. Reset invalidates old callbacks, queued commands and old sensor samples. A Twist without a stamp does not carry the generation of its sender; an external sender must stop the old stream before it restarts the provider. Data that an external subscriber has already queued in TCPROS cannot be withdrawn.
 
-Provider 和 reset 使用 Unix 管理接口；`ros.provider_service`、`ros.truth_topic`、`ros.reset_service`、`ros.mocap_topic`、`ros.mocap_velocity_topic` 配置被拒绝。`pose_topic`、`velocity_topic`、`odometry_topic` 仅接受 FS150 配置。
+Provider and reset use the Unix management interface; the configuration keys `ros.provider_service`, `ros.truth_topic`, `ros.reset_service`, `ros.mocap_topic` and `ros.mocap_velocity_topic` are rejected. `pose_topic`, `velocity_topic` and `odometry_topic` accept FS150 configuration only.
 
-### 传感器与世界输出
+### Sensors and world outputs
 
-| 配置 | 默认话题 / 启用条件 | 类型 |
+| Configuration | Default topic / enabled when | Type |
 |---|---|---|
-| `sensor.topic` | `/<name>/cloud`，实体有传感器 | `sensor_msgs/PointCloud2` |
-| `sensor.publish_beams` | `/<name>/simple_lidar/beams`，显式启用且模型支持 | `sensor_msgs/PointCloud2` |
-| `publish_clock` | `/clock`，为 true 且编译 ROS IO | `rosgraph_msgs/Clock` |
-| `reference_cloud_topic` | 配置的名称非空 | latched `sensor_msgs/PointCloud2`，场景参考云只发布一次 |
+| `sensor.topic` | `/<name>/cloud`, the entity has a sensor | `sensor_msgs/PointCloud2` |
+| `sensor.publish_beams` | `/<name>/simple_lidar/beams`, explicitly enabled and supported by the model | `sensor_msgs/PointCloud2` |
+| `publish_clock` | `/clock`, when true and ROS IO is compiled in | `rosgraph_msgs/Clock` |
+| `reference_cloud_topic` | the configured name is non-empty | latched `sensor_msgs/PointCloud2`, the scene reference cloud is published only once |
 
-## Unix HTTP/JSON 管理接口
+## Unix HTTP/JSON management interface
 
-宿主使用共享 XRPC HTTP 与 BootstrapInput。`GET /v1/describe` 返回真实 ServiceRef；后续请求通过共享 SDK 的 instance、request ID 和 timeout 头绑定本次进程。进程退出后该 incarnation 失效。
+The host uses the shared XRPC HTTP and BootstrapInput. `GET /v1/describe` returns the real ServiceRef; later requests are bound to this process by the instance, request ID and timeout headers of the shared SDK. The incarnation becomes invalid when the process exits.
 
-| 路径 | 用途 |
+| Path | Purpose |
 | --- | --- |
-| `GET /v1/health`、`POST /v1/health/observe` | 原生组件 ready 与 revision 等待 |
-| `GET /v1/world` | 世界时间、步数、实体与原生诊断 |
-| `GET /v1/entities`、`GET /v1/entities/<id>` | 公开实体身份及状态 |
-| `POST /v1/entities`、`DELETE /v1/entities/<id>` | 创建、删除实体 |
+| `GET /v1/describe[?wait_ready_ms=N]` | ServiceRef, capabilities, limits and readiness (`ready`, `facts`); the optional query holds the reply until the service is ready |
+| `GET /v1/health`, `POST /v1/health/observe` | readiness of the native components and waiting for a revision |
+| `GET /v1/world` | world time, step count, entities and native diagnostics |
+| `GET /v1/entities`, `GET /v1/entities/<id>` | public entity identity and state |
+| `POST /v1/entities`, `DELETE /v1/entities/<id>` | create and delete entities |
 | `POST /v1/entities/<id>/state` | `{generation, state:{enabled}}` |
-| `POST /v1/entities/<id>/reset` | 携带 generation 重置实体 |
-| `POST /v1/world/{pause,resume,step,reset}` | 世界管理；reset 不回退时间 |
-| `GET /v1/operations/<id>`、`POST /v1/operations/<id>/{wait,cancel}` | 精确操作回执、等待和取消 |
+| `POST /v1/entities/<id>/reset` | reset the entity, carrying its generation |
+| `POST /v1/world/{pause,resume,step,reset}` | world management; reset does not roll time back |
+| `GET /v1/operations/<id>`, `POST /v1/operations/<id>/{wait,cancel}` | exact operation receipt, waiting and cancellation |
+| `POST /v1/call/<service>/<Method>` | methods of the capabilities the world serves: `xgc2.chassis.hold` (`Describe`, `State`, `Engage`, `Release`) for the Scout and Mecanum entities |
 
-变更返回的 accepted/running 不等于完成。调用方等待终态并检查实际结果；启用不等于 Arm，取消也不抹掉已执行的物理效果。请求在固定两个冷准备 worker 之外不创建每机器人线程；运行目录和 HTTP 端点租约在原生工作停止后释放。
+The accepted/running result of a mutation does not mean completion. The caller waits for the terminal state and checks the actual result; enabling is not arming, and cancellation does not erase physical effects that were already executed. Apart from the two fixed cold-preparation workers, requests create no per-robot threads; the runtime directory and the HTTP endpoint lease are released after the native work has stopped.
 
-## ECS 数据与执行流
+### Readiness
 
-`src/xsim/core/` 管理唯一实体 roster、身份、组件、命令和世界边界调度；`systems/robots.*` 准备并步进 FS150、Scout、Mecanum；`systems/sensors.*` 管理传感器资源和 workers；`models/` 保存数值模型和 PX4 源；`io/config.*`、`io/native_rpc/`、`io/ros/` 管理配置与传输；`main.cpp` 组合这些具体对象。
+`GET /v1/describe` carries `service` (`xgc2.simulation`), `api_version`, `instance_id`, `ready` and `facts` next to the simulation document. `ready` is true when the native health is `ready` and the output thread has delivered a world frame. `facts` holds `world_generation` (always `1`: xsim loads one world when the process starts, and another world is another process with another `instance_id`), `frames_flowing`, `health` (the state of `/v1/health`), `capabilities` (the capabilities served by method calls, with their entities) and, in a build with ROS IO, `ros_master_uri`, the master the node is bound to.
 
-按机器人种类分组的 dense array 和权威 body/planar SoA 列共享稳定 ID 映射。Controller/filter 状态采用连续 AoS，name/config/ROS handles 为低频数据。Remove 将该类最后一个 dense 元素移入空位并重新绑定索引。Entity 持有 IO 和可选 sensor 资源，快照仅弱引用 Entity，已移除资源不会被快照延长寿命。
+The query `wait_ready_ms=<0..30000>` holds the reply without polling until the service is ready, the wait elapses, the XRPC deadline of the call passes or the process starts to stop, and then answers with the current describe; `0`, no query or a ready service answers at once. Any other query on describe is `invalid_argument`, a query on another route is an unknown route, and at most 32 calls can be held (`resource_exhausted` beyond). XRPC treats a describe call that carries a query as a bound call, not as the unbound discovery route: send the `instance_id` of an unbound `GET /v1/describe` with it.
 
-ROS 和 HTTP 通过同一个边界命令执行器修改世界。Add 在 world thread 外准备模型、ROS endpoints 和 sensor 资源；Reset 在 world thread 外准备初始模型，再提交到 world boundary。GPU 初始化与静态地图上传在 GPU owner 上完成后才提交 add。
+### Capability calls and chassis HOLD
 
-动力学、控制器与滤波器只接收共享的实际 dt，不读取操作系统时钟。Flight 控制每次更新一次，刚体保持 ≤2 ms 的安全 RK4 子步；平面接地仍在整个调用区间端点约束。增大世界步长减少控制更新，但不能消除刚体数值子步；本模型不提供复杂接触/碰撞保证。
+The world serves the capability `xgc2.chassis.hold` through the generic method addressing of XRPC, `POST /v1/call/xgc2.chassis.hold/<Method>` with the JSON request as the body ([Capability calls](contracts/simulation-v1.md#capability-calls)); the methods are `Describe`, `State`, `Engage` and `Release` of the chassis HOLD service, with the bodies and semantics of the chassis-hold contract ([binding](contracts/simulation-v1.md#chassis-hold)). A failure is the XRPC error envelope `{"error":{"code","message","details"?}}` with the status of its code; the reply of a success is the JSON result as it is. The describe facts list the capability with the entities of the world's roster (`facts.capabilities`), which follows entities as they come and go. `src/xsim/io/native_rpc/chassis.cpp` holds the whole mapping, so the call route and the facts entry can be swapped for a library adapter without touching the rest of the server.
 
-线程分工：world 1 个，input/HTTP 1 个（main），service 2 个，output 1 个；ROS 发布默认 2 个固定分片线程，按稳定实体 ID 分配，每个机器人只有一个发布者。按需另启 CPU sensor workers（默认 2 个）和/或一个 GPU context worker。Native 资源准备和 ROS services 复用两个 service worker。ROS 自有网络线程负责传输。World 不执行 ROS publication、service wait、socket IO 或 sensor scan。
+The roster is the Scout and Mecanum entities, keyed by their public ID (the robot ID of a frozen Experiment, which can differ from the ROS namespace). FS150 entities are not a chassis. An entity joins the roster when it is added to the world and leaves it when it is removed; the HOLD state of an ID is kept, so an entity created again under the same ID starts held (at most 1024 distinct IDs per process). The `instance` of the HOLD replies is the `instance_id` of the HTTP binding.
 
-World 在每步边界按序执行离散命令，再按类型连续遍历机器人并提交实际时间。飞行控制启用标志使用紧凑数组，热循环不查 entity 散列表；只读控制参数与惯量逆矩阵在构造时缓存。连续输入可在不跨越离散操作的前提下合并，记录 `input_coalesced`。16 个预建 Frame 缓冲仅在无人持有时重写，数组容量随实体数量增长；输出、查询、传感器及发布线程共享同一不可变快照，所有 body 和 sensor pose 共用 stamp。快照池满或交换锁忙时跳过输出，物理积分继续，记录 `output_misses`。发布分片只保留最新待处理快照，替换计入 `coalesced_worker_frames`；先处理本分片遥测，再轮转完成的 cloud，每发一个 cloud 就检查更新遥测。
+- Gate. The `cmd_vel` callback admits each message with the HOLD domain (`admit(public ID, receipt)`), the receipt being stamped on the domain's monotonic clock when the callback creates the command, not in simulation time. `World::apply` asks again when a velocity command would reach the model; it refuses the command of a held entity and one received before the last release of the entity (also when it waited in the world queue). Refusals are counted in `hold_refused_commands` of the `GET /v1/world` diagnostics. The gate is separate from `enabled`: a held entity keeps its ROS subscription, sensors and publication. A Release first runs the `cmd_vel` callbacks that are queued for the input thread, while the robots are still held, so messages received during the hold are not admitted afterwards; a message that the ROS transport enqueues in the instant between that drain and the release can still be admitted after it.
+- Zero. `World::boundary()` ticks the HOLD domain after the commands of the boundary, also while the world is paused: it cancels the pending velocity controls of each held entity and commands zero to its model, at every boundary. Engage wakes the world thread after the gate is closed and replies as soon as the zero is written, after at most 60 ms with stage `gated`. The reply is sent without holding the input thread.
+- Rest. Each boundary reports the twist of the held entity (Scout: realized forward speed and yaw rate; Mecanum: its body velocity and yaw rate) to the domain; 0.02 m/s and 0.05 rad/s for 300 ms after the zero give `stopped`. A paused world takes no samples, so a robot engaged while the world is paused reaches `stopped` only after the world runs.
+- Pause, restart. HOLD works while the world is paused and does not advance it. A restarted xsim is a new instance with every robot released; nothing is persisted.
 
-Noetic ROS IO 缓存非 latched Publication，序列化在分片线程执行，再交给 ROS Poll 线程的原发布队列；发送不在 World 上执行。每个话题初始 4 个 wire 缓冲，只有 ROS 释放引用后才能复用。槽位耗尽时按当前连接数 N 补至 N+4 个，保留已有容量；数据容量仅在峰值扩大时增长。达到这个容量仍无空槽时跳过本次交接，不阻塞；缓冲占用不改变采样频率。每个 TCP 连接的 ROS 待发送队列为 1，队满丢旧待发消息，在途消息仍由 ROS/TCP 完成。消息对象与 frame 字符串复用。点云 payload 直接序列化成 TCPROS 字节，不先复制到临时 PointCloud2 的 data。ROS 队列、连接和内核传输仍可分配、复制；这些复用不等于整个 ROS 进程零分配或端到端零拷贝。
+## ECS data and execution flow
 
-点云和 beam 的 `bytes_estimate` 按交给 ROS 的序列化字节数乘连接数统计，不包含 TCP/IP 头或重传，也不代表订阅者已收到的数据。当前没有点云带宽限额或令牌桶。发布时没有可用 wire 缓冲会丢弃本次交接，并累计 `buffer_drops` 和 `backpressure_ns`，这些指标不反馈调整 Sensor 采样周期。Sensor 自身根据扫描耗时、待处理或完成样本积压和 payload 池压力独立退避；已经交给 ROS 的数据包不能撤回。
+`src/xsim/core/` manages the single entity roster, identity, components, commands and the scheduling of the world boundary; `systems/robots.*` prepares and steps FS150, Scout and Mecanum; `systems/sensors.*` manages sensor resources and workers; `models/` holds the numerical models and the PX4 sources; `io/config.*`, `io/native_rpc/` and `io/ros/` manage configuration and transports; `main.cpp` composes these concrete objects.
 
-Sensor 使用可选组件及输出 Frame 采样。IO 资源随 Entity 退休。
+Dense arrays grouped by robot kind and the authoritative body/planar SoA columns share a stable ID mapping. Controller and filter state use a contiguous AoS, and name, config and ROS handles are low-frequency data. Remove moves the last dense element of that kind into the vacated slot and rebinds its index. An Entity owns its IO and optional sensor resources; snapshots refer to the Entity only weakly, so a removed resource is not kept alive by a snapshot.
 
-## 传感器配置与约束
+ROS and HTTP modify the world through the same boundary command executor. Add prepares the model, the ROS endpoints and the sensor resources off the world thread; Reset prepares the initial model off the world thread and then submits it to the world boundary. GPU initialization and the upload of the static map are completed on the GPU owner before the add is submitted.
 
-传感器使用不可变 `LidarScene`/geometry/index。场景来自 `scene` 或 `scene_file`；世界只接受配置时的固定场景，没有动态场景编辑管理端点。
+Dynamics, controllers and filters receive only the shared actual dt and never read the operating system clock. Flight control updates once per call, and the rigid body keeps safe RK4 substeps of ≤2 ms; planar ground contact is still constrained at the end of the whole call interval. A larger world step reduces the number of control updates but cannot remove the numerical substeps of the rigid body; this model gives no guarantees for complex contact or collisions.
 
-| `sensor` 键 | 默认值 / 范围 | 含义 |
+Threads: 1 world thread, 1 input/HTTP thread (main), 2 service threads and 1 output thread; ROS publication defaults to 2 fixed shard threads, assigned by stable entity ID, with exactly one publisher per robot. CPU sensor workers (2 by default) and/or one GPU context worker are started on demand. Native resource preparation and ROS services share the two service workers. The own network threads of ROS handle the transport. World does not perform ROS publication, service waits, socket IO or sensor scans.
+
+At each step boundary World executes the discrete commands in order, then walks the robots by type and commits the actual time. The enable flags of flight control use a compact array, so the hot loop does not look up the entity hash table; the read-only control parameters and the inverse inertia matrices are cached at construction. Continuous inputs can be merged as long as they do not cross a discrete operation, and `input_coalesced` is recorded. The 16 pre-built Frame buffers are rewritten only when nobody holds them, and the array capacity grows with the number of entities; the output, query, sensor and publication threads share the same immutable snapshot, and all body and sensor poses share one stamp. When the snapshot pool is full or the exchange lock is busy the output is skipped while the physical integration continues, and `output_misses` is recorded. A publication shard keeps only the latest pending snapshot, and a replacement counts into `coalesced_worker_frames`; it handles the telemetry of its shard first, then rotates through the completed clouds and checks for newer telemetry after each cloud it sends.
+
+Noetic ROS IO caches non-latched Publications; serialization runs on the shard thread and the data is then handed to the original publication queue on the ROS Poll thread; sending is not executed on World. Each topic starts with 4 wire buffers, and a buffer can be reused only after ROS has released its reference. When the slots are exhausted the number is topped up to N+4 for the current N connections while the existing capacity is kept; data capacity grows only when the peak grows. If there is still no free slot at that capacity, the handover is skipped without blocking; buffer occupancy does not change the sampling rate. The ROS send queue of each TCP connection is 1: when it is full the older pending message is dropped, and the message in flight is still completed by ROS/TCP. Message objects and frame strings are reused. The point-cloud payload is serialized directly into TCPROS bytes without first being copied into the data of a temporary PointCloud2. ROS queues, connections and the kernel transport can still allocate and copy; this reuse does not mean zero allocation or zero copy end to end for the whole ROS process.
+
+The `bytes_estimate` of point clouds and beams counts the serialized bytes handed to ROS multiplied by the number of connections, without TCP/IP headers or retransmissions, and it does not mean that the subscribers have received the data. There is currently no point-cloud bandwidth quota or token bucket. When no wire buffer is available at publication time, the handover is dropped and `buffer_drops` and `backpressure_ns` are accumulated; these metrics do not feed back into the sampling period of the Sensor. The Sensor backs off by itself according to the scan time, the backlog of pending or completed samples and the pressure on the payload pool; data that was already handed to ROS cannot be withdrawn.
+
+A Sensor is an optional component sampled from the output Frame. IO resources are retired with the Entity.
+
+## Sensor configuration and limits
+
+Sensors use the immutable `LidarScene`/geometry/index. The scene comes from `scene` or `scene_file`; the world accepts only the fixed scene given at configuration time, and there is no management endpoint for editing the scene dynamically.
+
+| `sensor` key | Default / range | Meaning |
 |---|---|---|
-| `backend` | `cpu`；可选 `gpu` | 观察后端 |
-| `mode` | `raycast` | CPU：`raycast`、`penetrating`、`depth`；GPU：`lidar_scan` |
-| `topic` | `/<name>/cloud` | 点云主题 |
-| `frame` | `world`；可选 `map` | 输出世界点坐标的 frame |
-| `rate_hz` | `10`，正数 | 仿真时间上的采样频率 |
-| `range`、`min_range` | `20`、`0` | 距离，m |
-| `h_fov_deg`、`v_fov_deg` | `360`、`30` | 水平/垂直 FOV，deg |
-| `h_res`、`v_res` | `360`、`32` | 水平/垂直采样数 |
-| `translation`、`rotation` | 零平移、单位四元数 | sensor mount；rotation 顺序为 `[w,x,y,z]` |
-| `noise_std`、`seed` | `0`、`0` | CPU Gaussian range noise 和随机 seed |
-| `world_bodies` | `false`，仅 CPU | 观察同一步全世界机器人 body 快照 |
-| `publish_beams` | `false`，仅支持 beams 的 CPU 模型 | 输出 beam 点云 |
-| `surface_spacing`、`keep_buried` | 继承 scene 默认 | penetrating 采样间距与 buried 策略 |
-| `heading_crop`、`heading_cos_min`、`vertical_slab_tan` | `false`、`0`、`0.5773502691896258` | penetrating 裁剪 |
-| `width`、`height` | `160`、`120` | depth 图像尺寸 |
-| `fx`、`fy`、`cx`、`cy` | `0` | depth pinhole 内参 |
-| `point_cover_spacing` | 继承 scene spacing | GPU 静态地图点覆盖间距 |
+| `backend` | `cpu`; optional `gpu` | observation backend |
+| `mode` | `raycast` | CPU: `raycast`, `penetrating`, `depth`; GPU: `lidar_scan` |
+| `topic` | `/<name>/cloud` | point-cloud topic |
+| `frame` | `world`; optional `map` | frame of the output world points |
+| `rate_hz` | `10`, positive | sampling rate in simulation time |
+| `range`, `min_range` | `20`, `0` | distance, m |
+| `h_fov_deg`, `v_fov_deg` | `360`, `30` | horizontal/vertical FOV, deg |
+| `h_res`, `v_res` | `360`, `32` | horizontal/vertical number of samples |
+| `translation`, `rotation` | zero translation, unit quaternion | sensor mount; the order of rotation is `[w,x,y,z]` |
+| `noise_std`, `seed` | `0`, `0` | CPU Gaussian range noise and random seed |
+| `world_bodies` | `false`, CPU only | observe the robot bodies of the whole world in the snapshot of the same step |
+| `publish_beams` | `false`, only CPU models that support beams | publish the beam point cloud |
+| `surface_spacing`, `keep_buried` | inherit the scene defaults | penetrating sampling spacing and buried policy |
+| `heading_crop`, `heading_cos_min`, `vertical_slab_tan` | `false`, `0`, `0.5773502691896258` | penetrating crop |
+| `width`, `height` | `160`, `120` | depth image size |
+| `fx`, `fy`, `cx`, `cy` | `0` | depth pinhole intrinsics |
+| `point_cover_spacing` | inherit the scene spacing | GPU static-map point coverage spacing |
 
-CPU 使用 `WorldLidar` 的 raycast、penetrating 或 pinhole depth 实现。通常输出 XYZ；`world_bodies=true` 时增加 INT32 `vehicle_id`。Beam 输出包含 `x,y,z,dx,dy,dz,range,hit`，观察机器人 body 时增加 `vehicle_id`；penetrating 模型不支持 beams。
+The CPU uses the raycast, penetrating or pinhole depth implementations of `WorldLidar`. The output is normally XYZ; with `world_bodies=true` an INT32 `vehicle_id` is added. The beam output contains `x,y,z,dx,dy,dz,range,hit`, with `vehicle_id` added when robot bodies are observed; the penetrating model does not support beams.
 
-GPU 使用 spherical-nearest `lidar_scan`，输出 XYZ/intensity，共用一个静态地图上传/context，在 GPU owner thread 内切换各 sensor projection。GPU 不支持 `world_bodies`、`publish_beams` 或非零 `noise_std`。CPU/GPU 是明确不同的观察模型，不能自动互换。
+The GPU uses the spherical-nearest `lidar_scan`, outputs XYZ/intensity, shares one static-map upload/context, and switches the projection of each sensor inside the GPU owner thread. The GPU supports neither `world_bodies`, `publish_beams` nor a non-zero `noise_std`. CPU and GPU are explicitly different observation models and cannot be swapped automatically.
 
-GPU kernel 的两个轴共用 `polar_res`，要求 `h_fov_deg / h_res == v_fov_deg / v_res`，并满足点覆盖约束。例如 120° × 60°、240 × 120 samples 有效；相同 FOV 配 240 × 30 被拒绝。xsim 不修改 FOV/分辨率来接受不匹配请求，也不改用 CPU。
+The two axes of the GPU kernel share `polar_res`, which requires `h_fov_deg / h_res == v_fov_deg / v_res` and the point-coverage constraint. For example 120° × 60° with 240 × 120 samples is valid; the same FOV with 240 × 30 is rejected. xsim does not modify the FOV or the resolution to accept a mismatching request and does not switch to the CPU.
 
-输出线程按绝对采样相位投递不可变 pose、实体 ID/generation、stamp 和 scene version 1；实际采样上限受输出 Frame 频率约束（默认 125 Hz）。每个 sensor 最多有一个 executing、一个 pending 和一个 completed 样本；共享 CPU worker / GPU owner 执行扫描，过载替换旧 pending/completed 并计数。传感器自身计算过载会增大采样周期，保持请求 Hz、FOV、分辨率、字段和后端的配置；采样周期按 25% 增量退避，上限为请求周期的 8 倍与 1 s 中的较大者；压力解除后按 250 ms 墙钟窗口逐步恢复。Linux 观察 worker 尽力使用较低的调度优先级（nice 5）。此降级不会阻塞 World。
+The output thread delivers the immutable pose, entity ID/generation, stamp and scene version 1 at absolute sampling phases; the actual sampling rate is limited by the rate of the output Frames (125 Hz by default). Every sensor has at most one executing, one pending and one completed sample; the shared CPU worker / GPU owner executes the scan, and under overload the old pending/completed sample is replaced and counted. The computational overload of a sensor increases its sampling period while the requested Hz, FOV, resolution, fields and backend of the configuration are kept; the sampling period backs off in 25% increments up to the larger of 8 times the requested period and 1 s, and recovers step by step in 250 ms wall-clock windows once the pressure is gone. On Linux the observation workers try to use a lower scheduling priority (nice 5). This degradation does not block World.
 
-每个 sensor 预建 4 个 payload 缓冲，计算时只写无人持有的缓冲，缓存、完成样本和发布者共享不可变数据；池满时丢弃采样。无噪声 CPU 观察仅在 sensor pose 和所观测 body 几何完全相同且 generation 未变时复用缓存，命中不复制点云/beam 字节；有噪声或运动会重新计算。静态场景索引、CPU 缓冲和 GPU 地图/context 复用。扫描完成后释放 body Frame，缓存不长期占用世界快照。发布保留采样 stamp，丢弃移除、disabled 或过期 generation 的结果。内存随配置实体、beam patterns、输出与几何缓存缓冲和共享场景增长。
+Every sensor pre-builds 4 payload buffers; a computation writes only a buffer that nobody holds, and the cache, the completed sample and the publisher share the immutable data; when the pool is full the sample is dropped. A noise-free CPU observation reuses the cache only when the sensor pose and the geometry of the observed bodies are exactly the same and the generation has not changed; a hit copies no point-cloud/beam bytes, while noise or motion recomputes. The static scene index, the CPU buffers and the GPU map/context are reused. After a scan completes the body Frame is released, and the cache does not hold world snapshots for long. Publication keeps the sampling stamp and drops results of removed, disabled or expired generations. Memory grows with the configured entities, beam patterns, output and geometry cache buffers and the shared scene.
 
-`GET /v1/world` 的原生 diagnostics 中 `simulation_time_ns` 是已经积分的时间，`model_step_ns` 是名义周期，`scheduling_period_ns` 是当前调度周期，`last_dt_ns` 是最近实际积分间隔。`rtf` 为自进程起点的累计比值（包含暂停和手动 Step）；`realtime_rtf` 只计算自动运行的积分时间 / 活动墙钟时间。`frame_slots` 与 `frame_array_grows` 报告快照池及数组成长；Sensor 分别报告 requested/effective/source/observed rate、throttled samples、misses、cache hits、实际计算次数、payload 槽位/成长/丢弃。
+In the native diagnostics of `GET /v1/world`, `simulation_time_ns` is the time already integrated, `model_step_ns` is the nominal period, `scheduling_period_ns` is the current scheduling period and `last_dt_ns` is the most recent actual integration interval. `rtf` is the cumulative ratio since the process start (including pauses and manual Steps); `realtime_rtf` counts only the automatically run integrated time divided by the active wall-clock time. `frame_slots` and `frame_array_grows` report the snapshot pool and the growth of its arrays; each Sensor reports its requested/effective/source/observed rate, throttled samples, misses, cache hits, the number of actual computations, and payload slots, growth and drops.
 
-`publication` 报告分片数、快照合并、准备耗时与错误，以及 telemetry/cloud/clock 的交接次数、估计字节、缓冲分配/容量/丢弃、序列化和队列交接耗时。`accepted` 是进入 ROS 发布队列，不是订阅者接收确认；`backpressure_ns` 是拒绝交接时所观察缓冲年龄的累计值，不是阻塞时间。
+`publication` reports the number of shards, snapshot coalescing, preparation time and errors, and the handover counts, estimated bytes, buffer allocation/capacity/drops, serialization and queue handover time of telemetry, cloud and clock. `accepted` means entering the ROS publication queue, not an acknowledgement by the subscriber; `backpressure_ns` is the accumulated age of the buffers observed when a handover was refused, not blocking time.

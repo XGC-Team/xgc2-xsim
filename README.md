@@ -1,62 +1,69 @@
 # xsim
 
-xsim 是每个世界一个进程的轻量多机器人仿真器，统一管理实体、动力学、实体启用状态和仿真时钟。控制与遥测通过可选 ROS 1 接口连接，世界管理通过 Unix socket 上的 HTTP/JSON RPC 完成。
+xsim is a lightweight multi-robot simulator with one process per world. It manages entities, dynamics, entity enablement and the simulation clock in one place. Control and telemetry go through an optional ROS 1 interface; world management is HTTP/JSON RPC on a Unix socket.
 
-[完整配置与接口参考](docs/reference.md)
+[Full configuration and interface reference](docs/reference.md)
 
-## 支持的机器人
+## Supported robots
 
-| `kind` | 模型 | 控制输入 |
+| `kind` | Model | Control input |
 | --- | --- | --- |
-| `fs150` | PX4 v1.12.3 串级控制 → 四电机响应 → 六自由度刚体 RK4 → 平面接地 | PVA、姿态或机体系角速度目标；MAVROS Arm / Mode |
-| `scout` | 速度限幅 → 纯延迟与一阶响应 → 差速平面运动学 | 车体系前进速度、偏航角速度 |
-| `mecanum` | 速度限幅 → 全向平面运动学 | 车体系前进、横移速度与偏航角速度 |
+| `fs150` | PX4 v1.12.3 cascaded control → four-motor response → 6-DoF rigid body (RK4) → planar ground contact | PVA, attitude or body-rate targets; MAVROS Arm / Mode |
+| `scout` | velocity limits → pure delay and first-order response → differential-drive planar kinematics | body-frame forward speed and yaw rate |
+| `mecanum` | velocity limits → omnidirectional planar kinematics | body-frame forward and lateral speed and yaw rate |
 
-FS150 使用轻量 FCU 接口和固定 PX4 控制源码；Scout、Mecanum 使用平面模型。传感器场景用于观测，不参与机器人或障碍物碰撞动力学。
+FS150 uses a lightweight FCU interface and the fixed PX4 control sources; Scout and Mecanum use planar models. Sensor scenes are for observation only; they do not take part in the collision dynamics of robots or obstacles.
 
-## 启动
+## Start
 
 ```sh
 source /opt/ros/noetic/setup.bash
 xsim --bootstrap-input /private/bootstrap.json --config /private/world.json
 ```
 
-监督者先创建私有运行目录和共享 XRPC BootstrapInput；binding 指定 `xgc2.simulation`、`v1`、`http.v1`、Unix endpoint 和 `local_private`。原生宿主生成本次 ServiceRef 的 instance ID，固定输入不预造 incarnation。运行目录须已存在并归当前用户所有、权限为 `0700`。ROS 构建还要求已有 `ROS_HOME`、`ROS_LOG_DIR` 目录，以及 application 中对应的 `rosHomeGrant`、`rosLogGrant`。
+The supervisor first creates the private runtime directory and the shared XRPC BootstrapInput; the binding names `xgc2.simulation`, `v1`, `http.v1`, the Unix endpoint and `local_private`. The native host generates the instance ID of this ServiceRef itself; the fixed input does not pre-create an incarnation. The runtime directory must already exist, be owned by the current user and have mode `0700`. The ROS build also requires existing `ROS_HOME` and `ROS_LOG_DIR` directories and the matching `rosHomeGrant` and `rosLogGrant` in the application section.
 
-`--config` 接收 [config/example.json](config/example.json) 形式的原生配置；`--manifest` 接收带显式 epoch 的原生世界与实体资产。工作流使用 `--experiment-file /private/experiment.json`，三种输入互斥；可另传 `--scene-file /private/scene.yaml`。冻结实验仍为 `{instanceId, epochNs, robots, context, settings}`，保留精确时间、公开机器人 ID、原始 `authoredSimulationSensors` 和完整 context；模型、传感器与时序在 C++ 中解释。`GET /v1/entities/<robotId>` 返回实际 EntityRef，启用时须带其 generation。
+`--config` takes a native configuration like [config/example.json](config/example.json); `--manifest` takes a native world and entity assets with an explicit epoch. Workflows use `--experiment-file /private/experiment.json`; the three inputs are mutually exclusive, and `--scene-file /private/scene.yaml` may be added. A frozen Experiment is still `{instanceId, epochNs, robots, context, settings}` and keeps the exact time, the public robot IDs, the raw `authoredSimulationSensors` and the full context; models, sensors and timing are interpreted in C++. `GET /v1/entities/<robotId>` returns the actual EntityRef, whose generation an enable request must carry.
 
-默认世界调度 500 Hz（2 ms），整群共享墙钟实测 dt，时间为 `epoch_ns + Σ实际 dt`。短时落后限量追赶，持续过载平滑增大周期，默认上限 10 ms；空闲时阻塞等待。快照周期 8 ms，公共定位默认 125 Hz，IMU/local 默认 30 Hz，遥测频率由原生配置指定；点云默认 10 Hz、独立降频。Pause 保持管理接口可用，Step 在暂停中按名义步长推进指定步数，Reset 保持会话时钟与 实体启用状态。
+The world schedules at 500 Hz (2 ms) by default. The whole fleet shares the measured wall-clock dt and the time is `epoch_ns + Σ actual dt`. A short lag is caught up in bounded batches, a lasting overload smoothly increases the period (10 ms at most by default), and an idle world blocks. The snapshot period is 8 ms; public localization defaults to 125 Hz and IMU/local to 30 Hz, the telemetry rates are set in the native configuration, and point clouds default to 10 Hz and are throttled independently. Pause keeps the management interface available, Step advances a paused world by the given number of nominal steps, and Reset keeps the session clock and the entities' enabled state.
 
-## 接口
+## Interfaces
 
-以下为默认路径，`<name>` 是实体名称；ROS 配置可覆盖相应接口名。
+The paths below are defaults; `<name>` is the entity name. ROS configuration can override the interface names.
 
-| 方向 / 范围 | 话题或服务 |
+| Direction / scope | Topic or service |
 | --- | --- |
-| 输入 · FS150 | `/<name>/mavros/setpoint_raw/{local,attitude}` |
-| 输入 · Scout / Mecanum | `/<name>/cmd_vel` |
-| 输出 · 全部机器人 | `/<name>/{pose,twist}`，世界系公共定位；pose 支持配置位置噪声 |
-| 输出 · FS150 | `/<name>/mavros/local_position/{pose,velocity_local,odom}`、`imu/{data,data_raw}`、`state`、`extended_state`、`setpoint_raw/target_attitude`（均在同一 MAVROS 命名空间） |
-| 输出 · Scout / Mecanum | Scout `/<name>/imu/data_raw`，Mecanum `/<name>/imu`；机体系 IMU，默认 30 Hz |
-| 输出 · 传感器 / 世界 | 可选 `/<name>/cloud`，CPU 可选 `/<name>/simple_lidar/beams`；`publish_clock=true` 时输出 `/clock` |
-| ROS 服务 · FS150 | `/<name>/mavros/{cmd/arming,set_mode,cmd/command}` |
-| RPC 查询 | `GET /v1/describe`、`/v1/health`、`/v1/world`、`/v1/entities`、`/v1/operations/<id>` |
-| RPC 管理 | 实体增删、`POST /v1/entities/<id>/state`、`/reset`，世界 `/v1/world/{pause,resume,step,reset}`，操作 `/v1/operations/<id>/{wait,cancel}` |
+| Input · FS150 | `/<name>/mavros/setpoint_raw/{local,attitude}` |
+| Input · Scout / Mecanum | `/<name>/cmd_vel` |
+| Output · all robots | `/<name>/{pose,twist}`, public localization in the world frame; pose supports configurable position noise |
+| Output · FS150 | `/<name>/mavros/local_position/{pose,velocity_local,odom}`, `imu/{data,data_raw}`, `state`, `extended_state`, `setpoint_raw/target_attitude` (all in the same MAVROS namespace) |
+| Output · Scout / Mecanum | Scout `/<name>/imu/data_raw`, Mecanum `/<name>/imu`; body-frame IMU, 30 Hz by default |
+| Output · sensor / world | optional `/<name>/cloud`, optional CPU `/<name>/simple_lidar/beams`; `/clock` when `publish_clock=true` |
+| ROS service · FS150 | `/<name>/mavros/{cmd/arming,set_mode,cmd/command}` |
+| RPC queries | `GET /v1/describe`, `/v1/health`, `/v1/world`, `/v1/entities`, `/v1/operations/<id>` |
+| RPC management | entity create and delete, `POST /v1/entities/<id>/state`, `/reset`, world `/v1/world/{pause,resume,step,reset}`, operations `/v1/operations/<id>/{wait,cancel}` |
+| RPC capabilities | `POST /v1/call/xgc2.chassis.hold/{Describe,State,Engage,Release}` |
 
-RPC 使用共享 SDK 的请求 ID、超时与 instance 头；实体操作另带实际 generation。`202` 仅表示受理，必须等待操作的终态判断领域结果。实体启用与 FS150 Arm 独立；禁用不会重新初始化模型，reset 保留启用状态与世界时钟。
+RPC uses the request ID, timeout and instance headers of the shared SDK; entity operations also carry the actual generation. `202` only means accepted: the terminal state of the operation must be awaited to judge the domain result. Entity enablement is independent of FS150 Arm; disabling does not reinitialize the model, and reset keeps the enabled state and the world clock.
 
-## 源码与构建
+## Chassis HOLD and readiness
 
-| 目录（相对 `src/xsim/`） | 职责 |
+The capability `xgc2.chassis.hold`, served through `POST /v1/call/xgc2.chassis.hold/<Method>` and listed in the describe facts with the chassis entities, stops single Scout or Mecanum robots on command, by entity ID. A held robot refuses its `cmd_vel`, is commanded to zero at every world boundary (also while the world is paused) and reports `zero_written` and then `stopped` from its own twist; the world, the other robots and the sensors and publication of the held robot keep running. A release is a compare and set on the instance and the revision of the robot and never replays the commands of the hold. A removed robot keeps its HOLD state, so a re-created one starts held. The domain comes from the chassis-hold library; see the [contract](docs/contracts/simulation-v1.md#chassis-hold) and the [reference](docs/reference.md#capability-calls-and-chassis-hold).
+
+`GET /v1/describe` is the readiness report of the process: `ready`, and `facts` such as the ROS master URI, the world generation and whether frames flow. `?wait_ready_ms=N` (0 to 30000) holds the call, without polling, until the service is ready. See [Readiness](docs/contracts/simulation-v1.md#readiness).
+
+## Sources and build
+
+| Directory (relative to `src/xsim/`) | Responsibility |
 | --- | --- |
-| `core/` | 唯一实体表、稳定 ID / generation、组件、命令与世界边界执行 |
-| `systems/` | 三类机器人批量步进；CPU / GPU 传感器任务与工作线程 |
-| `models/` | 机器人数值模型与固定 PX4 控制源码 |
-| `io/` | 配置、Unix RPC、ROS 输入与输出 |
-| `main.cpp` | 组合 World、Sensors、IO 与 Server |
+| `core/` | the single entity table, stable ID / generation, components, commands and execution at the world boundary |
+| `systems/` | batched stepping of the three robot types; CPU / GPU sensor tasks and workers |
+| `models/` | numerical robot models and the fixed PX4 control sources |
+| `io/` | configuration, Unix RPC, ROS input and output |
+| `main.cpp` | composes World, Sensors, IO and Server |
 
-World 的物理组件采用按类型排列的 SoA，控制器与滤波状态保存在紧凑模型数组中；ROS 与 RPC 命令在同一个世界边界执行。不可变快照共享给输出、传感器和发布线程，点云数据共享复用；ROS 发布默认使用 2 个固定分片线程，每话题初始 4 个发送缓冲，按连接占用补足后复用。
+The physical components of World are arrays by robot type (SoA), and controller and filter state sits in compact model arrays; ROS and RPC commands run at the same world boundary. Immutable snapshots are shared by the output, sensor and publication threads, and point-cloud data is shared and reused; ROS publication uses two fixed shard threads by default, with four initial send buffers per topic that are topped up by connection usage and then reused.
 
-构建、安装和打包见 [参考文档](docs/reference.md#构建安装与打包)。`XSIM_ROS=OFF` 可构建无 ROS 的同一世界与 RPC 服务；GPU 观测通过显式构建选项启用。
+The service contract is [docs/contracts/simulation-v1.md](docs/contracts/simulation-v1.md). Build, install and packaging are in the [reference](docs/reference.md#build-install-and-packaging). `XSIM_ROS=OFF` builds the same world and RPC service without ROS; GPU observation is enabled by an explicit build option.
 
-测试入口为 `src/xsim/test.sh`；`tests/validate.sh` 提供隔离构建与 ROS 集成检查。
+The test entry is `src/xsim/test.sh`; `tests/validate.sh` provides an isolated build and the ROS integration checks.

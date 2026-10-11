@@ -3,11 +3,19 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 
-#include <xgc-robotics-interfaces/control_records_v1.h>
-
 namespace xgc_lightweight {
+
+// The numbers of a mavros_msgs/PositionTarget as the ROS boundary received them (ENU or body FLU, no
+// conversion). Private to xsim: it is handed from the ROS callback to the world thread and never serialised.
+struct PositionTarget {
+  double position[3]{}, velocity[3]{}, acceleration[3]{};
+  double yaw = 0, yaw_rate = 0;
+  uint16_t type_mask = 0; // PositionTarget IGNORE_* bits
+  uint8_t coordinate_frame = 0;
+};
 
 struct MaskedPva {
   Eigen::Vector3d position{Eigen::Vector3d::Constant(std::numeric_limits<double>::quiet_NaN())};
@@ -39,7 +47,7 @@ struct MaskedPva {
 // are controllable. PositionControl.cpp:91-105/189-207 independently checks XY
 // pairing, setpoint/state pairs and finite resulting acceleration/thrust. This
 // decoder must not merge those checks into receiver validity or change a timer.
-inline MaskedPva decodePositionTarget(const xgc_position_target_v1 &wire,
+inline MaskedPva decodePositionTarget(const PositionTarget &wire,
                                      const Eigen::Quaterniond &actual_orientation,
                                      double actual_yaw) noexcept {
   MaskedPva out;

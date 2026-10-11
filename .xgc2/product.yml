@@ -11,11 +11,11 @@ apt:
   distribution: focal
   install: [xsim]
   packages: [xsim]
-  depends: [ros-noetic-roscpp, ros-noetic-mavros-msgs, ros-noetic-rosgraph-msgs, libglfw3, libxgc2-xrpc1]
+  depends: [ros-noetic-roscpp, ros-noetic-mavros-msgs, ros-noetic-rosgraph-msgs, libglfw3, libxgc2-xrpc1, libxgc2-chassis-hold1]
 usage:
   install: sudo apt install xsim
   smoke_test: /opt/xgc2/xsim/bin/xsim --help
-  notes: Source Noetic before direct CLI use. One frozen Experiment supplies the actual Session epoch; one explicit shared bootstrap supplies the private native RPC binding. GPU has no CPU fallback. The sensor implementation is built from the explicit ros1/common/scene checkout, never copied into this owner.
+  notes: Source Noetic before direct CLI use. One frozen Experiment supplies the actual Session epoch; one explicit shared bootstrap supplies the private native RPC binding. GPU has no CPU fallback. The management socket also serves the xgc2.chassis.hold capability for the Scout and Mecanum entities (POST /v1/call/xgc2.chassis.hold/<Method>). The sensor implementation is built from the explicit ros1/common/scene checkout, never copied into this owner.
 ownership:
   paths:
   - /opt/xgc2/xsim
@@ -24,10 +24,10 @@ release:
   ref: main
   workflow: release.yml
   ci_workflow: ci.yml
-  requires: [libxgc2-math-dev, libxgc2-robotics-interfaces-dev, xgc2-xrpc]
+  requires: [libxgc2-math-dev, libxgc2-chassis-hold-dev, xgc2-xrpc]
   dependency_policy:
     xgc2-xrpc: rebuild
     libxgc2-math-dev: verify
-    libxgc2-robotics-interfaces-dev: rebuild
+    libxgc2-chassis-hold-dev: rebuild
   apt_versions:
     focal: 1.1.0-3

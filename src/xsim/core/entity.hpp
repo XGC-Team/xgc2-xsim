@@ -6,8 +6,12 @@ namespace xsim {
 struct EntityIO;
 struct Sensor;
 struct Entity {
-  explicit Entity(Config c) : config(std::move(c)) {}
+  // `identity` is the name the management API and the HOLD roster know the entity by; the entity name when
+  // empty (headless worlds and fixtures).
+  explicit Entity(Config c, std::string identity = {})
+      : config(std::move(c)), public_id(identity.empty() ? config.name : std::move(identity)) {}
   const Config config;
+  const std::string public_id;
   uint64_t id = 0;
   // Written only at world boundaries; callback/output projections use atomics.
   std::atomic<uint64_t> generation{0};

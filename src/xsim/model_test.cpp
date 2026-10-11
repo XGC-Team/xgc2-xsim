@@ -116,7 +116,7 @@ int main() {
   assert(std::abs(model.state().position.z() - 0.15) < 1e-12);
 
   // Decoder reception and PositionControl admissibility are independent.
-  xgc_position_target_v1 wire{};
+  PositionTarget wire{};
   wire.coordinate_frame = 1;
   wire.type_mask = 2u | 56u | 448u | 1024u | 2048u;
   wire.position[0] = 1; wire.position[1] = 2; wire.position[2] = 3;

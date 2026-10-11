@@ -25,5 +25,7 @@ struct RuntimeIO {
                      const std::shared_ptr<const TelemetryRates> &)> publish_entities;
   std::function<void()> start_outputs, stop_outputs;
   std::function<Json()> publication_status;
+  // Facts about the IO dependencies of this world for the readiness contract (describe `facts`).
+  std::function<Json()> facts;
 };
 } // namespace xsim

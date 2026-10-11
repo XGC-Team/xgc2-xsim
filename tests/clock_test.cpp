@@ -1,5 +1,6 @@
 #include "core/physics_clock.hpp"
 #include "core/world.hpp"
+#include <atomic>
 #include <cassert>
 #include <future>
 #include <iostream>
@@ -10,16 +11,28 @@ namespace {
 class BoundaryGate {
 public:
   explicit BoundaryGate(World &world) {
-    auto arrived = std::make_shared<std::promise<void>>();
-    arrival_ = arrived->get_future();
+    const auto creator = std::this_thread::get_id();
     auto release = release_.get_future().share();
-    Ticket ticket(new Command, [arrived, release](Command *command) {
-      delete command;
-      arrived->set_value();
-      release.wait();
-    });
-    ticket->op = Op::Provider; // Unknown entity: no world state change.
-    world.submit(ticket);
+    for (;;) {
+      auto arrived = std::make_shared<std::promise<void>>();
+      auto released_here = std::make_shared<std::atomic<bool>>(false);
+      arrival_ = arrived->get_future();
+      Ticket ticket(new Command, [arrived, release, creator, released_here](Command *command) {
+        delete command;
+        // Only the world thread may be held. A loaded machine can let it process the ticket before this thread
+        // drops its own reference; then nothing is held here and the gate is built again.
+        if (std::this_thread::get_id() == creator) {
+          *released_here = true;
+          return;
+        }
+        arrived->set_value();
+        release.wait();
+      });
+      ticket->op = Op::Provider; // Unknown entity: no world state change.
+      world.submit(ticket);
+      ticket.reset();
+      if (!*released_here) return;
+    }
   }
   ~BoundaryGate() { open(); }
   void wait() { assert(arrival_.wait_for(std::chrono::seconds(5)) == std::future_status::ready); }

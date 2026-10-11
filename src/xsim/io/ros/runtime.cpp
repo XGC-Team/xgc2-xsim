@@ -169,6 +169,7 @@ RuntimeIO make_ros_io(const Json &config, World &world, Sensors &sensors) {
   io.publish_entities = [runtime](const std::shared_ptr<const Frame> &frame,
                                   const std::shared_ptr<const TelemetryRates> &rates) { runtime->submit(frame, rates); };
   io.publication_status = [runtime] { return runtime->status(); };
+  io.facts = [] { return Json{{"ros_master_uri", ros::master::getURI()}}; };
   return io;
 }
 } // namespace xsim
