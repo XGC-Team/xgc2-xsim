@@ -1,0 +1,58 @@
+{
+  "repository": "https://github.com/hku-mars/MARSIM",
+  "branch_at_audit": "ubuntu20",
+  "commit": "2a287bb196eb35375636c3aa6ac6c6be45ebb1f3",
+  "license": "GPL-2.0 (upstream LICENSE preserved)",
+  "files": [
+    {
+      "path": "local_sensing/include/opengl_sim.hpp",
+      "sha256": "bc2b84f3450999515ede344d3697b2f91c76260956fc9580146c13fd3acc4338",
+      "url": "https://raw.githubusercontent.com/hku-mars/MARSIM/2a287bb196eb35375636c3aa6ac6c6be45ebb1f3/local_sensing/include/opengl_sim.hpp"
+    },
+    {
+      "path": "local_sensing/include/shader_m.h",
+      "sha256": "4115bcdaaf87730ded551ead1287e8917df0299d7a308333acb282d8228874b7",
+      "url": "https://raw.githubusercontent.com/hku-mars/MARSIM/2a287bb196eb35375636c3aa6ac6c6be45ebb1f3/local_sensing/include/shader_m.h"
+    },
+    {
+      "path": "local_sensing/include/360camera.vs",
+      "sha256": "2f17773296066f9572c6042d316c2a4a028f6788f485963bad120a93b5416316",
+      "url": "https://raw.githubusercontent.com/hku-mars/MARSIM/2a287bb196eb35375636c3aa6ac6c6be45ebb1f3/local_sensing/include/360camera.vs"
+    },
+    {
+      "path": "local_sensing/include/camera.fs",
+      "sha256": "9a30af1f820fa96cb321299baf733ea982881c7bae9b2df707eea0dd56d826c0",
+      "url": "https://raw.githubusercontent.com/hku-mars/MARSIM/2a287bb196eb35375636c3aa6ac6c6be45ebb1f3/local_sensing/include/camera.fs"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+      "url": "https://raw.githubusercontent.com/hku-mars/MARSIM/2a287bb196eb35375636c3aa6ac6c6be45ebb1f3/LICENSE"
+    },
+    {
+      "path": "local_sensing/include/glad/glad.h",
+      "sha256": "83ac58d5e5c25042ed2512418f0920f2bff74c3b9561ea8a77ca614490cf81c2",
+      "url": "https://raw.githubusercontent.com/hku-mars/MARSIM/2a287bb196eb35375636c3aa6ac6c6be45ebb1f3/local_sensing/include/glad/glad.h"
+    },
+    {
+      "path": "local_sensing/include/glad.c",
+      "sha256": "e56be82db3fac82d62626acd47b2dd0aa0ba8ecf2c95b3ef8e3465b67a42e5df",
+      "url": "https://raw.githubusercontent.com/hku-mars/MARSIM/2a287bb196eb35375636c3aa6ac6c6be45ebb1f3/local_sensing/include/glad.c"
+    },
+    {
+      "path": "local_sensing/include/FOV_Checker/FOV_Checker.h",
+      "sha256": "98352e7ec86b14e3bd0e311c2b92565f6c57510468879d21019dcd34fcc4fba6",
+      "url": "https://raw.githubusercontent.com/hku-mars/MARSIM/2a287bb196eb35375636c3aa6ac6c6be45ebb1f3/local_sensing/include/FOV_Checker/FOV_Checker.h"
+    },
+    {
+      "path": "local_sensing/include/FOV_Checker/FOV_Checker.cpp",
+      "sha256": "c507fe722bac14b1ef49f00cf456516b44aae04ec2818c2dbc8c6de8422d65af",
+      "url": "https://raw.githubusercontent.com/hku-mars/MARSIM/2a287bb196eb35375636c3aa6ac6c6be45ebb1f3/local_sensing/include/FOV_Checker/FOV_Checker.cpp"
+    },
+    {
+      "path": "local_sensing/include/ikd-Tree/ikd_Tree.h",
+      "sha256": "740c47d43a564b9b294cbe21793f94312335a157e7c9e022a24101e9b5106d7f",
+      "url": "https://raw.githubusercontent.com/hku-mars/MARSIM/2a287bb196eb35375636c3aa6ac6c6be45ebb1f3/local_sensing/include/ikd-Tree/ikd_Tree.h"
+    }
+  ]
+}

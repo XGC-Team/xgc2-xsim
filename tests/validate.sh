@@ -15,7 +15,7 @@ cleanup() { docker stop --time 10 "$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
 {
   git -C "$owner" rev-parse HEAD
-  git -C "$products/ros1/common/scene" rev-parse HEAD
+  git -C "$products/common/math" rev-parse HEAD
   git -C "$products/common/chassis-hold" rev-parse HEAD
   docker image inspect "$image" --format '{{.Id}}'
 } > "$output/provenance.txt"
@@ -31,12 +31,13 @@ cmake -S /source/common/chassis-hold -B /work/hold -DCMAKE_INSTALL_PREFIX=/work/
   -DXGC2_CHASSIS_HOLD_BUILD_HTTP=ON -DBUILD_TESTING=OFF
 cmake --build /work/hold -j1
 cmake --install /work/hold
-cmake -S /source/ros1/common/scene/sensors/world_lidar/library -B /work/lidar -DCMAKE_INSTALL_PREFIX=/work/install -DCMAKE_BUILD_TYPE=Release
-cmake --build /work/lidar -j1
-cmake --install /work/lidar
+cmake -S /source/common/math -B /work/math -DCMAKE_INSTALL_PREFIX=/work/install -DCMAKE_BUILD_TYPE=Release -DXGC2_MATH_BUILD_TESTING=OFF
+cmake --build /work/math -j2
+cmake --install /work/math
+test -f /work/install/include/xgc2_math/scene.hpp
 cmake -S "$sim/src/xsim" -B /work/xsim \
   -DCMAKE_PREFIX_PATH='/work/install;/opt/ros/noetic' -DCMAKE_INSTALL_PREFIX=/work/install \
-  -DCMAKE_BUILD_TYPE=Release -DXGC2_MATH_INCLUDE=/source/common/math/include \
+  -DCMAKE_BUILD_TYPE=Release -DXGC2_MATH_INCLUDE=/work/install/include \
   -DFS150_ASSET_SOURCE_ROOT=/source/ros1/simulator/gazebo-sim/fs150-sitl \
   -DXSIM_ROS=ON -DXSIM_TESTS=ON -DPYTHON_EXECUTABLE=/usr/bin/python3
 cmake --build /work/xsim -j1

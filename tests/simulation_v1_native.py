@@ -87,7 +87,7 @@ def main():
                 if process.poll() is not None:
                     raise AssertionError(log_path.read_text(errors="replace"))
                 try:
-                    code, description = call("GET", "/v1/describe", bound=False)
+                    code, description = call("GET", "/v1/describe?wait_ready_ms=5000", bound=False, timeout_ms=6000)
                     if code == 200:
                         instance = description["service_ref"]["instance_id"]
                         code, health = call("GET", "/v1/health")

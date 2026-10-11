@@ -1,25 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# == 2 ]] || { echo 'usage: check_native_contracts.sh SCENE_SOURCE FS150_ASSET_SOURCE' >&2; exit 2; }
+[[ $# == 1 ]] || { echo 'usage: check_native_contracts.sh FS150_ASSET_SOURCE' >&2; exit 2; }
 sim_source="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-scene_source="$(realpath "$1")"
-fs150_source="$(realpath "$2")"
-[[ -f "$scene_source/sensors/world_lidar/library/CMakeLists.txt" && -f "$fs150_source/scripts/generate_native_flight_model.py" ]] || { echo 'the owning scene and FS150 sources are required' >&2; exit 2; }
+fs150_source="$(realpath "$1")"
+[[ -f "$fs150_source/scripts/generate_native_flight_model.py" && -f "${XGC2_MATH_INCLUDE:-/usr/include}/xgc2_math/scene.hpp" ]] || { echo 'FS150 assets and installed Math 0.6.0 scene headers are required' >&2; exit 2; }
 native_build="$(mktemp -d /tmp/xgc2-xsim-native.XXXXXX)"
 trap 'rm -rf -- "$native_build"' EXIT
 native_prefix="${CMAKE_PREFIX_PATH:-}"
 
-# A private CPU-only dependency prefix keeps this check separate from the ROS/GPU package.
-cmake -S "$scene_source/sensors/world_lidar/library" -B "$native_build/geometry" \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$native_build/install" \
-  -DXGC_WORLD_LIDAR_GPU=OFF
-cmake --build "$native_build/geometry" --target world_lidar --parallel 2
-cmake --install "$native_build/geometry"
 cmake -S "$sim_source/src/xsim" -B "$native_build/server" \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$native_build/install;${native_prefix//:/;}" \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${native_prefix//:/;}" \
   -DXGC2_MATH_INCLUDE="${XGC2_MATH_INCLUDE:-/usr/include}" \
   -DFS150_ASSET_SOURCE_ROOT="$fs150_source" \
-  -DXSIM_ROS=OFF -DXSIM_GPU=OFF -DXSIM_TESTS=ON
+  -DXSIM_ROS=OFF -DXSIM_TESTS=ON
 # These Python integration checks only need xsim; the package build runs the C++ suite.
 cmake --build "$native_build/server" --target xsim --parallel 2
 (

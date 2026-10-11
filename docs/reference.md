@@ -4,22 +4,18 @@
 
 ## Build, install and packaging
 
-Requires C++17, CMake 3.16, Eigen3, nlohmann-json, yaml-cpp, Python3, the xgc2-math headers, the XRPC SDK (`XgcXrpc`, components `http` and `bootstrap`), the chassis HOLD library (`XgcChassisHold`, components `core` and `http`) and the FS150 SITL assets. The default `XSIM_ROS=ON` also needs the ROS Noetic packages `roscpp`, `geometry_msgs`, `sensor_msgs`, `nav_msgs`, `rosgraph_msgs` and `mavros_msgs`. Install the sensor library `scene/sensors/world_lidar/library` into the chosen prefix first.
+Requires C++17, CMake 3.16, Eigen3, nlohmann-json, yaml-cpp, Python3, the xgc2-math 0.6.0 or later scene headers, the XRPC SDK (`XgcXrpc`, components `http` and `bootstrap`), the chassis HOLD library (`XgcChassisHold` 0.2.0, components `core` and `http`) and the FS150 SITL assets. The default `XSIM_ROS=ON` also needs the ROS Noetic packages `roscpp`, `geometry_msgs`, `sensor_msgs`, `nav_msgs`, `rosgraph_msgs` and `mavros_msgs`.
 
 The following commands run in the xsim repository root; replace `/private` and the source placeholder paths with real directories.
 
 ```sh
-cmake -S ../../common/scene/sensors/world_lidar/library -B /private/lidar-build \
-  -DCMAKE_INSTALL_PREFIX=/private/install -DCMAKE_BUILD_TYPE=Release
-cmake --build /private/lidar-build -j1
-cmake --install /private/lidar-build
 cmake -S src/xsim -B /private/xsim-build \
   -DCMAKE_PREFIX_PATH='/private/install;/opt/ros/noetic' \
   -DCMAKE_INSTALL_PREFIX=/private/install \
   -DXGC2_MATH_INCLUDE=/path/to/math/include \
   -DFS150_ASSET_SOURCE_ROOT=/path/to/gazebo-sim/fs150-sitl \
   -DCMAKE_BUILD_TYPE=Release -DXSIM_TESTS=ON
-cmake --build /private/xsim-build -j1
+cmake --build /private/xsim-build -j2
 (cd /private/xsim-build && ctest --output-on-failure)
 cmake --install /private/xsim-build
 cpack --config /private/xsim-build/CPackConfig.cmake
@@ -27,9 +23,20 @@ cpack --config /private/xsim-build/CPackConfig.cmake
 
 `XSIM_ROS=OFF` builds the same world, robot and sensor systems and the native Unix server without finding or linking ROS. `XSIM_TESTS=ON` enables the model, world and chassis HOLD checks. The build without ROS also runs the Python checks of the running server: `xsim_cli_config`, `xsim_simulation_v1` and `xsim_chassis_hold_native` (HOLD and readiness over the management socket). The build with ROS runs `xsim_chassis_hold_ros`, which starts its own `roscore` on a private port and needs ROS Noetic's `roscore` and `rospy`. `XSIM_ROS=OFF ./src/xsim/test.sh` selects the build without ROS.
 
-The installed program is `bin/xsim`; the configuration, the record of the FS150 asset origin and the documentation are in `share/xsim`. The product-owned `xsim-world` process definition is installed to `/usr/share/xgc2/process-definitions/xsim-world.json`. The archive package contains xsim; the external ROS and geometry dependencies must be installed separately.
+The installed program is `bin/xsim`; the configuration, the record of the FS150 asset origin and the documentation are in `share/xsim`. The product-owned `xsim-world` process definition is installed to `/usr/share/xgc2/process-definitions/xsim-world.json`. The archive package contains xsim; the external ROS, XRPC and chassis HOLD runtime dependencies must be installed separately.
 
-The GPU backend requires the sensor library built with `XGC_WORLD_LIDAR_GPU=ON`, xsim built with `XSIM_GPU=ON`, and PCL, OpenCV, OpenGL, GLFW, GLM, OpenMP and a real GPU/GL context that is usable at run time. When the backend is unavailable it fails explicitly and does not fall back to the CPU. The license of the GPL GPU renderer is installed with the shader assets.
+The GPU backend loads the optional `xsim-lidar-gpu` package through ABI 1. The core links no GPL renderer or graphics libraries. The module needs PCL, OpenCV, OpenGL, GLFW, GLM and OpenMP at build time, and a real GPU/GL context at run time. Build it separately:
+
+```sh
+cmake -S src/xsim-lidar-gpu -B /private/gpu-build \
+  -DCMAKE_INSTALL_PREFIX=/private/install -DCMAKE_BUILD_TYPE=Release \
+  -DXGC2_MATH_INCLUDE=/path/to/math/include
+cmake --build /private/gpu-build -j2
+(cd /private/gpu-build && ctest --output-on-failure)
+cmake --install /private/gpu-build
+```
+
+The loader uses `XSIM_LIDAR_GPU_MODULE` when set, otherwise `<executable directory>/../lib/xsim/libxsim-lidar-gpu.so`. A missing module, ABI mismatch or unavailable GPU fails explicitly with no CPU fallback. One `xsim-gpu` thread owns creation, scans and destruction for the shared static map/context. The module installs its GPL license, pinned source, patch and shader assets under `share/xsim-lidar-gpu`. The real-GPU reference executable is built with the module tests; run it only on hardware with a display. Debian packaging produces `xsim` and `xsim-lidar-gpu`; `xsim` suggests the module and has no GLFW dependency.
 
 ## Process and world configuration
 
@@ -193,7 +200,7 @@ The accepted/running result of a mutation does not mean completion. The caller w
 
 `GET /v1/describe` carries `service` (`xgc2.simulation`), `api_version`, `instance_id`, `ready` and `facts` next to the simulation document. `ready` is true when the native health is `ready` and the output thread has delivered a world frame. `facts` holds `world_generation` (always `1`: xsim loads one world when the process starts, and another world is another process with another `instance_id`), `frames_flowing`, `health` (the state of `/v1/health`), `capabilities` (the capabilities served by method calls, with their entities) and, in a build with ROS IO, `ros_master_uri`, the master the node is bound to.
 
-The query `wait_ready_ms=<0..30000>` holds the reply without polling until the service is ready, the wait elapses, the XRPC deadline of the call passes or the process starts to stop, and then answers with the current describe; `0`, no query or a ready service answers at once. Any other query on describe is `invalid_argument`, a query on another route is an unknown route, and at most 32 calls can be held (`resource_exhausted` beyond). XRPC treats a describe call that carries a query as a bound call, not as the unbound discovery route: send the `instance_id` of an unbound `GET /v1/describe` with it.
+The query `wait_ready_ms=<0..30000>` holds the reply without polling until the service is ready, the wait elapses, the XRPC deadline of the call passes or the process starts to stop, and then answers with the current describe; `0`, no query or a ready service answers at once. Any other query on describe is `invalid_argument`, a query on another route is an unknown route, and at most 32 calls can be held (`resource_exhausted` beyond). XRPC 0.2.0 matches discovery by path only, so `GET /v1/describe?wait_ready_ms=N` is an unbound discovery call and needs no instance header.
 
 ### Capability calls and chassis HOLD
 

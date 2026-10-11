@@ -1,0 +1,141 @@
+--- a/local_sensing/include/opengl_sim.hpp
++++ b/local_sensing/include/opengl_sim.hpp
+@@ -62,8 +62,10 @@
+ class opengl_pointcloud_render
+ {
+     public:
+-    opengl_pointcloud_render(){};
++    opengl_pointcloud_render(){ourShader.ID = 0;};
+     void read_pointcloud_fromfile(std::string map_filename);
++    // One immutable world per renderer; input is already in world coordinates.
++    bool read_pointcloud_frommemory(const pcl::PointCloud<PointType>& world_cloud);
+     ~opengl_pointcloud_render();
+     void setParameters(int width, int height, float fx, float fy, float downsample_res, float polar_res_, float yaw_fov_,\
+                  float vertical_fov_,float near,float far,int sensing_rate,int use_avia_pattern, int use_os128_pattern, int use_minicf_pattern);
+@@ -83,8 +85,10 @@
+     float u0 = width*0.5;
+     float v0 = width*0.5;
+     glm::mat4 projection, view;
+-    unsigned int VBO, VAO, EBO;
+-    GLFWwindow* window;
++    unsigned int VBO = 0, VAO = 0, EBO = 0;
++    GLFWwindow* window = nullptr;
++    bool glfw_started = false;
++    bool glad_initialized = false;
+     Shader ourShader;
+ 
+     int use_avia_pattern = 0;
+@@ -157,6 +161,8 @@
+     void load_normal_file(std::string file_name, pcl::PointCloud<pcl::Normal>& normal_ptcloud);
+     inline void glDrawColouredCube_atrandompos(Eigen::Vector3f pos, double length);
+     void HSV2BGR(HSV &hsv, BGR &bgr);
++    bool initialize_context();
++    void upload_pointcloud_data();
+     void init_pointcloud_data();
+     inline void glDrawColouredCube_alpha(GLfloat axis_min, GLfloat axis_max, float alpha);
+     template<typename T>
+@@ -272,11 +278,18 @@
+ //     glViewport(0, 0, screen_width, screen_height);
+ // }
+ 
+-void opengl_pointcloud_render::read_pointcloud_fromfile(std::string map_filename){
++bool opengl_pointcloud_render::initialize_context(){
+ 
+     // glfw: initialize and configure
+     // ------------------------------
+-    glfwInit();
++    if (glfw_started)
++    {
++        std::cerr << "MARSIM renderer already initialized" << std::endl;
++        return false;
++    }
++    if (!glfwInit())
++        return false;
++    glfw_started = true;
+     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
+     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+@@ -294,7 +307,8 @@
+     {
+         std::cout << "Failed to create GLFW window" << std::endl;
+         glfwTerminate();
+-        return ;
++        glfw_started = false;
++        return false;
+     }
+     glfwMakeContextCurrent(window);
+     // glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+@@ -309,8 +323,10 @@
+     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+     {
+         std::cout << "Failed to initialize GLAD" << std::endl;
+-        return ;
+-    }
++        return false;
++    }
++
++    glad_initialized = true;
+ 
+     // configure global opengl state
+     // -----------------------------
+@@ -337,6 +353,15 @@
+ 
+     std::cout << "shader path = " << vertex_path << std::endl;;
+ 
++    GLint linked = GL_FALSE;
++    glGetProgramiv(ourShader.ID, GL_LINK_STATUS, &linked);
++    return linked == GL_TRUE;
++}
++
++void opengl_pointcloud_render::read_pointcloud_fromfile(std::string map_filename){
++    if (!initialize_context())
++        return;
++
+     // std::cout << "You Pushed a button, now open file: " << a_string.Get() << endl;
+     load_pcd_file( map_filename ,cloud_color_mesh);
+ 
+@@ -420,6 +445,19 @@
+         }    
+     }
+ 
++    upload_pointcloud_data();
++}
++
++bool opengl_pointcloud_render::read_pointcloud_frommemory(const pcl::PointCloud<PointType>& world_cloud){
++    if (!initialize_context())
++        return false;
++
++    cloud_color_mesh = world_cloud;
++    upload_pointcloud_data();
++    return true;
++}
++
++void opengl_pointcloud_render::upload_pointcloud_data(){
+     init_pointcloud_data();
+     // preprocess(cloud_color_mesh,all_normals);
+     cout << "Load data finish " << endl;
+@@ -450,11 +488,19 @@
+ }
+ 
+ opengl_pointcloud_render::~opengl_pointcloud_render(){
+-
+-    glDeleteVertexArrays(1, &VAO);
+-    glDeleteBuffers(1, &VBO);
+-    
+-    glfwTerminate();
++    // GLFW is process-global. The consumer owns the sole instance and GL thread.
++    if (window != nullptr && glad_initialized)
++    {
++        glfwMakeContextCurrent(window);
++        glDeleteVertexArrays(1, &VAO);
++        glDeleteBuffers(1, &VBO);
++        glDeleteBuffers(1, &EBO);
++        glDeleteProgram(ourShader.ID);
++    }
++    if (window != nullptr)
++        glfwDestroyWindow(window);
++    if (glfw_started)
++        glfwTerminate();
+ }
+ 
+ void opengl_pointcloud_render::render_pointcloud(pcl::PointCloud<PointType>::Ptr output_pointcloud, Eigen::Vector3f camera_pos, \

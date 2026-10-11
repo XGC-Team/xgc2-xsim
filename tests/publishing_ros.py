@@ -19,7 +19,7 @@ import time
 import xmlrpc.client
 from xmlrpc.server import SimpleXMLRPCServer
 
-from native_http import NativeProvider, UnixHTTP
+from native_http import UnixHTTP
 
 
 U32 = struct.Struct('<I')
@@ -260,7 +260,7 @@ def publication_delta(before, after, elapsed):
 
 
 def window(receiver, api, pid, duration):
-    start_messages, start_status = receiver.snapshot(), api.get('/status')
+    start_messages, start_status = receiver.snapshot(), api.get('/v1/world')['diagnostics']
     start_cpu, fixture_cpu, started = process_sample(pid), time.process_time(), time.monotonic()
     resources = [start_cpu]
     while time.monotonic() - started < duration:
@@ -268,7 +268,7 @@ def window(receiver, api, pid, duration):
         resources.append(process_sample(pid))
         assert receiver.error is None, receiver.error
     ended, fixture_end_cpu = time.monotonic(), time.process_time()
-    end_messages, end_status = receiver.snapshot(), api.get('/status')
+    end_messages, end_status = receiver.snapshot(), api.get('/v1/world')['diagnostics']
     elapsed = ended - started
     topics, groups = {}, collections.defaultdict(lambda: {'messages': 0, 'payload_bytes': 0,
                                                          'wall_hz_sum': 0, 'topics': 0})
@@ -320,14 +320,20 @@ def window(receiver, api, pid, duration):
 
 
 class Api:
-    def __init__(self, path, instance):
-        self.path, self.instance, self.serial = path, instance, 0
+    def __init__(self, path):
+        self.path, self.instance, self.serial = path, None, 0
+        self.instance = self.get('/v1/describe')['service_ref']['instance_id']
 
     def request(self, method, path, body=None):
+        self.serial += 1
+        headers = {'Content-Type': 'application/json', 'X-Xrpc-Timeout-Ms': '5000',
+                   'X-Request-ID': 'publishing-' + str(self.serial)}
+        if self.instance:
+            headers['X-Xrpc-Instance-ID'] = self.instance
         connection = UnixHTTP(self.path)
         try:
             connection.request(method, path, None if body is None else json.dumps(body),
-                               {'Content-Type': 'application/json'})
+                               headers)
             response = connection.getresponse()
             return response.status, json.loads(response.read())
         finally:
@@ -338,18 +344,15 @@ class Api:
         assert code == 200, (code, result)
         return result
 
-    def mutate(self, path, extra=None, method='POST', success=True):
-        self.serial += 1
-        request_id = 'publishing-' + str(self.serial)
-        code, result = self.request(method, path, {'instance_id': self.instance,
-                                    'request_id': request_id, **(extra or {})})
-        assert code == 202, (code, result)
+    def mutate(self, path, extra=None, method='POST'):
+        code, result = self.request(method, path, {'operation_timeout_ms': 5000, **(extra or {})})
+        assert code in (200, 201, 202), (code, result)
         def terminal():
-            receipt = self.get('/requests/' + request_id)
-            return receipt if receipt['phase'] in ('applied', 'failed', 'cancelled') else None
+            receipt = self.get('/v1/operations/' + result['id'])
+            return receipt if receipt['state'] in ('succeeded', 'failed', 'cancelled') else None
         receipt = until(terminal, path)
-        assert receipt['phase'] == 'applied' and receipt['result']['success'] == success, receipt
-        return receipt['result']
+        assert receipt['state'] == 'succeeded', receipt
+        return receipt
 
 
 def topic_specs(count):
@@ -373,22 +376,26 @@ def topic_specs(count):
     return specs
 
 
-def lifecycle(receiver, api, socket_path):
+def lifecycle(receiver, api):
     from geometry_msgs.msg import PoseStamped, TwistStamped
-    api.mutate('/pause')
-    frozen = api.get('/status')['simulation_time_ns']
+    api.mutate('/v1/world/pause')
+    frozen = api.get('/v1/world')['diagnostics']['simulation_time_ns']
     time.sleep(.6)
     first = receiver.snapshot(); time.sleep(.4); second = receiver.snapshot()
-    assert api.get('/status')['simulation_time_ns'] == frozen
+    assert api.get('/v1/world')['diagnostics']['simulation_time_ns'] == frozen
     assert all(first[t]['messages'] == second[t]['messages'] for t in first), 'paused samples repeated'
-    provider = NativeProvider(socket_path, 'robot000')
-    assert provider.read()['generation'] == 1
-    assert provider.stop(1)['success']
-    reset = api.mutate('/reset', {'entity_id': provider.entity_id, 'generation': 1})
-    assert reset['generation'] == 2 and not reset['enabled'], reset
-    assert not provider.start(1)['success'], 'stale generation start succeeded'
-    assert provider.start(2)['generation'] == 3
-    started = time.monotonic(); receiver.anchor(frozen, started); api.mutate('/resume')
+    entity_path = '/v1/entities/robot000'
+    ref = api.get(entity_path)['ref']
+    api.mutate(entity_path + '/state', {'generation': ref['generation'], 'state': {'enabled': False}})
+    api.mutate(entity_path + '/reset', {'generation': ref['generation']})
+    reset = api.get(entity_path)
+    assert reset['ref'] == ref and not reset['state']['enabled'], reset
+    code, stale = api.request('POST', entity_path + '/state',
+                              {'operation_timeout_ms': 5000, 'generation': ref['generation'] + 1,
+                               'state': {'enabled': True}})
+    assert code == 409, ('stale generation start succeeded', code, stale)
+    api.mutate(entity_path + '/state', {'generation': ref['generation'], 'state': {'enabled': True}})
+    started = time.monotonic(); receiver.anchor(frozen, started); api.mutate('/v1/world/resume')
     def new_measurements():
         snapshot = receiver.snapshot()
         return all(snapshot[topic]['last_stamp_ns'] > frozen for topic in ('/robot000/pose', '/robot000/twist'))
@@ -398,16 +405,16 @@ def lifecycle(receiver, api, socket_path):
     twist = TwistStamped();twist.deserialize(snapshot['/robot000/twist']['latest'])
     assert pose.header.frame_id == twist.header.frame_id == 'world'
     assert pose.header.stamp.to_nsec() > frozen and twist.header.stamp.to_nsec() > frozen
-    assert provider.read()['generation'] == 3
-    api.mutate('/entities/' + str(provider.entity_id), {'generation': 3}, method='DELETE')
-    assert not any(e['id'] == provider.entity_id for e in api.get('/entities')['entities'])
+    assert api.get(entity_path)['ref'] == ref
+    api.mutate(entity_path, {'generation': ref['generation']}, method='DELETE')
+    assert not any(e['ref']['id'] == ref['id'] for e in api.get('/v1/entities')['entities'])
     time.sleep(.5); first = receiver.snapshot(); time.sleep(.3); second = receiver.snapshot()
     assert all(first[t]['messages'] == second[t]['messages'] for t in first if t.startswith('/robot000/'))
     assert second['/robot001/pose']['messages'] > first['/robot001/pose']['messages']
-    api.mutate('/pause')
-    return {'pause_samples_stable': True, 'reset_generation': 2, 'restart_generation': 3,
+    api.mutate('/v1/world/pause')
+    return {'pause_samples_stable': True, 'reset_generation': ref['generation'], 'restart_generation': ref['generation'],
             'stale_start_rejected': True, 'removed_topics_stable': True, 'remaining_pose_continues': True,
-            'ros_generation_note': 'Generation is asserted via native roster/receipt; ROS messages do not carry generation.'}
+            'ros_generation_note': 'Public EntityRef generation is stable through reset/start and checked via v1; ROS messages do not carry generation.'}
 
 
 def verify_windows(steady, congested, recovered, args):
@@ -444,6 +451,7 @@ def verify_windows(steady, congested, recovered, args):
 
 def run(args):
     out = Path(args.output);out.mkdir(parents=True, exist_ok=True)
+    out.chmod(0o700)
     nofile, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
     assert nofile >= args.count * 11 + 64, ('TCPROS benchmark needs --ulimit nofile=4096:4096', nofile)
     with socket.socket() as available:
@@ -475,21 +483,34 @@ def run(args):
                                            'v_fov_deg': 90, 'h_fov_deg': 360, 'range': 20,
                                            'translation': [0,0,1], 'world_bodies': False, 'noise_std': 0}}
                                for index in range(args.count)]}
+        if args.scene:
+            config['scene'] = json.loads(Path(args.scene).read_text())
         (out/'world.json').write_text(json.dumps(config, indent=2)+'\n')
+        (out/'world.json').chmod(0o600)
         socket_path = str(out/'world.sock')
-        server = spawn([args.xsim, '--config', str(out/'world.json'), '--socket', socket_path], 'xsim.log')
+        bootstrap = {'schema_version': 1, 'binding': {'schema_version': 1, 'target_id': 'publishing:world',
+                     'service': 'xgc2.simulation', 'api_version': 'v1', 'profile': 'http.v1',
+                     'endpoint': {'kind': 'unix', 'address': socket_path}, 'runtime_grant': 'publishing:runtime',
+                     'authentication': 'local_private', 'secret_handles': {},
+                     'storage_grants': ['publishing:ros-home', 'publishing:ros-log']}, 'grants': {},
+                     'application': {'rosHomeGrant': 'publishing:ros-home', 'rosLogGrant': 'publishing:ros-log'}}
+        (out/'bootstrap.json').write_text(json.dumps(bootstrap))
+        (out/'bootstrap.json').chmod(0o600)
+        server = spawn([args.xsim, '--bootstrap-input', str(out/'bootstrap.json'),
+                        '--config', str(out/'world.json')], 'xsim.log')
         until(lambda: server.poll() is None and Path(socket_path).exists(), 'xsim native socket', 60)
-        api = Api(socket_path, config['instance_id'])
+        api = Api(socket_path)
         if args.require_publication:
-            assert 'publication' in api.get('/status'), 'publication status is required'
-        roster = api.get('/entities')['entities']
+            assert 'publication' in api.get('/v1/world')['diagnostics'], 'publication status is required'
+        roster = api.get('/v1/entities')['entities']
         assert len(roster) == args.count
         receiver = RosReceiver(os.environ['ROS_MASTER_URI'], topic_specs(args.count))
         for topic in receiver.specs:receiver.connect(topic)
         for entity in roster:
-            api.mutate('/entities/%d/provider' % entity['id'], {'generation': 0, 'action': 'start', 'timeout_ms': 5000})
-        frozen = api.get('/status')['simulation_time_ns']
-        receiver.anchor(frozen, time.monotonic());api.mutate('/resume')
+            ref = entity['ref']
+            api.mutate('/v1/entities/%s/state' % ref['id'], {'generation': ref['generation'], 'state': {'enabled': True}})
+        frozen = api.get('/v1/world')['diagnostics']['simulation_time_ns']
+        receiver.anchor(frozen, time.monotonic());api.mutate('/v1/world/resume')
         def receiving():
             snapshot = receiver.snapshot()
             return all(stats['messages'] for stats in snapshot.values())
@@ -509,7 +530,7 @@ def run(args):
         time.sleep(.5)
         recovered = window(receiver, api, server.pid, max(2., args.duration/2))
         publication_checks = verify_windows(steady, congested, recovered, args)
-        boundaries = lifecycle(receiver, api, socket_path)
+        boundaries = lifecycle(receiver, api)
         result = {'result': 'PASS', 'binary_sha256': hashlib.sha256(Path('/proc/%d/exe' % server.pid).read_bytes()).hexdigest(),
                   'world_config_sha256': hashlib.sha256((out/'world.json').read_bytes()).hexdigest(),
                   'entities': args.count, 'fixture': {'normal_cloud_rays': 72*16, 'first_cloud_rays': 360*32,
@@ -583,6 +604,7 @@ def compare(args):
                        '--output', str(directory), '--duration', str(args.duration),
                        '--slow-duration', str(args.slow_duration), '--warmup', str(args.warmup)]
             if label == 'current':command.append('--require-publication')
+            if args.scene:command.extend(['--scene', str(Path(args.scene).resolve())])
             subprocess.run(command, check=True)
             runs[str(count)][label] = json.loads((directory/'result.json').read_text())
             assert label != 'current' or runs[str(count)][label]['binary_sha256'] == current_sha, 'current binary changed during comparison'
@@ -614,6 +636,7 @@ if __name__ == '__main__':
     parser.add_argument('--current')
     parser.add_argument('--count', type=int, default=20)
     parser.add_argument('--counts', default='20,100')
+    parser.add_argument('--scene', help='JSON scene replacing the default one-box scene')
     parser.add_argument('--duration', type=float, default=8)
     parser.add_argument('--slow-duration', type=float, default=6)
     parser.add_argument('--warmup', type=float, default=5)

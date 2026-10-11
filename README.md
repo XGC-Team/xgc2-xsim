@@ -70,6 +70,6 @@ HOLD ticks only on the world thread, including its startup boundary and boundari
 
 The physical components of World are arrays by robot type (SoA), and controller and filter state sits in compact model arrays; ROS and RPC commands run at the same world boundary. Immutable snapshots are shared by the output, sensor and publication threads, and point-cloud data is shared and reused; ROS publication uses two fixed shard threads by default, with four initial send buffers per topic that are topped up by connection usage and then reused.
 
-The service contract is [docs/contracts/simulation-v1.md](docs/contracts/simulation-v1.md). Build, install and packaging are in the [reference](docs/reference.md#build-install-and-packaging). `XSIM_ROS=OFF` builds the same world and RPC service without ROS; GPU observation is enabled by an explicit build option.
+The service contract is [docs/contracts/simulation-v1.md](docs/contracts/simulation-v1.md). Build, install and packaging are in the [reference](docs/reference.md#build-install-and-packaging). `XSIM_ROS=OFF` builds the same world and RPC service without ROS; GPU observation loads the optional `xsim-lidar-gpu` module on demand.
 
 The test entry is `src/xsim/test.sh`; `tests/validate.sh` provides an isolated build and the ROS integration checks.

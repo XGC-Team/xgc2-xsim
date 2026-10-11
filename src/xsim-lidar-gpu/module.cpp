@@ -1,0 +1,187 @@
+// SPDX-License-Identifier: GPL-2.0-only
+#include "lidar_gpu_module.h"
+#include <xgc2_math/scene/sensor_metadata.hpp>
+#include <opengl_sim.hpp>
+#include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <cstring>
+#include <memory>
+#include <omp.h>
+#include <stdexcept>
+
+namespace {
+xgc2_math::scene::SensorMetadata metadata(const xsim_lidar_gpu_projection *p) {
+  if (!p) throw std::invalid_argument("GPU projection required");
+  xgc2_math::scene::SensorMetadata m;
+  m.backend = "gpu";
+  m.observation_model = "lidar_scan";
+  m.range_m = p->range_m;
+  m.min_range_m = p->min_range_m;
+  m.h_fov_deg = p->h_fov_deg;
+  m.v_fov_deg = p->v_fov_deg;
+  m.h_res = p->h_res;
+  m.v_res = p->v_res;
+  m.point_cover_spacing_m = p->point_cover_spacing_m;
+  m.publish_rate_hz = p->publish_rate_hz;
+  m.frame_id = "world";
+  m.stamp_policy = "pose";
+  m.pose_type = "geometry_msgs/PoseStamped";
+  xgc2_math::scene::validateGpuSensorMetadata(m);
+  return m;
+}
+void error_text(char *error, size_t size, const char *message) noexcept {
+  if (error && size) std::snprintf(error, size, "%s", message);
+}
+
+class Renderer {
+public:
+  std::unique_ptr<opengl_pointcloud_render> renderer{new opengl_pointcloud_render};
+  pcl::PointCloud<pcl::PointXYZI>::Ptr rendered{new pcl::PointCloud<pcl::PointXYZI>};
+  unsigned framebuffer = 0, color_buffer = 0, depth_buffer = 0, depth_format = 0;
+  int buffer_width = 0, buffer_height = 0;
+
+  ~Renderer() {
+    // Release projection buffers before the renderer destroys its owner context.
+    if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
+    if (color_buffer) glDeleteRenderbuffers(1, &color_buffer);
+    if (depth_buffer) glDeleteRenderbuffers(1, &depth_buffer);
+  }
+  void projection(const xgc2_math::scene::SensorMetadata &m) {
+    renderer->setParameters(m.h_res, m.v_res, 250.0f, 250.0f,
+        static_cast<float>(m.point_cover_spacing_m),
+        static_cast<float>(m.h_fov_deg) / static_cast<float>(m.h_res),
+        static_cast<float>(m.h_fov_deg), static_cast<float>(m.v_fov_deg),
+        static_cast<float>(m.min_range_m), static_cast<float>(m.range_m),
+        static_cast<int>(m.publish_rate_hz), 0, 0, 0);
+  }
+  void load(const float *xyz, size_t count, const xgc2_math::scene::SensorMetadata &m) {
+    projection(m);
+    pcl::PointCloud<PointType> cloud;
+    cloud.resize(count);
+    for (size_t i = 0; i < count; ++i) {
+      auto &point = cloud[i];
+      point.x = xyz[3 * i]; point.y = xyz[3 * i + 1]; point.z = xyz[3 * i + 2];
+      point.intensity = 0;
+      if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
+        throw std::invalid_argument("GPU static map must be finite");
+    }
+    if (!renderer->read_pointcloud_frommemory(cloud))
+      throw std::runtime_error("original GPU context/static upload initialization failed; no CPU fallback");
+    const char *vendor = reinterpret_cast<const char *>(glGetString(GL_VENDOR));
+    const char *name = reinterpret_cast<const char *>(glGetString(GL_RENDERER));
+    const char *version = reinterpret_cast<const char *>(glGetString(GL_VERSION));
+    if (!vendor || !name || !version) throw std::runtime_error("actual GL identity missing");
+    std::string check(name);
+    std::transform(check.begin(), check.end(), check.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    for (const auto *software : {"llvmpipe", "softpipe", "swrast", "software"})
+      if (check.find(software) != std::string::npos)
+        throw std::runtime_error("software GL is not admitted as GPU; no CPU fallback");
+    std::cout << "GL_VENDOR=" << vendor << "\nGL_RENDERER=" << name << "\nGL_VERSION=" << version << std::endl;
+  }
+  const pcl::PointCloud<pcl::PointXYZI> &scan(const Eigen::Vector3d &p,
+                                          const Eigen::Quaterniond &q, double stamp) {
+    renderer->render_pointcloud(rendered, p.cast<float>(), q.cast<float>(), stamp);
+    return *rendered;
+  }
+  const pcl::PointCloud<pcl::PointXYZI> &scan(const Eigen::Vector3d &p,
+      const Eigen::Quaterniond &q, double stamp, const xgc2_math::scene::SensorMetadata &m) {
+    projection(m);
+    if (!glfwGetCurrentContext()) throw std::runtime_error("GPU owner context missing");
+    // Preserve native depth precision and rendering math while avoiding the
+    // asynchronous X11 drawable resize when sensors switch projections.
+    if (!framebuffer) {
+      GLint bits = 0, component = 0;
+      glGetFramebufferAttachmentParameteriv(
+          GL_FRAMEBUFFER, GL_DEPTH, GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &bits);
+      glGetFramebufferAttachmentParameteriv(
+          GL_FRAMEBUFFER, GL_DEPTH, GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE, &component);
+      depth_format = bits == 16 ? GL_DEPTH_COMPONENT16 : bits == 24 ? GL_DEPTH_COMPONENT24
+          : component == GL_FLOAT ? GL_DEPTH_COMPONENT32F : GL_DEPTH_COMPONENT32;
+      if (bits != 16 && bits != 24 && bits != 32)
+        throw std::runtime_error("unsupported native depth precision: " + std::to_string(bits));
+      glGenFramebuffers(1, &framebuffer);
+      glGenRenderbuffers(1, &color_buffer);
+      glGenRenderbuffers(1, &depth_buffer);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    if (buffer_width != m.h_res || buffer_height != m.v_res) {
+      const auto require_size = [&] {
+        GLint width = 0, height = 0;
+        glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &width);
+        glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_HEIGHT, &height);
+        if (width != m.h_res || height != m.v_res)
+          throw std::runtime_error("GPU projection buffer allocation unavailable for requested resolution");
+      };
+      glBindRenderbuffer(GL_RENDERBUFFER, color_buffer);
+      glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, m.h_res, m.v_res);
+      require_size();
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, color_buffer);
+      glBindRenderbuffer(GL_RENDERBUFFER, depth_buffer);
+      glRenderbufferStorage(GL_RENDERBUFFER, depth_format, m.h_res, m.v_res);
+      require_size();
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth_buffer);
+      if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        throw std::runtime_error("GPU projection framebuffer allocation failed");
+      buffer_width = m.h_res; buffer_height = m.v_res;
+    }
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glViewport(0, 0, m.h_res, m.v_res);
+    return scan(p, q, stamp);
+  }
+};
+
+void *create(const float *xyz, size_t count, const xsim_lidar_gpu_projection *first,
+             char *error, size_t error_size) noexcept {
+  error_text(error, error_size, "");
+  try {
+    omp_set_dynamic(0);
+    omp_set_num_threads(1);
+    const auto m = metadata(first);
+    if (!xyz || !count || count > SIZE_MAX / (3 * sizeof(float)))
+      throw std::invalid_argument("GPU requires one nonempty static cloud");
+    auto renderer = std::make_unique<Renderer>();
+    renderer->load(xyz, count, m);
+    return renderer.release();
+  } catch (const std::exception &e) { error_text(error, error_size, e.what()); }
+    catch (...) { error_text(error, error_size, "GPU creation failed"); }
+  return nullptr;
+}
+int scan(void *renderer, const double position[3], const double orientation[4], double stamp,
+         const xsim_lidar_gpu_projection *projection, xsim_lidar_gpu_grow grow, void *context,
+         char *error, size_t error_size) noexcept {
+  error_text(error, error_size, "");
+  try {
+    omp_set_dynamic(0);
+    omp_set_num_threads(1);
+    const auto m = metadata(projection);
+    if (!renderer || !position || !orientation || !grow || !std::isfinite(stamp))
+      throw std::invalid_argument("GPU scan requires renderer, pose, stamp and storage");
+    const Eigen::Vector3d p(position[0], position[1], position[2]);
+    const Eigen::Quaterniond q(orientation[0], orientation[1], orientation[2], orientation[3]);
+    if (!p.allFinite() || !q.coeffs().allFinite() || q.norm() < 1e-12)
+      throw std::invalid_argument("GPU scan pose invalid");
+    const auto &points = static_cast<Renderer *>(renderer)->scan(p, q, stamp, m);
+    if (points.size() > SIZE_MAX / 16) throw std::length_error("GPU scan payload too large");
+    auto *bytes = static_cast<unsigned char *>(grow(context, points.size() * 16));
+    if (!bytes && !points.empty()) throw std::runtime_error("GPU scan storage unavailable");
+    for (size_t i = 0; i < points.size(); ++i) {
+      const auto &p = points[i];
+      const float xyzi[4] = {p.x, p.y, p.z, p.intensity};
+      std::memcpy(bytes + i * 16, xyzi, 16);
+    }
+    return 0;
+  } catch (const std::exception &e) { error_text(error, error_size, e.what()); }
+    catch (...) { error_text(error, error_size, "GPU scan failed"); }
+  return -1;
+}
+void destroy(void *renderer) noexcept { delete static_cast<Renderer *>(renderer); }
+const xsim_lidar_gpu_api api = {XSIM_LIDAR_GPU_ABI, sizeof(xsim_lidar_gpu_api), create, scan, destroy};
+}
+
+extern "C" __attribute__((visibility("default")))
+const xsim_lidar_gpu_api *xsim_lidar_gpu_entry(uint32_t abi) {
+  return abi == XSIM_LIDAR_GPU_ABI ? &api : nullptr;
+}

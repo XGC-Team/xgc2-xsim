@@ -2,10 +2,8 @@
 #include "core/world.hpp"
 #include "io/config.hpp"
 #include "sensors/cadence.hpp"
-#include <xgc2_world_lidar/world_lidar.h>
-#ifdef XSIM_GPU
-#include <xgc2_world_lidar/shared_cloud_gpu.hpp>
-#endif
+#include <xgc2_math/scene.hpp>
+#include "sensors/gpu_module.hpp"
 namespace xsim {
 struct Sample {
   Key key;
@@ -24,10 +22,12 @@ struct SensorPayload {
 struct Sensor {
   static constexpr size_t payload_pool_size = 4;
   std::weak_ptr<Entity> entity;
-  std::unique_ptr<xgc2_world_lidar::WorldLidar> cpu;
-#ifdef XSIM_GPU
-  xgc2_world_lidar::SensorMetadata gpu_config;
-#endif
+  // One sensor per scanner: a scan advances the sensor's own scan index and scratch, and only the worker that
+  // holds `busy` scans it.
+  std::unique_ptr<xgc2_math::scene::WorldLidar> cpu;
+  // Worker-owned beam scratch of a publish_beams sensor, reused by every scan.
+  xgc2_math::scene::BeamScan beams;
+  xsim_lidar_gpu_projection gpu_config{};
   bool gpu = false, with_bodies=false, publish_beams=false;
   bool cacheable = false, cache_valid = false;
   Eigen::Vector3d translation{Eigen::Vector3d::Zero()};
@@ -48,7 +48,7 @@ struct Sensor {
   // Worker-owned immutable geometry cache. Hits share bytes without copying.
   Sample cached_sample;
   std::shared_ptr<const SensorPayload> cached_payload;
-  std::vector<xgc2_world_lidar::VehicleBody> others;
+  std::vector<xgc2_math::scene::VehicleBody> others;
   std::atomic<uint64_t> misses{0}, scans{0}, errors{0};
   std::atomic<uint64_t> throttled{0}, cache_hits{0}, computed_scans{0}, published{0};
   std::atomic<uint64_t> rate_degradations{0}, rate_recoveries{0};
@@ -82,8 +82,8 @@ private:
     bool enabled = false;
     Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   };
-  std::shared_ptr<const xgc2_world_lidar::LidarScene> scene_;
-  std::vector<xgc2_world_lidar::Obstacle> obstacles_;
+  std::shared_ptr<const xgc2_math::scene::LidarScene> scene_;
+  std::vector<xgc2_math::scene::Obstacle> obstacles_;
   double spacing_ = 0.1;
   bool buried_ = false;
   unsigned workers_;
@@ -91,19 +91,18 @@ private:
   std::atomic<int64_t> source_period_ns_{0};
   std::vector<FixtureGeometry> fixture_geometry_;
   uint64_t fixture_geometry_revision_ = 0;
-  std::map<std::pair<double,bool>,std::shared_ptr<const xgc2_world_lidar::LidarScene>> sampled_scenes_;
+  std::map<std::pair<double,bool>,std::shared_ptr<const xgc2_math::scene::LidarScene>> sampled_scenes_;
   mutable std::mutex mutex_;
   std::condition_variable wake_;
   std::vector<std::weak_ptr<Sensor>> sensors_;
   std::vector<std::thread> cpu_threads_;
   std::thread gpu_thread_;
   bool stopping_ = false;
-#ifdef XSIM_GPU
-  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_;
-  xgc2_world_lidar::SensorMetadata gpu_initial_config_;
+  std::vector<float> gpu_map_;
+  const xsim_lidar_gpu_api *gpu_api_ = nullptr;
+  xsim_lidar_gpu_projection gpu_initial_config_{};
   bool gpu_ready_ = false;
   std::string gpu_error_;
-#endif
   void work(bool gpu);
   void submit_sample(const State &, const std::shared_ptr<const Frame> &);
   uint64_t fixture_geometry_revision(const Frame &);

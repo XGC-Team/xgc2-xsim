@@ -5,7 +5,8 @@ from pathlib import Path
 from native_http import NativeProvider, UnixHTTP, assert_retired_ros_surfaces_absent
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--xsim',required=True);p.add_argument('--output',required=True);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--xsim',required=True);p.add_argument('--module');p.add_argument('--output',required=True);a=p.parse_args()
+    if a.module:os.environ['XSIM_LIDAR_GPU_MODULE']=str(Path(a.module).resolve())
     out=Path(a.output);out.mkdir(parents=True,exist_ok=True)
     with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
     os.environ.update(ROS_MASTER_URI=f'http://127.0.0.1:{port}',ROS_IP='127.0.0.1',ROS_HOSTNAME='127.0.0.1',ROS_HOME=str(out/'ros-home'),ROS_LOG_DIR=str(out/'ros-log'))

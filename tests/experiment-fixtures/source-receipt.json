@@ -1,8 +1,8 @@
 {
+  "sensorProjectionSha256": "e76eb046cfc70d7d02fe05c2d0018ada2d8d2f291cf46c86e98e9d0ee08bad4e",
   "sourceHead": "f0f15c9656c85e9fe6262075a6fb9a0a4c118ea1",
   "files": {
     "internal/runconfiguration/world_xsim.go": "5b852b627ed2e29285daeccc3c605134fc430cbc840df9604dc4f0d4abe73312",
-    "internal/runconfiguration/world_lidar.go": "e76eb046cfc70d7d02fe05c2d0018ada2d8d2f291cf46c86e98e9d0ee08bad4e",
     "internal/runconfiguration/robot_selection.go": "236674805a5f537eb4ad247cd8ea43b82ad083c611905473c404d92f244891ef",
     "internal/workflow/plugins/asset/experiment_robots.go": "abb3eb49b9889147dcce07a812f83ee215cea2d71fc28bb88666dc430234eff5",
     "internal/xsimconfig/deployment.go": "5e87e2d5bbe46b08789f804ba20a1f5593cde6c8c098e1d4a9dddda4c426ad5c",
@@ -106,7 +106,6 @@
   "noWorld": 1,
   "finalCaptureSourceHashes": {
     "internal/runconfiguration/world_xsim.go": "5b852b627ed2e29285daeccc3c605134fc430cbc840df9604dc4f0d4abe73312",
-    "internal/runconfiguration/world_lidar.go": "e76eb046cfc70d7d02fe05c2d0018ada2d8d2f291cf46c86e98e9d0ee08bad4e",
     "internal/runconfiguration/robot_selection.go": "236674805a5f537eb4ad247cd8ea43b82ad083c611905473c404d92f244891ef",
     "internal/workflow/plugins/asset/experiment_robots.go": "718f8dfd8227353e29f9e1e07f7d5bc5c9bb23bccecfdfa12eae65950bb96873",
     "internal/xsimconfig/deployment.go": "5e87e2d5bbe46b08789f804ba20a1f5593cde6c8c098e1d4a9dddda4c426ad5c",

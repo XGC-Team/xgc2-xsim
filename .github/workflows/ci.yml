@@ -16,13 +16,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
     - uses: actions/checkout@v4
-    - uses: actions/checkout@v4
-      with:
-        repository: XGC-Team/xgc2-scene-generation
-        ref: 2940a99abba225e718eed5fb892faac2f5ebaf5c # xgc2-scene-generation/noetic
-        path: sensor-source
     - name: Check no-ROS native contracts and build the installable server
-      run: .xgc2/scripts/build_debs_in_docker.sh --sensor-source "$GITHUB_WORKSPACE/sensor-source" --output-dir "$GITHUB_WORKSPACE/debs" --native-contracts
+      run: .xgc2/scripts/build_debs_in_docker.sh --output-dir "$GITHUB_WORKSPACE/debs" --native-contracts
     - name: Create the normal build artifact manifest
       run: |
         version="$(awk -F': *' '/^version:/ {print $2;exit}' .xgc2/product.yml)"

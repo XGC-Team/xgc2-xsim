@@ -299,8 +299,8 @@ instance of the ServiceRef), `ready` and `facts`:
   deadline of the call passes, and then answers with the current describe. A service that is ready answers at
   once, and one that starts to stop answers waiting calls at once. The caller waits with one outstanding call
   instead of repeating describe.
-- The XRPC discovery exemption matches the declared route exactly, so a describe call with a query is bound to
-  the instance like a business call: read `instance_id` from an unbound `GET /v1/describe` first.
+- XRPC 0.2.0 matches the discovery route by path only, so a describe call with a query is unbound and needs no
+  instance header, including a readiness long-poll made before the caller knows the instance.
 
 ## Capability calls
 

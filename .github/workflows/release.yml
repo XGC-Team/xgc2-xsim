@@ -26,11 +26,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
     - uses: actions/checkout@v4
-    - uses: actions/checkout@v4
-      with:
-        repository: XGC-Team/xgc2-scene-generation
-        ref: 2940a99abba225e718eed5fb892faac2f5ebaf5c # xgc2-scene-generation/noetic
-        path: sensor-source
     - name: Check the requested release identity
       env:
         EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
@@ -44,7 +39,7 @@ jobs:
         test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
         test "$(awk -F': *' '/^version:/ {print $2;exit}' .xgc2/product.yml)" = "$EXPECTED_VERSION"
     - name: Build and install the standalone native server
-      run: .xgc2/scripts/build_debs_in_docker.sh --sensor-source "$GITHUB_WORKSPACE/sensor-source" --output-dir "$GITHUB_WORKSPACE/debs"
+      run: .xgc2/scripts/build_debs_in_docker.sh --output-dir "$GITHUB_WORKSPACE/debs"
     - name: Create the normal build artifact manifest
       run: |
         version="$(awk -F': *' '/^version:/ {print $2;exit}' .xgc2/product.yml)"

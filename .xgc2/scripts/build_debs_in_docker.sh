@@ -2,13 +2,12 @@
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 image="${DOCKER_IMAGE:-ghcr.io/xgc-team/xgc2-images/xgc2-build-focal-full-noetic:1.0.8@sha256:fce2d76fddf4f6439bf0a188249b731650febdc163befc360bed186b269d252a}"
-work="${WORK_DIR:-$root/.work/docker}";out="${OUTPUT_DIR:-$root/debs}";sensor="${XSIM_SENSOR_SOURCE_ROOT:-}"
+work="${WORK_DIR:-$root/.work/docker}";out="${OUTPUT_DIR:-$root/debs}"
 native_contracts=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --work-dir) work="$2"; shift 2 ;;
     --output-dir) out="$2"; shift 2 ;;
-    --sensor-source) sensor="$2"; shift 2 ;;
     --native-contracts) native_contracts=true; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -19,7 +18,6 @@ fi
 if [[ -n "${XGC2_APT_OVERLAY_URL:-}" && -z "${XGC2_DEPENDENCY_SET_DIGEST:-}" ]]; then
   echo 'XGC2_APT_OVERLAY_URL requires XGC2_DEPENDENCY_SET_DIGEST' >&2; exit 2
 fi
-[[ -f "$sensor/sensors/world_lidar/library/CMakeLists.txt" ]] || { echo 'an explicit owning scene source is required' >&2;exit 2; }
 mkdir -p "$work" "$out"
 container_name="xgc2-xsim-build-$(date +%s)-$$"
 container_created=false
@@ -38,7 +36,7 @@ docker create --name "$container_name" -i --cpus 2 --pids-limit 256 \
   -e "XGC2_APT_OVERLAY_URL=${XGC2_APT_OVERLAY_URL:-}" \
   -e "XGC2_DEPENDENCY_SET_DIGEST=${XGC2_DEPENDENCY_SET_DIGEST:-}" \
   -e "XSIM_NATIVE_CONTRACTS=$native_contracts" \
-  -v "$(realpath "$sensor"):/sensors:ro" "$image" bash -s >/dev/null
+  "$image" bash -s >/dev/null
 container_created=true
 docker start -ai "$container_name" <<'XSIM_BUILD'
 set -euo pipefail
@@ -56,11 +54,13 @@ fi
 apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/xgc2.list -o Dir::Etc::sourceparts=-
 apt-get install -y --no-install-recommends libxgc2-math-dev libxgc2-chassis-hold-dev=0.2.0-1~focal libxgc2-xrpc-dev=0.2.0-1~focal
 python3 /source/.xgc2/scripts/check_build_inputs.py
+python3 /source/.xgc2/scripts/check_gpu_module_sources.py
+test -f /usr/include/xgc2_math/scene.hpp
 if [[ "$XSIM_NATIVE_CONTRACTS" == true ]]; then
-  bash /source/.xgc2/scripts/check_native_contracts.sh /sensors /source/.xgc2/build-inputs/fs150
+  bash /source/.xgc2/scripts/check_native_contracts.sh /source/.xgc2/build-inputs/fs150
 fi
-bash /source/.xgc2/scripts/build_package.sh /sensors /source/.xgc2/build-inputs/fs150 /output
-apt-get install -y /output/xsim_*.deb
+bash /source/.xgc2/scripts/build_package.sh /source/.xgc2/build-inputs/fs150 /output
+apt-get install -y /output/xsim_*.deb /output/xsim-lidar-gpu_*.deb
 bash /source/.xgc2/scripts/check_installed_packages.sh
 bash /source/.xgc2/scripts/check_native_package_payload.sh /output /output
 XSIM_BUILD
