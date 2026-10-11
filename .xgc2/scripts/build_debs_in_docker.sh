@@ -45,7 +45,7 @@ set -euo pipefail
 # System development packages belong to the selected XGC2 build image.
 # Fail closed if the image lacks them; product CI does not bootstrap toolchains.
 dpkg-query -W libglfw3-dev libglm-dev libyaml-cpp-dev nlohmann-json3-dev >/dev/null
-# The math and XRPC development packages are the only XGC dependencies.
+# The math, chassis HOLD and XRPC development packages are the only XGC dependencies.
 install -d -m0755 /etc/apt/keyrings
 curl -fsSL https://xgc2.apt.xiaokang.ink/xgc2-archive-keyring.gpg -o /etc/apt/keyrings/xgc2-archive-keyring.gpg
 gpg --batch --show-keys --with-colons /etc/apt/keyrings/xgc2-archive-keyring.gpg | awk -F: '$1=="fpr"{print $10}' | grep -Fxq 2A8E11B36F56D307ADF626D85E5FDC30979EA43F
@@ -54,7 +54,7 @@ if [[ -n "${XGC2_APT_OVERLAY_URL:-}" && "${XGC2_DEPENDENCY_SET_DIGEST}" != 4f53c
   echo "deb [signed-by=/etc/apt/keyrings/xgc2-archive-keyring.gpg] ${XGC2_APT_OVERLAY_URL%/} focal main" >>/etc/apt/sources.list.d/xgc2.list
 fi
 apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/xgc2.list -o Dir::Etc::sourceparts=-
-apt-get install -y --no-install-recommends libxgc2-math-dev libxgc2-xrpc-dev
+apt-get install -y --no-install-recommends libxgc2-math-dev libxgc2-chassis-hold-dev libxgc2-xrpc-dev
 python3 /source/.xgc2/scripts/check_build_inputs.py
 if [[ "$XSIM_NATIVE_CONTRACTS" == true ]]; then
   bash /source/.xgc2/scripts/check_native_contracts.sh /sensors /source/.xgc2/build-inputs/fs150
