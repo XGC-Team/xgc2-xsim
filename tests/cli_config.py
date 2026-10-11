@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import stat
 import subprocess
@@ -40,13 +41,17 @@ def main(binary):
             assert reason in result.stderr, result.stderr
             assert not socket_path.exists(), "rejected config bound the socket"
 
-        assert "--scene-file" in subprocess.check_output([binary, "--help"], text=True)
+        help_text = subprocess.check_output([binary, "--help"], text=True)
+        assert "--scene-file" in help_text and "--socket" in help_text
         rejected(command + ["--scene-file"], "missing value")
         rejected(command + ["--scene-file", "", "--scene-file", ""], "more than once")
         rejected(command + ["--config", str(config)], "more than once")
         rejected(command + ["--socket", str(socket_path)], "more than once")
         rejected([binary, "--config", "--socket", str(socket_path)], "missing value")
         rejected([binary, "--config", str(config), "--socket"], "missing value")
+        for path in ("", str(root / "wrong.sock"), "relative.sock", "tcp://127.0.0.1:30000"):
+            rejected(prefix + ["--config", str(config), "--socket", path], "socket does not match")
+        assert not (root / "wrong.sock").exists()
         rejected(command + ["--scene-file", str(root / "absent.yaml")], "bad file")
         configured = dict(original, scene_file=str(scene))
         config.write_text(json.dumps(configured))
@@ -82,7 +87,14 @@ def main(binary):
                 connection.request("GET", "/v1/describe", headers=headers)
                 description = connection.getresponse()
                 assert description.status == 200
-                headers["X-Xrpc-Instance-ID"] = json.loads(description.read())["service_ref"]["instance_id"]
+                described = json.loads(description.read())
+                assert described["service_ref"]["endpoint"] == {"kind": "unix", "address": str(socket_path)}
+                connection.request("GET", "/v1/describe?wait_ready_ms=1000", headers=headers)
+                readiness = connection.getresponse()
+                assert readiness.status == 200
+                ready = json.loads(readiness.read())
+                assert ready["ready"] and ready["service_ref"] == described["service_ref"], ready
+                headers["X-Xrpc-Instance-ID"] = described["service_ref"]["instance_id"]
                 headers["X-Request-ID"] = "cli-world"
                 connection.request("GET", "/v1/world", headers=headers)
                 response = connection.getresponse()
@@ -93,7 +105,7 @@ def main(binary):
                 connection.close()
             return process
 
-        # The common catalog always supplies its optional scene argument, even empty.
+        # The shipped definition supplies its optional scene argument, even empty.
         process = start(command + ["--scene-file", ""])
         try:
             assert stat.S_IMODE(socket_path.parent.stat().st_mode) == 0o700
@@ -179,9 +191,21 @@ def main(binary):
         _, stderr = process.communicate(timeout=5)
         assert process.returncode == 0, stderr
         assert not socket_path.exists(), "experiment-stdin shutdown leaked owned socket"
+        definition_path = Path(__file__).parent.parent / "process-definitions" / "xsim-world.json"
+        definition = json.loads(definition_path.read_text())["definitions"][0]
+        values = {"bootstrapInput": str(allocation), "socketPath": str(socket_path), "sceneFile": ""}
+        definition_command = [binary] + [re.sub(r"\$\{(\w+)\}", lambda match: values[match.group(1)], argument)
+                                         for argument in definition["command"]["args"]]
+        process = start(definition_command, json.dumps(bootstrap))
+        process.terminate()
+        _, stderr = process.communicate(timeout=5)
+        assert process.returncode == 0, stderr
+        assert not socket_path.exists(), "shipped definition shutdown leaked owned socket"
         print(json.dumps({"ok": True, "emptySceneFlag": True, "validSceneFlagAndConfig": True,
                           "sceneConflictRefused": True,
                           "invalidSceneUsesOriginalParser": True, "frozenEpochUnchanged": True,
+                          "shippedDefinitionArgv": True, "bootstrapSocketMismatchRefused": True,
+                          "unboundDescribeReadiness": True,
                           "experimentFile": True, "experimentStdin": True, "privateParents": True, "foreignSocketAndReplacementPreserved": True}))
 
 

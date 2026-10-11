@@ -19,6 +19,7 @@ usage:
 ownership:
   paths:
   - /opt/xgc2/xsim
+  - /usr/share/xgc2/process-definitions/xsim-world.json
 release:
   repository: XGC-Team/xgc2-xsim
   ref: main

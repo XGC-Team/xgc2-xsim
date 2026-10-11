@@ -1,0 +1,137 @@
+{
+  "apiVersion": "xgc.execution.process/v1",
+  "definitions": [
+    {
+      "id": "xsim-world",
+      "version": "1.4.0",
+      "label": "xsim world",
+      "description": "One native xsim world. The workflow supplies frozen Experiment input, scene and an explicit deployment bootstrap; the generic Process owns its OS lifecycle.",
+      "parameters": {
+        "properties": {
+          "installRoot": {
+            "type": "string",
+            "default": "/opt/xgc2/xsim"
+          },
+          "configJson": {
+            "type": "string",
+            "default": "",
+            "description": "Opaque frozen Experiment input forwarded verbatim through stdin to the native server."
+          },
+          "socketPath": {
+            "type": "string",
+            "default": "",
+            "description": "Explicit private Unix control socket supplied by the workflow.",
+            "fixedOnly": true
+          },
+          "rosInstallPath": {
+            "type": "string",
+            "description": "Absolute ROS installation prefix",
+            "default": "/opt/ros/noetic",
+            "x-xgc-path-kind": "directory"
+          },
+          "rosIp": {
+            "type": "string",
+            "description": "ROS_IP advertised by xsim",
+            "default": "127.0.0.1",
+            "output": true
+          },
+          "rosLogDir": {
+            "type": "string",
+            "description": "Absolute ROS_LOG_DIR",
+            "x-xgc-path-kind": "directory",
+            "fixedOnly": true
+          },
+          "rosMasterUri": {
+            "type": "string",
+            "description": "ROS_MASTER_URI of the Experiment world",
+            "default": "http://127.0.0.1:11311",
+            "output": true
+          },
+          "sceneFile": {
+            "type": "string",
+            "default": "",
+            "description": "Prepared scene file consumed and validated by xsim."
+          },
+          "bootstrapInput": {
+            "type": "string",
+            "description": "Canonical private shared XRPC bootstrap file allocated by this deployment.",
+            "fixedOnly": true,
+            "sensitive": true,
+            "x-xgc-path-kind": "file"
+          },
+          "rosHome": {
+            "type": "string",
+            "description": "Existing deployment-owned ROS_HOME directory.",
+            "fixedOnly": true,
+            "x-xgc-path-kind": "directory"
+          }
+        },
+        "groups": [
+          {
+            "id": "ros-advanced",
+            "label": "ROS Advanced",
+            "collapsed": true,
+            "parameters": [
+              "rosInstallPath",
+              "rosIp",
+              "rosHome",
+              "rosLogDir",
+              "rosMasterUri"
+            ]
+          }
+        ],
+        "required": [
+          "socketPath",
+          "bootstrapInput",
+          "rosHome",
+          "rosLogDir",
+          "configJson"
+        ]
+      },
+      "command": {
+        "executable": "${installRoot}/bin/xsim",
+        "args": [
+          "--bootstrap-input",
+          "${bootstrapInput}",
+          "--experiment-stdin",
+          "--socket",
+          "${socketPath}",
+          "--scene-file",
+          "${sceneFile}"
+        ],
+        "env": {
+          "ROS_HOSTNAME": "",
+          "ROS_IP": "${rosIp}",
+          "ROS_LOG_DIR": "${rosLogDir}",
+          "ROS_MASTER_URI": "${rosMasterUri}",
+          "ROS_NAMESPACE": "",
+          "ROS_HOME": "${rosHome}"
+        },
+        "stdinParameter": "configJson"
+      },
+      "services": [
+        {
+          "service": "xgc2.simulation",
+          "api_version": "v1",
+          "profile": "http.v1",
+          "endpointParameter": "socketPath"
+        }
+      ],
+      "setupFiles": [
+        "${rosInstallPath}/setup.bash"
+      ],
+      "readiness": {
+        "kind": "describe",
+        "startGraceMs": 15000,
+        "timeoutMs": 30000
+      },
+      "stop": {
+        "graceMs": 15000
+      },
+      "logs": {
+        "maxBytes": 1048576,
+        "files": 3
+      }
+    }
+  ]
+}

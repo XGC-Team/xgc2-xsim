@@ -6,6 +6,8 @@ def package(stage, output, dependencies):
     stage=pathlib.Path(stage);output=pathlib.Path(output)
     server=stage/'opt/xgc2/xsim/bin/xsim'
     if not server.is_file():raise ValueError('installed xsim executable is required')
+    if not (stage/'usr/share/xgc2/process-definitions/xsim-world.json').is_file():
+        raise ValueError('installed xsim-world process definition is required')
     if (stage/'opt/ros').exists():raise ValueError('ROS-owned payload is not part of xsim')
     arch=subprocess.check_output(['dpkg','--print-architecture'],text=True).strip()
     control=stage/'DEBIAN';control.mkdir(exist_ok=True)

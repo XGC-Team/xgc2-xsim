@@ -50,7 +50,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; ++i) {
       std::string arg = argv[i];
       if (arg == "--help") {
-        std::cout << "xsim --bootstrap-input BOOTSTRAP.json (--config WORLD.json | --experiment-file EXPERIMENT.json | --experiment-stdin | --manifest MANIFEST.json) [--scene-file SCENE.yaml]\n";
+        std::cout << "xsim --bootstrap-input BOOTSTRAP.json (--config WORLD.json | --experiment-file EXPERIMENT.json | --experiment-stdin | --manifest MANIFEST.json) [--socket SOCKET] [--scene-file SCENE.yaml]\n";
         return 0;
       }
       if (arg == "--experiment-stdin") {
@@ -84,9 +84,9 @@ int main(int argc, char **argv) {
         binding.profile() != "http.v1" || binding.endpoint().kind != "unix" ||
         binding.authentication() != "local_private")
       throw std::invalid_argument("xsim requires local-private simulation HTTP v1");
-    if (has_socket && socket != binding.endpoint().address)
+    if (!has_socket) socket = binding.endpoint().address;
+    else if (socket != binding.endpoint().address)
       throw std::invalid_argument("socket does not match the bootstrap endpoint");
-    socket = binding.endpoint().address;
     const auto runtime = bootstrap.resolve_runtime([&](const auto &, const auto &) {
       return allocated_directory(socket.substr(0, socket.rfind('/')), xgc2::xrpc::GrantPurpose::Runtime);
     });

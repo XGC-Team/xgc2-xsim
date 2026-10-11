@@ -37,5 +37,5 @@ dependencies="$(cd "$build_output/shlibs"; dpkg-shlibdeps -O -e"$build_output/st
 python3 "$(dirname "${BASH_SOURCE[0]}")/package_debs.py" --stage "$build_output/stage" \
  --depends "$dependencies, libglfw3 (>= 3.3), ros-noetic-roscpp, ros-noetic-mavros-msgs, ros-noetic-rosgraph-msgs" \
  --output "$package_output/xsim_1.2.0-1_$(dpkg --print-architecture).deb"
-cp -a "$build_output/stage/opt" "$package_output/"
+cp -a "$build_output/stage/opt" "$build_output/stage/usr" "$package_output/"
 sha256sum "$package_output"/*.deb > "$package_output/SHA256SUMS"
