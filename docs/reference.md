@@ -24,8 +24,9 @@ cpack --config /private/xsim-build/CPackConfig.cmake
 `XSIM_ROS=OFF` builds the same world, robot and sensor systems and the native Unix server without finding or linking ROS. `XSIM_TESTS=ON` enables the model, world and chassis HOLD checks. The build without ROS also runs the Python checks of the running server: `xsim_cli_config`, `xsim_simulation_v1` and `xsim_chassis_hold_native` (HOLD and readiness over the management socket). The build with ROS runs `xsim_chassis_hold_ros`, which starts its own `roscore` on a private port and needs ROS Noetic's `roscore` and `rospy`. `XSIM_ROS=OFF ./src/xsim/test.sh` selects the build without ROS.
 
 `xsim_startup_ros` checks a stalled master, a master started after native readiness, late topic peers and
-replacement by PID or run id. `xsim_ros_peer_down` holds the master down for 60 seconds, asserting less
-than 1.2 seconds of xsim CPU, at most 16 discovery attempts, at most seven outage log lines and stable
+replacement by PID or run id. `xsim_ros_peer_down` holds the master down for 60 seconds, asserting no more
+CPU per second than the same process spends idle with a bound master (1.5 times that rate plus 0.02 seconds per
+second, because the world keeps simulating during the outage), at most 16 discovery attempts, at most seven outage log lines and stable
 thread/fd counts, then checks binding and one owned-state replay. It has the `long` and `peer-down` CTest
 labels. A fast cell may run `ctest --output-on-failure -LE long`; a long cell runs
 `ctest --output-on-failure -L peer-down`. The validation script's unfiltered CTest cell runs both. All ROS

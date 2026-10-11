@@ -172,7 +172,7 @@ def late_master(binary, root, port, long_test):
             print(json.dumps({"peer_down_seconds": elapsed, "cpu_seconds": cpu, "connect_attempts": attempts,
                               "outage_log_lines": len(lines), "threads_before_after": [before[1], after[1]],
                               "fds_before_after": [before[2], after[2]]}), flush=True)
-            assert elapsed >= 60 and cpu < 1.2, (elapsed, cpu)
+            assert elapsed >= 60, elapsed
             assert attempts <= 16, attempts
             assert len(lines) <= 7, lines
         master = start_master()
@@ -181,6 +181,13 @@ def late_master(binary, root, port, long_test):
         assert bound["master_pid"] > 0 and bound["master_run_id"], bound
         assert bound["state_replays"] == bound["applied_revision"] == bound["desired_revision"] == 1, bound
         assert bound["entity_bindings"] == 1, bound
+        if long_test:
+            # The world keeps simulating during the outage, so the outage may cost no more CPU per second than the
+            # same process spends idle with a bound master (an absolute bound would measure the runner, not the wait).
+            idle_start = resources(x.process.pid)[0]
+            time.sleep(10)
+            idle_rate = (resources(x.process.pid)[0] - idle_start) / 10
+            assert cpu / elapsed <= idle_rate * 1.5 + 0.02, (cpu, elapsed, idle_rate)
 
         # Topic peers start after xsim: roscpp publisher updates establish their connections.
         import rospy
