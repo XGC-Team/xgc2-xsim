@@ -24,7 +24,7 @@ cmake -S "$sim_source/src/xsim" -B "$native_build/server" \
 cmake --build "$native_build/server" --target xsim --parallel 2
 (
   cd "$native_build/server"
-  contracts='^xsim_(cli_config|simulation_v1)$'
+  contracts='^xsim_(cli_config|simulation_v1|chassis_hold_native)$'
   # CMake 3.16 has JSON test discovery but no --no-tests=error option.
   ctest --show-only=json-v1 -R "$contracts" > native-contracts.json
   python3 - native-contracts.json <<'PY'
@@ -33,7 +33,7 @@ import sys
 
 with open(sys.argv[1]) as source:
     registered = {test["name"] for test in json.load(source)["tests"]}
-expected = {"xsim_cli_config", "xsim_simulation_v1"}
+expected = {"xsim_cli_config", "xsim_simulation_v1", "xsim_chassis_hold_native"}
 if registered != expected:
     raise SystemExit(f"native CTest registration: expected {sorted(expected)}, got {sorted(registered)}")
 PY

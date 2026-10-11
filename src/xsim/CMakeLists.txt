@@ -153,4 +153,13 @@ if(XSIM_TESTS AND NOT XSIM_ROS)
   set_tests_properties(xsim_cli_config PROPERTIES TIMEOUT 30)
   add_test(NAME xsim_simulation_v1 COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/simulation_v1_native.py --binary $<TARGET_FILE:xsim>)
   set_tests_properties(xsim_simulation_v1 PROPERTIES TIMEOUT 30)
+  add_test(NAME xsim_chassis_hold_native COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/chassis_hold_native.py
+    --xsim $<TARGET_FILE:xsim>)
+  set_tests_properties(xsim_chassis_hold_native PROPERTIES TIMEOUT 60 ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
+endif()
+# Needs a ROS Noetic environment: roscore and rospy. It starts its own master on a private port.
+if(XSIM_TESTS AND XSIM_ROS)
+  add_test(NAME xsim_chassis_hold_ros COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/chassis_hold_ros.py
+    --xsim $<TARGET_FILE:xsim> --slow-service-test $<TARGET_FILE:xsim_slow_service_test>)
+  set_tests_properties(xsim_chassis_hold_ros PROPERTIES TIMEOUT 120 ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
 endif()
