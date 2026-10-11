@@ -1,10 +1,10 @@
 # xsim configuration and interface reference
 
-`xsim` is a simulation server with one process per world. It manages entity identity, physical state, entity generations and the simulation clock. ROS1 is an optional input and output boundary; management uses HTTP/JSON on a Unix socket. See [example.json](../config/example.json) for a configuration example and the [README](../README.md) for an overview.
+`xsim` is a simulation server with one process per world. It manages entity identity, physical state, entity generations and the simulation clock. ROS1 is an optional input and output boundary; management uses HTTP/JSON on a Unix socket. See [example.json](../config/example.json) for a configuration example and the [README](../README.md) for an overview. The management service implements the [simulation service v1 contract](contracts/simulation-v1.md), including readiness and chassis HOLD.
 
 ## Build, install and packaging
 
-Requires C++17, CMake 3.16, Eigen3, nlohmann-json, yaml-cpp, Python3, the xgc2-math headers and the FS150 SITL assets. The default `XSIM_ROS=ON` also needs the ROS Noetic packages `roscpp`, `geometry_msgs`, `sensor_msgs`, `nav_msgs`, `rosgraph_msgs` and `mavros_msgs`. Install the sensor library `scene/sensors/world_lidar/library` into the chosen prefix first.
+Requires C++17, CMake 3.16, Eigen3, nlohmann-json, yaml-cpp, Python3, the xgc2-math headers, the XRPC SDK (`XgcXrpc`, components `http` and `bootstrap`), the chassis HOLD library (`XgcChassisHold` 1.0.0, component `core`) and the FS150 SITL assets. The default `XSIM_ROS=ON` also needs the ROS Noetic packages `roscpp`, `geometry_msgs`, `sensor_msgs`, `nav_msgs`, `rosgraph_msgs` and `mavros_msgs`. Install the sensor library `scene/sensors/world_lidar/library` into the chosen prefix first.
 
 The following commands run in the xsim repository root; replace `/private` and the source placeholder paths with real directories.
 
@@ -25,7 +25,7 @@ cmake --install /private/xsim-build
 cpack --config /private/xsim-build/CPackConfig.cmake
 ```
 
-`XSIM_ROS=OFF` builds the same world, robot and sensor systems and the native Unix server without finding or linking ROS. `XSIM_TESTS=ON` enables the model and world checks; the build without ROS also runs `xsim_native_headless`. `XSIM_ROS=OFF ./src/xsim/test.sh` selects the build without ROS.
+`XSIM_ROS=OFF` builds the same world, robot and sensor systems and the native Unix server without finding or linking ROS. `XSIM_TESTS=ON` enables the model, world and chassis HOLD checks. The build without ROS also runs the Python checks of the running server: `xsim_cli_config`, `xsim_simulation_v1` and `xsim_chassis_hold_native` (HOLD and readiness over the management socket). The build with ROS runs `xsim_chassis_hold_ros`, which starts its own `roscore` on a private port and needs ROS Noetic's `roscore` and `rospy`. `XSIM_ROS=OFF ./src/xsim/test.sh` selects the build without ROS.
 
 The installed program is `bin/xsim`; the configuration, the record of the FS150 asset origin and the documentation are in `share/xsim`. The archive package contains xsim; the external ROS and geometry dependencies must be installed separately.
 
@@ -77,6 +77,7 @@ The Unix socket has mode `0600`; a missing parent directory is created by the se
 | Entity key | Default / requirement | Meaning |
 |---|---|---|
 | `name` | required, non-empty and unique | ROS namespace segment, only letters, digits and underscores |
+| `public_id` | the `name` | identity of the entity in the management API and in the chassis HOLD roster (1–128 characters of `[A-Za-z0-9._:-]`); a frozen Experiment takes the robot ID of its roster instead |
 | `kind` | required | `fs150`, `scout` or `mecanum` |
 | `position` | `[0,0,0]` | initial position of the robot base origin in world ENU |
 | `yaw` | `0` | initial yaw, rad |
@@ -175,6 +176,7 @@ The host uses the shared XRPC HTTP and BootstrapInput. `GET /v1/describe` return
 
 | Path | Purpose |
 | --- | --- |
+| `GET /v1/describe[?wait_ready_ms=N]` | ServiceRef, capabilities, limits and readiness (`ready`, `facts`); the optional query holds the reply until the service is ready |
 | `GET /v1/health`, `POST /v1/health/observe` | readiness of the native components and waiting for a revision |
 | `GET /v1/world` | world time, step count, entities and native diagnostics |
 | `GET /v1/entities`, `GET /v1/entities/<id>` | public entity identity and state |
@@ -183,8 +185,26 @@ The host uses the shared XRPC HTTP and BootstrapInput. `GET /v1/describe` return
 | `POST /v1/entities/<id>/reset` | reset the entity, carrying its generation |
 | `POST /v1/world/{pause,resume,step,reset}` | world management; reset does not roll time back |
 | `GET /v1/operations/<id>`, `POST /v1/operations/<id>/{wait,cancel}` | exact operation receipt, waiting and cancellation |
+| `POST /v1/call/<service>/<Method>` | methods of the capabilities the world serves: `xgc2.chassis.hold` (`Describe`, `State`, `Engage`, `Release`) for the Scout and Mecanum entities |
 
 The accepted/running result of a mutation does not mean completion. The caller waits for the terminal state and checks the actual result; enabling is not arming, and cancellation does not erase physical effects that were already executed. Apart from the two fixed cold-preparation workers, requests create no per-robot threads; the runtime directory and the HTTP endpoint lease are released after the native work has stopped.
+
+### Readiness
+
+`GET /v1/describe` carries `service` (`xgc2.simulation`), `api_version`, `instance_id`, `ready` and `facts` next to the simulation document. `ready` is true when the native health is `ready` and the output thread has delivered a world frame. `facts` holds `world_generation` (always `1`: xsim loads one world when the process starts, and another world is another process with another `instance_id`), `frames_flowing`, `health` (the state of `/v1/health`), `capabilities` (the capabilities served by method calls, with their entities) and, in a build with ROS IO, `ros_master_uri`, the master the node is bound to.
+
+The query `wait_ready_ms=<0..30000>` holds the reply without polling until the service is ready, the wait elapses, the XRPC deadline of the call passes or the process starts to stop, and then answers with the current describe; `0`, no query or a ready service answers at once. Any other query on describe is `invalid_argument`, a query on another route is an unknown route, and at most 32 calls can be held (`resource_exhausted` beyond). XRPC treats a describe call that carries a query as a bound call, not as the unbound discovery route: send the `instance_id` of an unbound `GET /v1/describe` with it.
+
+### Capability calls and chassis HOLD
+
+The world serves the capability `xgc2.chassis.hold` through the generic method addressing of XRPC, `POST /v1/call/xgc2.chassis.hold/<Method>` with the JSON request as the body ([Capability calls](contracts/simulation-v1.md#capability-calls)); the methods are `Describe`, `State`, `Engage` and `Release` of the chassis HOLD service, with the bodies and semantics of the chassis-hold contract ([binding](contracts/simulation-v1.md#chassis-hold)). A failure is the XRPC error envelope `{"error":{"code","message","details"?}}` with the status of its code; the reply of a success is the JSON result as it is. The describe facts list the capability with the entities of the world's roster (`facts.capabilities`), which follows entities as they come and go. `src/xsim/io/native_rpc/chassis.cpp` holds the whole mapping, so the call route and the facts entry can be swapped for a library adapter without touching the rest of the server.
+
+The roster is the Scout and Mecanum entities, keyed by their public ID (the robot ID of a frozen Experiment, which can differ from the ROS namespace). FS150 entities are not a chassis. An entity joins the roster when it is added to the world and leaves it when it is removed; the HOLD state of an ID is kept, so an entity created again under the same ID starts held (at most 1024 distinct IDs per process). The `instance` of the HOLD replies is the `instance_id` of the HTTP binding.
+
+- Gate. The `cmd_vel` callback admits each message with the HOLD domain (`admit(public ID, receipt)`), the receipt being stamped on the domain's monotonic clock when the callback creates the command, not in simulation time. `World::apply` asks again when a velocity command would reach the model; it refuses the command of a held entity and one received before the last release of the entity (also when it waited in the world queue). Refusals are counted in `hold_refused_commands` of the `GET /v1/world` diagnostics. The gate is separate from `enabled`: a held entity keeps its ROS subscription, sensors and publication. A Release first runs the `cmd_vel` callbacks that are queued for the input thread, while the robots are still held, so messages received during the hold are not admitted afterwards; a message that the ROS transport enqueues in the instant between that drain and the release can still be admitted after it.
+- Zero. `World::boundary()` ticks the HOLD domain after the commands of the boundary, also while the world is paused: it cancels the pending velocity controls of each held entity and commands zero to its model, at every boundary. Engage wakes the world thread after the gate is closed and replies as soon as the zero is written, after at most 60 ms with stage `gated`. The reply is sent without holding the input thread.
+- Rest. Each boundary reports the twist of the held entity (Scout: realized forward speed and yaw rate; Mecanum: its body velocity and yaw rate) to the domain; 0.02 m/s and 0.05 rad/s for 300 ms after the zero give `stopped`. A paused world takes no samples, so a robot engaged while the world is paused reaches `stopped` only after the world runs.
+- Pause, restart. HOLD works while the world is paused and does not advance it. A restarted xsim is a new instance with every robot released; nothing is persisted.
 
 ## ECS data and execution flow
 

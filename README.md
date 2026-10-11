@@ -42,8 +42,15 @@ The paths below are defaults; `<name>` is the entity name. ROS configuration can
 | ROS service · FS150 | `/<name>/mavros/{cmd/arming,set_mode,cmd/command}` |
 | RPC queries | `GET /v1/describe`, `/v1/health`, `/v1/world`, `/v1/entities`, `/v1/operations/<id>` |
 | RPC management | entity create and delete, `POST /v1/entities/<id>/state`, `/reset`, world `/v1/world/{pause,resume,step,reset}`, operations `/v1/operations/<id>/{wait,cancel}` |
+| RPC capabilities | `POST /v1/call/xgc2.chassis.hold/{Describe,State,Engage,Release}` |
 
 RPC uses the request ID, timeout and instance headers of the shared SDK; entity operations also carry the actual generation. `202` only means accepted: the terminal state of the operation must be awaited to judge the domain result. Entity enablement is independent of FS150 Arm; disabling does not reinitialize the model, and reset keeps the enabled state and the world clock.
+
+## Chassis HOLD and readiness
+
+The capability `xgc2.chassis.hold`, served through `POST /v1/call/xgc2.chassis.hold/<Method>` and listed in the describe facts with the chassis entities, stops single Scout or Mecanum robots on command, by entity ID. A held robot refuses its `cmd_vel`, is commanded to zero at every world boundary (also while the world is paused) and reports `zero_written` and then `stopped` from its own twist; the world, the other robots and the sensors and publication of the held robot keep running. A release is a compare and set on the instance and the revision of the robot and never replays the commands of the hold. A removed robot keeps its HOLD state, so a re-created one starts held. The domain comes from the chassis-hold library; see the [contract](docs/contracts/simulation-v1.md#chassis-hold) and the [reference](docs/reference.md#capability-calls-and-chassis-hold).
+
+`GET /v1/describe` is the readiness report of the process: `ready`, and `facts` such as the ROS master URI, the world generation and whether frames flow. `?wait_ready_ms=N` (0 to 30000) holds the call, without polling, until the service is ready. See [Readiness](docs/contracts/simulation-v1.md#readiness).
 
 ## Sources and build
 
@@ -57,6 +64,6 @@ RPC uses the request ID, timeout and instance headers of the shared SDK; entity 
 
 The physical components of World are arrays by robot type (SoA), and controller and filter state sits in compact model arrays; ROS and RPC commands run at the same world boundary. Immutable snapshots are shared by the output, sensor and publication threads, and point-cloud data is shared and reused; ROS publication uses two fixed shard threads by default, with four initial send buffers per topic that are topped up by connection usage and then reused.
 
-Build, install and packaging are in the [reference](docs/reference.md#build-install-and-packaging). `XSIM_ROS=OFF` builds the same world and RPC service without ROS; GPU observation is enabled by an explicit build option.
+The service contract is [docs/contracts/simulation-v1.md](docs/contracts/simulation-v1.md). Build, install and packaging are in the [reference](docs/reference.md#build-install-and-packaging). `XSIM_ROS=OFF` builds the same world and RPC service without ROS; GPU observation is enabled by an explicit build option.
 
 The test entry is `src/xsim/test.sh`; `tests/validate.sh` provides an isolated build and the ROS integration checks.
