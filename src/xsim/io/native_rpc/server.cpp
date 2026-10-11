@@ -105,7 +105,7 @@ void Server::run(const volatile sig_atomic_t &stopping) {
     for (const auto &s : view->states)
       if (auto e = s.entity.lock(); e && e->alive && e->io && e->io->reconcile)
         e->io->reconcile();
-    transport_->poll(std::chrono::milliseconds(1));
+    transport_->poll(std::chrono::milliseconds(io_.inputs_ready && !io_.inputs_ready() ? 10 : 1));
     prune_waiters();
     answer_ready_waiters();
     if (Clock::now() >= next_expiry_) { harvest(); next_expiry_ = Clock::now() + std::chrono::seconds(1); }
@@ -416,6 +416,8 @@ Json Server::receipt(const std::string &id, const Ticket &t) {
         (t->result.reason == 1 ? "conflict" : "invalid_argument")},
         {"message", t->result.interrupted ? "native step interrupted by shutdown" :
                                            "native engine rejected operation"}};
+    if (!t->result.interrupted && record.preparation && !record.preparation->error.empty())
+      result["error"]["message"] = record.preparation->error;
     result["effects"] = {{"applied", t->result.interrupted && t->result.applied}};
     if (t->result.interrupted) result["result"] = snapshot_result();
   } else if (phase == 2) {

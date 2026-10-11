@@ -175,6 +175,12 @@ if(XSIM_TESTS AND NOT XSIM_ROS)
 endif()
 # Needs a ROS Noetic environment: roscore and rospy. It starts its own master on a private port.
 if(XSIM_TESTS AND XSIM_ROS)
+  add_test(NAME xsim_startup_ros COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/startup_ros.py
+    --xsim $<TARGET_FILE:xsim>)
+  set_tests_properties(xsim_startup_ros PROPERTIES TIMEOUT 100 ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
+  add_test(NAME xsim_ros_peer_down COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/startup_ros.py
+    --xsim $<TARGET_FILE:xsim> --long)
+  set_tests_properties(xsim_ros_peer_down PROPERTIES TIMEOUT 180 LABELS "long;peer-down" ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
   add_test(NAME xsim_chassis_hold_ros COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../tests/chassis_hold_ros.py
     --xsim $<TARGET_FILE:xsim> --slow-service-test $<TARGET_FILE:xsim_slow_service_test>)
   set_tests_properties(xsim_chassis_hold_ros PROPERTIES TIMEOUT 120 ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)

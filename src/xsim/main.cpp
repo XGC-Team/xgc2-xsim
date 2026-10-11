@@ -126,7 +126,6 @@ int main(int argc, char **argv) {
     });
     ros::init(argc, argv, "xsim", ros::init_options::NoSigintHandler);
     RosShutdown ros_shutdown;
-    ros::param::set("/use_sim_time", true);
 #else
     if (!binding.storage_grants().empty())
       throw std::invalid_argument("headless xsim has no storage allocations");

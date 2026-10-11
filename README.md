@@ -56,7 +56,7 @@ Engage closes admission immediately; Release is applied at the next tick and che
 
 HOLD ticks only on the world thread, including its startup boundary and boundaries while paused. Initial-entity setup applies commands without ticking; `World::start()` returns after the startup boundary and output snapshot. A World starts once; restarting xsim constructs a new World and instance.
 
-`GET /v1/describe` is the readiness report of the process: `ready`, and `facts` such as the ROS master URI, the world generation and whether frames flow. `?wait_ready_ms=N` (0 to 30000) holds the call, without polling, until the service is ready. See [Readiness](docs/contracts/simulation-v1.md#readiness).
+`GET /v1/describe` reports readiness of xsim's own socket, loaded world and native components. ROS publishers bind independently, including when the master starts later; `facts.ros.ready` stays false while waiting, and a changed master PID or run id ends xsim's Run binding. The scene, visualization peers and optional GPU module do not gate CPU worlds. `?wait_ready_ms=N` (0 to 30000) holds the unbound call, without polling, until xsim is ready. See [Readiness](docs/contracts/simulation-v1.md#readiness).
 
 ## Sources and build
 

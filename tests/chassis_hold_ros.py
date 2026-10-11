@@ -157,7 +157,7 @@ def scenario(x, driver):
     described = x.start()
     assert described["facts"]["ros_master_uri"] == os.environ["ROS_MASTER_URI"], described["facts"]
     assert described["facts"]["world_generation"] == 1
-    status, ready = x.call("GET", "/v1/describe?wait_ready_ms=10000")
+    status, ready = x.call("GET", "/v1/describe?wait_ready_ms=10000", bound=False)
     assert status == 200 and ready["ready"] is True and ready["facts"]["frames_flowing"] is True, ready
     assert ready["facts"]["capabilities"] == [{"name": HOLD, "entities": ["ugv-a", "ugv-b", "ugv-m"]}], ready["facts"]
     status, roster = x.hold("Describe")

@@ -26,6 +26,7 @@ int main(int argc, char **argv) {
   start->op=Op::Provider;start->action=1;start->key={e->id,0};
   start->prepared=std::make_unique<Prepared>(Prepared{e,prepare_model(e->config)});
   world.submit(start);world.apply_commands();assert(start->result.success && e->enabled);
+  ros_entity->bind();
   ros::NodeHandle n;
   n.setCallbackQueue(&services);
   std::atomic<unsigned> entered{0};

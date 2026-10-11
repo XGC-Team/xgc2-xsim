@@ -65,10 +65,10 @@ def run(x):
     assert described["instance_id"] == x.instance and described["service_ref"]["instance_id"] == x.instance
     assert described["facts"]["world_generation"] == 1 and "ros_master_uri" not in described["facts"], described
     started = time.monotonic()
-    status, ready = x.call("GET", "/v1/describe?wait_ready_ms=5000")
+    status, ready = x.call("GET", "/v1/describe?wait_ready_ms=5000", bound=False)
     assert status == 200 and ready["ready"] is True and ready["facts"]["frames_flowing"] is True, ready
     assert time.monotonic() - started < 2, "a ready service answers a waiting describe at once"
-    assert x.call("GET", "/v1/describe?wait_ready_ms=0")[1]["ready"] is True
+    assert x.call("GET", "/v1/describe?wait_ready_ms=0", bound=False)[1]["ready"] is True
     for bad in ("wait_ready_ms=-1", "wait_ready_ms=30001", "wait_ready_ms=1.5", "wait_ready_ms=01", "wait_ready_ms=",
                 "wait_ready_ms=1&wait_ready_ms=2", "other=1"):
         assert x.call("GET", "/v1/describe?" + bad)[0] == 400, bad
@@ -209,7 +209,7 @@ def run(x):
     x.config["paused"] = True
     write_private(x.world, x.config)
     x.start()
-    status, ready = x.call("GET", "/v1/describe?wait_ready_ms=5000")
+    status, ready = x.call("GET", "/v1/describe?wait_ready_ms=5000", bound=False)
     assert status == 200 and ready["ready"] is True and ready["facts"]["frames_flowing"] is True, ready
     assert x.call("GET", "/v1/world")[1]["paused"] is True
     x.stop()

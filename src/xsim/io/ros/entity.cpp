@@ -35,12 +35,13 @@ RosEntity::RosEntity(const std::shared_ptr<Entity> &e, World &w,
                      std::shared_ptr<PublicationMetrics> telemetry_metrics,
                      std::shared_ptr<PublicationMetrics> cloud_metrics)
     : ros_config(config), entity(e), world(w), runtime_owner(std::move(owner)),
+      input_queue(iq), service_queue(sq), telemetry_metrics(std::move(telemetry_metrics)),
+      cloud_metrics(std::move(cloud_metrics)),
       rng(ros_config.value("mocap_seed", 1u)), schedule(w.epoch) {
   for (const char *key : {"mocap_topic", "mocap_velocity_topic"})
     if (ros_config.contains(key))
       throw std::invalid_argument("unsupported ROS configuration: " + std::string(key));
-  input.setCallbackQueue(&iq);
-  services.setCallbackQueue(&sq);
+  localization_pose_topic = ros::names::resolve(topic("localization_pose_topic", "/pose"));
   frame = ros_config.value(
       "frame", std::string(e->config.kind == Kind::FS150 ? "map" : "world"));
   body_frame = ros_config.value("body_frame", std::string("base_link"));
@@ -63,42 +64,48 @@ RosEntity::RosEntity(const std::shared_ptr<Entity> &e, World &w,
     if (!noise.allFinite() || (noise.array() < 0).any())
       throw std::invalid_argument("invalid mocap noise");
   }
-  auto pose_advertisement = input.advertise<geometry_msgs::PoseStamped>(
-      topic("localization_pose_topic", "/pose"), 1);
-  localization_pose_topic = pose_advertisement.getTopic();
+}
+void RosEntity::bind() {
+  auto e = entity.lock();
+  if (!e || !e->alive) return;
+  input = std::make_unique<ros::NodeHandle>();
+  services = std::make_unique<ros::NodeHandle>();
+  input->setCallbackQueue(&input_queue);
+  services->setCallbackQueue(&service_queue);
+  auto pose_advertisement = input->advertise<geometry_msgs::PoseStamped>(localization_pose_topic, 1);
   localization_pose.bind(std::move(pose_advertisement), telemetry_metrics);
-  localization_twist.bind(input.advertise<geometry_msgs::TwistStamped>(
+  localization_twist.bind(input->advertise<geometry_msgs::TwistStamped>(
       topic("localization_twist_topic", "/twist"), 1), telemetry_metrics);
   const bool flight = e->config.kind == Kind::FS150;
   if (flight) {
-    pose.bind(input.advertise<geometry_msgs::PoseStamped>(
+    pose.bind(input->advertise<geometry_msgs::PoseStamped>(
         topic("pose_topic", "/mavros/local_position/pose"), 1), telemetry_metrics);
-    velocity.bind(input.advertise<geometry_msgs::TwistStamped>(
+    velocity.bind(input->advertise<geometry_msgs::TwistStamped>(
         topic("velocity_topic", "/mavros/local_position/velocity_local"), 1), telemetry_metrics);
-    odom.bind(input.advertise<nav_msgs::Odometry>(
+    odom.bind(input->advertise<nav_msgs::Odometry>(
         topic("odometry_topic", "/mavros/local_position/odom"), 1), telemetry_metrics);
-    imu.bind(input.advertise<sensor_msgs::Imu>(
+    imu.bind(input->advertise<sensor_msgs::Imu>(
         topic("imu_topic", "/mavros/imu/data"), 1), telemetry_metrics);
-    raw_imu.bind(input.advertise<sensor_msgs::Imu>(
+    raw_imu.bind(input->advertise<sensor_msgs::Imu>(
         topic("raw_imu_topic", "/mavros/imu/data_raw"), 1), telemetry_metrics);
-    state.bind(input.advertise<mavros_msgs::State>(
+    state.bind(input->advertise<mavros_msgs::State>(
         topic("state_topic", "/mavros/state"), 1), telemetry_metrics);
-    extended.bind(input.advertise<mavros_msgs::ExtendedState>(
+    extended.bind(input->advertise<mavros_msgs::ExtendedState>(
         topic("extended_state_topic", "/mavros/extended_state"), 1), telemetry_metrics);
-    target.bind(input.advertise<mavros_msgs::AttitudeTarget>(
+    target.bind(input->advertise<mavros_msgs::AttitudeTarget>(
         topic("target_attitude_topic", "/mavros/setpoint_raw/target_attitude"),
         1), telemetry_metrics);
   } else if (e->config.kind == Kind::Scout) {
-    raw_imu.bind(input.advertise<sensor_msgs::Imu>(
+    raw_imu.bind(input->advertise<sensor_msgs::Imu>(
         topic("raw_imu_topic", "/imu/data_raw"), 1), telemetry_metrics);
   } else {
-    imu.bind(input.advertise<sensor_msgs::Imu>(
+    imu.bind(input->advertise<sensor_msgs::Imu>(
         topic("imu_topic", "/imu"), 1), telemetry_metrics);
   }
   if (e->sensor) {
     cloud_message.header.frame_id = e->sensor->frame;
     beam_message.header.frame_id = e->sensor->frame;
-    cloud.bind(input.advertise<sensor_msgs::PointCloud2>(e->sensor->topic, 1), cloud_metrics);
+    cloud.bind(input->advertise<sensor_msgs::PointCloud2>(e->sensor->topic, 1), cloud_metrics);
     cloud_message.fields.resize((e->sensor->gpu || e->sensor->with_bodies) ? 4 : 3);
     for (unsigned a = 0; a < cloud_message.fields.size(); ++a) {
       auto &f = cloud_message.fields[a];
@@ -112,13 +119,27 @@ RosEntity::RosEntity(const std::shared_ptr<Entity> &e, World &w,
     cloud_message.is_dense = true;
     cloud_message.is_bigendian = false;
     if(e->sensor->publish_beams){
-      beams.bind(input.advertise<sensor_msgs::PointCloud2>("/"+e->config.name+"/simple_lidar/beams",1), cloud_metrics);
+      beams.bind(input->advertise<sensor_msgs::PointCloud2>("/"+e->config.name+"/simple_lidar/beams",1), cloud_metrics);
       beam_message.height=1;beam_message.is_dense=true;beam_message.point_step=e->sensor->with_bodies?36:32;
       const char* names[]={"x","y","z","dx","dy","dz","range","hit","vehicle_id"};
       for(unsigned a=0;a<(e->sensor->with_bodies?9u:8u);++a){sensor_msgs::PointField f;f.name=names[a];f.offset=a*4;f.datatype=a==8?sensor_msgs::PointField::INT32:sensor_msgs::PointField::FLOAT32;f.count=1;beam_message.fields.push_back(f);}
     }
   }
   reconcile();
+  bound.store(true, std::memory_order_release);
+}
+bool RosEntity::request_reconcile() {
+  auto e = entity.lock();
+  if (!e) return false;
+  const auto generation = e->generation.load();
+  const bool alive = e->alive, enabled = alive && e->enabled;
+  if (requested_generation == generation && requested_enabled == enabled && requested_alive == alive)
+    return false;
+  requested_generation = generation;
+  requested_enabled = enabled;
+  requested_alive = alive;
+  desired_revision.fetch_add(1, std::memory_order_release);
+  return true;
 }
 void RosEntity::reconcile() {
   auto e = entity.lock();
@@ -149,7 +170,7 @@ void RosEntity::reconcile() {
   if (e->config.kind != Kind::FS150) {
     if (!enabled)
       return;
-    velocity_sub = input.subscribe<geometry_msgs::Twist>(
+    velocity_sub = input->subscribe<geometry_msgs::Twist>(
         topic("cmd_vel_topic", "/cmd_vel"), 1,
         [weak = entity, gen, this](const geometry_msgs::Twist::ConstPtr &m) {
           auto e = weak.lock();
@@ -170,7 +191,7 @@ void RosEntity::reconcile() {
     return;
   }
   if (enabled) {
-    pva_sub = input.subscribe<mavros_msgs::PositionTarget>(
+    pva_sub = input->subscribe<mavros_msgs::PositionTarget>(
         topic("setpoint_topic", "/mavros/setpoint_raw/local"), 1,
         [weak = entity, gen,
          this](const mavros_msgs::PositionTarget::ConstPtr &m) {
@@ -199,7 +220,7 @@ void RosEntity::reconcile() {
           p.yaw_rate = m->yaw_rate;
           world.submit(t);
         });
-    attitude_sub = input.subscribe<mavros_msgs::AttitudeTarget>(
+    attitude_sub = input->subscribe<mavros_msgs::AttitudeTarget>(
         topic("attitude_topic", "/mavros/setpoint_raw/attitude"), 1,
         [weak = entity, gen,
          this](const mavros_msgs::AttitudeTarget::ConstPtr &m) {
@@ -241,7 +262,7 @@ void RosEntity::reconcile() {
         }
         return true;
       };
-  arm = services.advertiseService(topic("arming_service", "/mavros/cmd/arming"),
+  arm = services->advertiseService(topic("arming_service", "/mavros/cmd/arming"),
                                   arm_fn);
   boost::function<bool(mavros_msgs::SetMode::Request &,
                        mavros_msgs::SetMode::Response &)>
@@ -262,7 +283,7 @@ void RosEntity::reconcile() {
               t->result.applied && t->result.enabled && t->result.reason != 1;
         return true;
       };
-  mode = services.advertiseService(topic("mode_service", "/mavros/set_mode"),
+  mode = services->advertiseService(topic("mode_service", "/mavros/set_mode"),
                                    mode_fn);
   boost::function<bool(mavros_msgs::CommandLong::Request &,
                        mavros_msgs::CommandLong::Response &)>
@@ -294,10 +315,11 @@ void RosEntity::reconcile() {
         }
         return true;
       };
-  command = services.advertiseService(
+  command = services->advertiseService(
       topic("command_service", "/mavros/cmd/command"), command_fn);
 }
 void RosEntity::publish(const State &s, const TelemetryRates &rates) {
+  if (!bound.load(std::memory_order_acquire)) return;
   auto e = entity.lock();
   if (!e || !e->alive || s.key.generation != e->generation)
     return;
@@ -406,6 +428,7 @@ void RosEntity::publish(const State &s, const TelemetryRates &rates) {
   }
 }
 bool RosEntity::publish_sensor() {
+  if (!bound.load(std::memory_order_acquire)) return false;
   auto e=entity.lock();
   if(!e || !e->alive || !e->enabled || !e->sensor)return false;
   Sample sample;

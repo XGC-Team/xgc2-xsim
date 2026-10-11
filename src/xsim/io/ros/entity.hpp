@@ -23,15 +23,23 @@ struct RosEntity {
             ros::CallbackQueue &, const Json &config, std::shared_ptr<void> owner = {},
             std::shared_ptr<PublicationMetrics> telemetry_metrics = {},
             std::shared_ptr<PublicationMetrics> cloud_metrics = {});
-  void reconcile(); // event thread only; bind immutable-generation callbacks
+  void bind(); // ROS connection worker only; publications become immutable after binding
+  bool request_reconcile(); // event thread only; coalesce the desired graph state
+  void reconcile(); // ROS connection worker only; bind immutable-generation callbacks
   void publish(const State &, const TelemetryRates &); // stable publication shard only
   bool publish_sensor(); // at most one completed scan; same shard only
   const Json ros_config;
   std::weak_ptr<Entity> entity;
   World &world;
   std::shared_ptr<void> runtime_owner;
-  ros::NodeHandle input, services;
-  std::string localization_pose_topic; // assigned once from the actual advertisement
+  ros::CallbackQueue &input_queue, &service_queue;
+  std::unique_ptr<ros::NodeHandle> input, services;
+  const std::shared_ptr<PublicationMetrics> telemetry_metrics, cloud_metrics;
+  std::string localization_pose_topic; // resolved once before the deferred advertisement
+  std::atomic<bool> bound{false};
+  std::atomic<uint64_t> desired_revision{1}, applied_revision{0};
+  uint64_t requested_generation = UINT64_MAX;
+  bool requested_enabled = false, requested_alive = false;
   BufferedPublisher localization_pose, localization_twist, pose, velocity, imu, raw_imu,
       state, extended, target, odom, cloud, beams;
   ros::Subscriber pva_sub, attitude_sub, velocity_sub;

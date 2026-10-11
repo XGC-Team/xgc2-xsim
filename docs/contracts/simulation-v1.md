@@ -285,13 +285,25 @@ Data-plane telemetry is evidence of state, not another operation authority.
 of the platform architecture). Next to the fields above it carries `service`, `api_version`, `instance_id` (the
 instance of the ServiceRef), `ready` and `facts`:
 
-- `ready` is true when the world is loaded, its native components are initialized (health `ready`) and the
-  domain dependencies are valid. A service whose dependency is replaced either exits or reports `ready:false`;
-  it never serves a stale binding.
+- `ready` is true when xsim's socket is bound, its world is loaded and its native components are initialized
+  (health `ready`, including the first world snapshot). ROS master availability and topic peers, the scene
+  adapter, visualization and optional GPU module do not gate this readiness or native robot/HOLD calls.
 - `facts` carries the dependencies that make the service valid: `world_generation` (integer, the generation of
   the loaded world; it changes, or the service exits, when the world is replaced), `frames_flowing` (the world
   has delivered frames to its outputs), `health` (the lifecycle state of `/v1/health`), `capabilities` (the
-  capabilities the world serves, see Capability calls) and, when the host publishes on ROS, `ros_master_uri`.
+  capabilities the world serves, see Capability calls) and, when the host publishes on ROS, `ros_master_uri`
+  and `ros`. The latter reports `ready:false` with a reason while waiting for the master, its bound
+  `master_pid` and `master_run_id`, connection attempts and the desired/applied state revision. Master
+  discovery runs on one worker with full-jitter exponential backoff from 250 ms to 30 s. A successful
+  discovery resets that backoff; the bound identity is checked every 10 s because rosmaster supplies no
+  identity event. No connection is attempted until a ROS input or output is requested. Topic peers use
+  normal ROS publisher updates. Graph changes are coalesced by entity revision on the same worker;
+  publication retains the existing bounded latest-frame slots. Publication workers stop during a master
+  outage and restart with those latest slots. Native socket polling waits up to 10 ms between events
+  while ROS input is unavailable, waking immediately for native requests; bound input keeps its 1 ms cadence. The owned
+  `/use_sim_time` setting and frozen reference cloud are applied once for the bound instance. Logs report
+  the first discovery failure and a summary at most every 10 s. A replaced master (changed PID or run id)
+  ends the process; a temporarily unreachable master reports `ros.ready:false` while native calls continue.
   Clients ignore facts they do not know. xsim loads one world when it starts, so its `world_generation` is 1;
   another world is another process with another `instance_id`.
 - The optional query `wait_ready_ms=<0..30000>` (a canonical decimal integer; anything else is

@@ -43,9 +43,8 @@
           },
           "rosMasterUri": {
             "type": "string",
-            "description": "ROS_MASTER_URI of the Experiment world",
-            "default": "http://127.0.0.1:11311",
-            "output": true
+            "description": "Pre-allocated session ROS_MASTER_URI; the master may start after xsim.",
+            "fixedOnly": true
           },
           "sceneFile": {
             "type": "string",
@@ -85,6 +84,7 @@
           "bootstrapInput",
           "rosHome",
           "rosLogDir",
+          "rosMasterUri",
           "configJson"
         ]
       },
