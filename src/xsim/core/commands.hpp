@@ -56,6 +56,10 @@ struct Command {
   int64_t at = 0;
   int64_t arrival_ns = 0; // realtime arrival guard; not a coalescing/event key
   Eigen::Vector3d velocity{Eigen::Vector3d::Zero()}; // forward,left,yaw rate
+  // Velocity commands: when the producer received the command, on the HOLD domain clock
+  // (World::hold().now(), not simulation time). A command received before the last release of its entity
+  // is dropped when it would be applied, so a stale command never replays.
+  int64_t received_ns = 0;
   PositionTarget pva{};
   FlightAttitudeSetpoint attitude;
   std::unique_ptr<Prepared> prepared;
