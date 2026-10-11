@@ -36,6 +36,6 @@ printf 'Source: xsim\nSection: science\nPriority: optional\nMaintainer: XGC Team
 dependencies="$(cd "$build_output/shlibs"; dpkg-shlibdeps -O -e"$build_output/stage/opt/xgc2/xsim/bin/xsim" | sed 's/^shlibs:Depends=//')"
 python3 "$(dirname "${BASH_SOURCE[0]}")/package_debs.py" --stage "$build_output/stage" \
  --depends "$dependencies, libglfw3 (>= 3.3), ros-noetic-roscpp, ros-noetic-mavros-msgs, ros-noetic-rosgraph-msgs" \
- --output "$package_output/xsim_1.1.0-3_$(dpkg --print-architecture).deb"
+ --output "$package_output/xsim_1.2.0-1_$(dpkg --print-architecture).deb"
 cp -a "$build_output/stage/opt" "$package_output/"
 sha256sum "$package_output"/*.deb > "$package_output/SHA256SUMS"
