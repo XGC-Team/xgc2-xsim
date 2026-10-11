@@ -8,16 +8,20 @@ namespace {
 bool continuous(Op op) {
   return op == Op::Pva || op == Op::Attitude || op == Op::Velocity;
 }
-xgc2::chassis_hold::DomainOptions hold_options(std::string instance) {
-  xgc2::chassis_hold::DomainOptions options;
-  options.instance_id = std::move(instance);
+xgc2::chassis_hold::HoldOptions hold_options(std::string instance, World &world,
+                                           xgc2::chassis_hold::FeedbackSource &feedback) {
+  xgc2::chassis_hold::HoldOptions options;
+  options.domain.instance_id = std::move(instance);
+  options.domain.boot_held = true;
+  options.domain.wake = [&world] { world.wake(); };
+  options.feedback = &feedback;
   return options;
 }
 } // namespace
 World::World(int64_t e, int64_t d, int64_t o, unsigned c, int64_t maximum,
              std::string instance)
-    : epoch(e), dt(d), output_period(o), hold_(hold_options(std::move(instance))),
-      time_(e), next_output_(e), catchup_(c), physics_clock_(d, maximum) {
+    : epoch(e), dt(d), output_period(o), time_(e), next_output_(e), catchup_(c),
+      physics_clock_(d, maximum), hold_(hold_options(std::move(instance), *this, *this), *this) {
   if (e <= 0 || d <= 0 || o <= 0 || d > INT64_MAX-e || !c || e > INT64_MAX - o)
     throw std::invalid_argument(
         "explicit positive session epoch, step and output period required");
@@ -196,7 +200,7 @@ Result World::apply(Command &c) {
       }
     // Scout and Mecanum entities are the HOLD roster. An ID of a removed entity gets its HOLD state back.
     const bool chassis = e->config.kind != Kind::FS150;
-    if (chassis && !hold_.add(e->public_id, true)) {
+    if (chassis && !hold_.add(e->public_id)) {
       r.success = false;
       r.reason = 4;
       return r;
@@ -423,7 +427,7 @@ Result World::apply(Command &c) {
     r.reason = 2;
   return r;
 }
-void World::boundary() {
+void World::apply_commands() {
   const auto now = Clock::now();
   {
     std::unique_lock<std::mutex> l(input_mutex_, std::try_to_lock);
@@ -461,16 +465,13 @@ void World::boundary() {
     else
       finish(t, r);
   }
-  // The HOLD tick: after this boundary's commands, zero for every held entity, every boundary. The sink
-  // records each entity's twist; reported after the zero write, it is the feedback behind `stopped`.
+}
+void World::boundary() {
+  apply_commands();
+  // Only the world thread ticks after startup; deterministic fixtures use one owner thread throughout.
+  // The facade polls the twists recorded by the zero sink after the domain has written every held robot.
   hold_samples_.clear();
-  hold_.tick(*this);
-  if (!hold_samples_.empty()) {
-    const auto stamp = hold_.now();
-    for (const auto &sample : hold_samples_)
-      hold_.observe(slots_.at(sample.id).entity->public_id, sample.linear,
-                    sample.angular, stamp);
-  }
+  hold_.tick();
 }
 bool World::write_zero(const std::string &public_id, std::string &error) {
   const auto roster = hold_ids_.find(public_id);
@@ -491,6 +492,16 @@ bool World::write_zero(const std::string &public_id, std::string &error) {
     hold_samples_.push_back({e.id, m.body_velocity().norm(), std::abs(m.yaw_rate())});
   }
   return true;
+}
+bool World::latest(const std::string &public_id, xgc2::chassis_hold::Feedback &feedback) {
+  const auto roster = hold_ids_.find(public_id);
+  if (roster == hold_ids_.end()) return false;
+  for (const auto &sample : hold_samples_)
+    if (sample.id == roster->second) {
+      feedback = {sample.linear, sample.angular, hold_.now()};
+      return true;
+    }
+  return false;
 }
 void World::advance() { advance(dt); }
 void World::advance(int64_t elapsed_ns) {
@@ -680,8 +691,8 @@ bool World::take_frame(Frame &f) {
 void World::start() {
   std::unique_lock<std::mutex> lock(wake_mutex_);
   if (!running_) {
-    if (thread_.joinable())
-      throw std::logic_error("previous world thread must be stopped before restart");
+    if (started_ || startup_error_ || thread_.joinable())
+      throw std::logic_error("a stopped World cannot be restarted; construct a new World");
     started_ = false;
     startup_error_ = nullptr;
     running_ = true;
@@ -735,9 +746,8 @@ void World::run() {
     physics_clock_.rebase(wall, time_);
     wall_offset_ns_ = time_ - wall;
     boundary();
-    // Every start must publish this native generation's first frame, including
-    // a restart at an unchanged simulation time. A saturated output pool must
-    // not be reported as initialized merely because its thread exists.
+    // The startup boundary writes zero to the initial held robots before start returns. A saturated output
+    // pool must not be reported as initialized merely because its thread exists.
     emitted_stamp_ = -1;
     emitted_revision_ = UINT64_MAX;
     emit();

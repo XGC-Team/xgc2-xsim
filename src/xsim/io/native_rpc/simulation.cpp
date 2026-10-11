@@ -83,7 +83,7 @@ Json Server::facts() {
   // xsim loads its one world when the process starts: world_generation is fixed, and a different world is a
   // different process with another instance_id.
   Json result{{"world_generation", 1}, {"frames_flowing", frames_flowing_.load()}, {"health", health_state_}};
-  result["capabilities"] = capabilities();
+  result["capabilities"] = Json::array({Json::parse(hold_http_.capability_json())});
   if (io_.facts) {
     const auto io = io_.facts();
     for (auto i = io.begin(); i != io.end(); ++i) result[i.key()] = i.value();
@@ -138,8 +138,6 @@ bool Server::simulation_request(const xgc2::xrpc::HttpRequest &request, const Js
   auto error = [&](int status, const std::string &code, const std::string &message) {
     reply.complete(xgc2::xrpc::http_error(status, code, message)); return true;
   };
-  if (method == "POST" && parts.size() == 4 && parts[1] == "call")
-    return capability_call(request, parts[2], parts[3], reply);
   harvest();
   prune_waiters();
   if (method == "GET" && path == "/v1/describe") {

@@ -24,7 +24,7 @@ Server::Server(const Json &config, const std::string &path, RpcOptions options,
                World &world, Sensors &sensors, RuntimeIO io)
     : instance_(world.hold().instance_id()), socket_path_(path),
       target_id_(std::move(options.target_id)), limits_(options.limits),
-      io_(std::move(io)), world_(world), sensors_(sensors) {
+      io_(std::move(io)), world_(world), sensors_(sensors), hold_http_(world.hold().service()) {
   if (!safe_request_id(target_id_))
     throw std::invalid_argument("explicit target_id required");
   telemetry_rates_ = std::make_shared<const TelemetryRates>(
@@ -54,7 +54,7 @@ Server::Server(const Json &config, const std::string &path, RpcOptions options,
     t->op = Op::Add;
     t->prepared = prepare(j, id);
     world_.submit(t);
-    world_.boundary();
+    world_.apply_commands();
     if (!t->result.success)
       throw std::runtime_error("initial entity rejected");
     Json spec = j.value("specification", Json{{"id", id}, {"role", "robot"}});
@@ -63,7 +63,6 @@ Server::Server(const Json &config, const std::string &path, RpcOptions options,
   }
   latest_ = std::make_shared<const Frame>(world_.capture());
   initialized_ = true;
-  hold_service_ = std::make_unique<xgc2::chassis_hold::Service>(world_.hold());
   xgc2::xrpc::UnixOptions endpoint; endpoint.path = path;
   transport_.reset(new xgc2::xrpc::HttpServer(endpoint,
       [this](xgc2::xrpc::HttpRequest request, xgc2::xrpc::HttpReply reply) {
@@ -252,8 +251,7 @@ void Server::shutdown() noexcept {
   }
   health_waiters_.clear();
   ready_waiters_.clear();
-  // Completes pending Engage replies with the state reached, so the drain does not wait for their timers.
-  attempt([&] { hold_service_.reset(); });
+  // The world's service completes pending HOLD replies within its bounded waits while the transport drains.
   if (transport_) {
     attempt([&] { transport_->drain(); });
     attempt([&] { transport_->set_wakeup_handler({}); });
@@ -438,6 +436,7 @@ void Server::respond(xgc2::xrpc::HttpReply reply, int code, Json result) {
 }
 void Server::http_request(xgc2::xrpc::HttpRequest request, xgc2::xrpc::HttpReply reply) {
   try {
+    if (request.method != "POST" && hold_http_.handle(request, reply)) return;
     std::vector<std::unordered_set<std::string>> keys;
     auto unique_keys = [&keys](int depth, Json::parse_event_t event, Json &parsed) {
       if (depth > 64) throw std::invalid_argument("JSON nesting exceeds limit");
@@ -449,6 +448,12 @@ void Server::http_request(xgc2::xrpc::HttpRequest request, xgc2::xrpc::HttpReply
     };
     const Json body = request.body.empty() ? Json::object() : Json::parse(request.body, unique_keys);
     if (!body.is_object()) throw std::invalid_argument("request must be an object");
+    // Keep the host's duplicate-field validation for capability bodies as well as management bodies.
+    // roscpp callbacks stamp receipt when dispatched: drain them while still held before queuing a release.
+    if (request.method == "POST" &&
+        request.target == std::string(xgc2::chassis_hold::HttpAdapter::route_prefix()) + "Release" && io_.poll_inputs)
+      io_.poll_inputs();
+    if (hold_http_.handle(request, reply)) return;
     if (!simulation_request(request, body, reply)) reply.complete(xgc2::xrpc::http_error(404, "not_found", "unknown simulation endpoint"));
   } catch (const std::exception &error) { reply.complete(xgc2::xrpc::http_error(400, "invalid_argument", error.what())); }
 }

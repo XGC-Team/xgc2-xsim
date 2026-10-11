@@ -8,6 +8,7 @@ Ticket request(World &w, Op op, Key k = {}) {
   auto t = std::make_shared<Command>();
   t->op = op;
   t->key = k;
+  if (op == Op::Velocity) t->received_ns = w.hold().now();
   return t;
 }
 void execute(World &w, const Ticket &t) {
@@ -35,6 +36,14 @@ void start(World &w, const std::shared_ptr<Entity> &e) {
       std::make_unique<Prepared>(Prepared{e, prepare_model(e->config)});
   execute(w, t);
   assert(t->result.success && e->enabled);
+  if (e->config.kind != Kind::FS150) {
+    const auto state = w.hold().domain().state({e->public_id}).robots.front();
+    if (state.held) {
+      const auto release = w.hold().domain().release(w.hold().instance_id(), {{e->public_id, state.revision}});
+      w.boundary();
+      assert(release.done() && release.results()[0].outcome == xgc2::chassis_hold::Outcome::released);
+    }
+  }
 }
 int main() {
   const auto rejected_ros_key = [](const char *kind, const char *key) {
@@ -250,24 +259,26 @@ int main() {
   execute(w, held);
   assert(held->result.success);
   held_lock.unlock();
-  auto pause = request(w, Op::Pause);
-  execute(w, pause);
-  const auto before = w.metrics.steps.load();
-  w.start();
-  auto paused_add = request(w, Op::Add);
+  // The deterministic World has already bound HOLD to this thread; native management uses a new World.
+  World paused_world(w.metrics.sim_ns);
+  auto pause = request(paused_world, Op::Pause);
+  paused_world.submit(pause); paused_world.apply_commands();
+  const auto before = paused_world.metrics.steps.load();
+  paused_world.start();
+  auto paused_add = request(paused_world, Op::Add);
   auto pe = std::make_shared<Entity>(
       parse_entity({{"name", "paused"}, {"kind", "scout"}}));
   paused_add->prepared =
       std::make_unique<Prepared>(Prepared{pe, prepare_model(pe->config)});
-  w.submit(paused_add);
+  paused_world.submit(paused_add);
   assert(World::wait(paused_add));
-  assert(w.metrics.steps == before);
-  auto step = request(w, Op::Step);
+  assert(paused_world.metrics.steps == before);
+  auto step = request(paused_world, Op::Step);
   step->steps = 7;
-  w.submit(step);
+  paused_world.submit(step);
   assert(World::wait(step));
-  assert(w.metrics.steps == before + 7);
-  w.stop();
+  assert(paused_world.metrics.steps == before + 7);
+  paused_world.stop();
   // Real immutable-scene CPU scans, mount transform, generation and bounded
   // pending.
   Sensors sensors({{"obstacles", Json::array({{{"type", "box"},

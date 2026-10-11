@@ -7,12 +7,11 @@
 #include <list>
 #include <thread>
 #include <unordered_map>
-#include <xgc2/chassis_hold/domain.hpp>
+#include <xgc2/chassis_hold/chassis_hold.hpp>
 
 namespace xsim {
-// The world is also the native output of its chassis HOLD domain: boundary() runs the HOLD tick, whose
-// zero output is write_zero().
-class World : private xgc2::chassis_hold::ZeroSink {
+// The world owns chassis HOLD and provides its zero output and measured twists on the boundary's tick thread.
+class World : private xgc2::chassis_hold::ZeroSink, private xgc2::chassis_hold::FeedbackSource {
 public:
   // `instance` is the 32 hex digit incarnation of this world process; empty draws a random one.
   World(int64_t epoch, int64_t dt = 2000000, int64_t output = 8000000,
@@ -24,6 +23,7 @@ public:
                                // by entity/type/time
   void wake(); // nonworld threads: have the world thread run a boundary now
   static bool wait(const Ticket &);
+  void apply_commands(); // world owner only; initial setup before start does not tick HOLD
   void boundary(); // world owner only, also used by deterministic fixtures
   void advance();
   void advance(int64_t elapsed_ns); // explicit duration, world owner only
@@ -31,13 +31,13 @@ public:
   static constexpr size_t frame_pool_size = 16;
   bool take_frame(std::shared_ptr<const Frame> &); // immutable shared output
   bool take_frame(Frame &); // fixture-only copy, outside the output lock
-  void start(); // returns after the first native boundary and output snapshot
+  void start(); // once per World; returns after the first native boundary and output snapshot
   void stop();
   // Chassis HOLD (the xgc2-chassis-hold contract). The roster is the Scout and Mecanum entities, keyed by their
   // public ID; a removed entity keeps its HOLD state for its ID. HOLD refuses the entity's Velocity commands
-  // in apply() and boundary() writes zero for every held entity. State changes are immediate and thread
-  // safe; the zero output follows at the next boundary, which also runs while the world is paused.
-  xgc2::chassis_hold::Domain &hold() { return hold_; }
+  // in apply() and boundary() writes zero for every held entity. Engage closes admission immediately;
+  // the tick applies releases and writes zero, including while the world is paused, on one thread only.
+  xgc2::chassis_hold::ChassisHold &hold() { return hold_; }
   Metrics metrics;
   const int64_t epoch, dt, output_period;
 
@@ -55,7 +55,6 @@ private:
     uint64_t id;
     double linear, angular;
   };
-  xgc2::chassis_hold::Domain hold_;
   std::unordered_map<std::string, uint64_t> hold_ids_; // public ID -> entity ID of the roster
   std::vector<HoldSample> hold_samples_; // twists of the entities zeroed by this boundary's tick
   std::unordered_map<uint64_t, Slot> slots_;
@@ -92,10 +91,12 @@ private:
   std::mutex wake_mutex_;
   bool started_ = false;
   std::exception_ptr startup_error_;
+  xgc2::chassis_hold::ChassisHold hold_; // destroyed before the sink, feedback and wake state
   State state(uint64_t, const Slot &) const;
   Result apply(Command &);
   void zero_command(const Entity &, size_t dense);
   bool write_zero(const std::string &, std::string &) override; // HOLD tick, world thread only
+  bool latest(const std::string &, xgc2::chassis_hold::Feedback &) override;
   void reset(Slot &, Model &&);
   void reserve_frames(); // topology changes; geometrical capacity growth
   void observe_geometry(Frame &);

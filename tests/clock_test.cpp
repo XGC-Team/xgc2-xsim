@@ -158,7 +158,11 @@ int main() {
   start->key = {entity->id, entity->generation}; start->action = 1;
   start->prepared = std::make_unique<Prepared>(Prepared{entity, prepare_model(config)});
   execute(start);
+  const auto released = world.hold().domain().release(world.hold().instance_id(), {{entity->public_id, 1}});
+  world.boundary();
+  assert(released.done() && released.results()[0].outcome == xgc2::chassis_hold::Outcome::released);
   auto move = std::make_shared<Command>(); move->op = Op::Velocity;
+  move->received_ns = world.hold().now();
   move->key = {entity->id, entity->generation}; move->velocity = {1, 0, 0};
   execute(move);
   int64_t total = 0;
@@ -168,34 +172,52 @@ int main() {
   const auto frame = world.capture();
   assert(frame.steps == 5 && frame.stamp == world.epoch + total);
   assert(std::abs(frame.states.front().position.x() - double(total) * 1e-9) < 1e-12);
-  const auto before = world.metrics.steps.load();
-  auto pause = std::make_shared<Command>(); pause->op = Op::Pause; execute(pause);
-  world.start();
+  // Manual HOLD ticks bind the deterministic world to this thread. Native stepping gets a new World.
+  World stepping(frame.stamp);
+  stepping.metrics.paused = true;
+  stepping.start();
   auto steps = std::make_shared<Command>(); steps->op = Op::Step; steps->steps = 7;
-  world.submit(steps); assert(World::wait(steps));
-  world.stop();
-  assert(world.metrics.steps == before + 7);
-  assert(world.metrics.sim_ns == frame.stamp + 7 * world.dt);
+  stepping.submit(steps); assert(World::wait(steps));
+  stepping.stop();
+  assert(stepping.metrics.steps == 7);
+  assert(stepping.metrics.sim_ns == frame.stamp + 7 * stepping.dt);
 
   // A real paced fleet shares one elapsed interval and keeps constant-twist
   // geometry aligned with the committed clock, without per-entity clocks.
   World fleet(world.epoch);
+  fleet.metrics.paused = true;
+  std::vector<std::shared_ptr<Entity>> entities;
+  std::vector<xgc2::chassis_hold::ReleaseChange> changes;
   for (int i = 0; i < 1000; ++i) {
     Config c; c.kind = Kind::Mecanum; c.name = "fleet_" + std::to_string(i);
     auto e = std::make_shared<Entity>(c);
     auto a = std::make_shared<Command>(); a->op = Op::Add;
     a->prepared = std::make_unique<Prepared>(Prepared{e, prepare_model(c)});
-    fleet.submit(a); fleet.boundary(); assert(a->result.success);
+    fleet.submit(a); fleet.apply_commands(); assert(a->result.success);
     auto enable = std::make_shared<Command>(); enable->op = Op::Provider;
     enable->key = {e->id, e->generation}; enable->action = 1;
     enable->prepared = std::make_unique<Prepared>(Prepared{e, prepare_model(c)});
-    fleet.submit(enable); fleet.boundary(); assert(enable->result.success);
+    fleet.submit(enable); fleet.apply_commands(); assert(enable->result.success);
+    entities.push_back(e);
+    changes.push_back({e->public_id, 1});
+  }
+  fleet.start(); // the first and every subsequent HOLD tick runs on the fleet's world thread
+  const auto boot_release = fleet.hold().domain().release(fleet.hold().instance_id(), changes);
+  const auto release_deadline = Clock::now() + std::chrono::seconds(5);
+  while (!boot_release.done() && Clock::now() < release_deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  assert(boot_release.done());
+  for (const auto &result : boot_release.results())
+    assert(result.outcome == xgc2::chassis_hold::Outcome::released);
+  for (const auto &e : entities) {
     auto velocity = std::make_shared<Command>(); velocity->op = Op::Velocity;
     velocity->key = {e->id, e->generation}; velocity->velocity = {1, .2, .1};
-    fleet.submit(velocity); fleet.boundary(); assert(velocity->result.success);
+    velocity->received_ns = fleet.hold().now();
+    fleet.submit(velocity); assert(World::wait(velocity) && velocity->result.success);
   }
+  auto resume = std::make_shared<Command>(); resume->op = Op::Resume;
   const auto wall_begin = Clock::now();
-  fleet.start();
+  fleet.submit(resume); assert(World::wait(resume) && resume->result.success);
   std::this_thread::sleep_for(std::chrono::milliseconds(60));
   fleet.stop();
   const auto wall_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - wall_begin).count();

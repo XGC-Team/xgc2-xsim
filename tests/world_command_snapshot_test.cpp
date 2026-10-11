@@ -13,7 +13,7 @@ Ticket command(Op op, Key key = {}) {
 }
 void execute(World &world, const Ticket &request) {
   world.submit(request);
-  world.boundary();
+  world.apply_commands();
   assert(request->phase == 2);
 }
 std::shared_ptr<Entity> add(World &world, Kind kind, const std::string &name) {
@@ -55,8 +55,12 @@ void toggle_without_reset(Kind kind, const char *name) {
   auto first = enabled(world, entity, true);
   assert(entity->generation == generation);
   if (kind != Kind::FS150) {
+    const auto released = world.hold().domain().release(world.hold().instance_id(), {{entity->public_id, 1}});
+    world.boundary(); // this deterministic fixture never starts a world thread
+    assert(released.done() && released.results()[0].outcome == xgc2::chassis_hold::Outcome::released);
     auto move = command(Op::Velocity, {entity->id, entity->generation});
     move->velocity = {1, .2, .1};
+    move->received_ns = world.hold().now();
     execute(world, move);
     assert(move->result.success && !move->result.has_state);
   }
@@ -85,7 +89,7 @@ void toggle_without_reset(Kind kind, const char *name) {
   reset->capture_state = true;
   reset->prepared = std::make_unique<Prepared>(Prepared{entity, prepare_model(entity->config)});
   world.submit(reset);
-  world.boundary();
+  world.apply_commands();
   assert(future->phase == 3); // Only pending controls are cancelled.
   assert(stop->result.success && reset->result.success && reset->result.has_state);
   assert(entity->generation == generation + 1);
@@ -164,13 +168,18 @@ void batch_and_ready() {
   for (const auto &state : step->states) assert(state.key.generation == 0);
   world.stop();
 
-  // Existing pending cancellation remains available even before start.
+  // Existing pending cancellation remains available after stopping.
   auto pending = command(Op::Velocity, {second->id, second->generation});
   world.submit(pending);
   world.stop();
   assert(pending->phase == 3);
-  world.start();
-  world.stop();
+  World fresh(world.epoch);
+  assert(fresh.hold().instance_id() != world.hold().instance_id());
+  fresh.start();
+  fresh.stop();
+  bool rejected = false;
+  try { world.start(); } catch (const std::logic_error &) { rejected = true; }
+  assert(rejected); // a stopped production World must never create a second tick thread
 }
 
 void stop_partial_step() {
@@ -184,7 +193,7 @@ void stop_partial_step() {
   partial->states.reserve(256);
   const auto *storage = partial->states.data();
   world.submit(partial);
-  world.boundary();
+  world.apply_commands();
   assert(partial->phase == 1);
   world.advance();
   world.advance();
@@ -199,14 +208,16 @@ void stop_partial_step() {
   assert(partial->states.front().key.id == entity->id);
   assert(!World::wait(partial));
 
-  // Resume rejects outstanding step work. It must succeed after Stop, and a
-  // subsequent paused restart must not perform the cancelled remaining steps.
+  // Resume succeeds after Stop cancels outstanding step work. A new World starts without that work.
   auto resume = command(Op::Resume);
   execute(world, resume);
   assert(resume->result.success);
   execute(world, command(Op::Pause));
-  world.start();
-  world.stop();
+  World fresh(stopped_stamp);
+  fresh.metrics.paused = true;
+  fresh.start();
+  fresh.stop();
+  assert(fresh.metrics.sim_ns == stopped_stamp && fresh.metrics.steps == 0);
   assert(world.metrics.sim_ns == stopped_stamp && world.metrics.steps == 2);
   assert(partial->result.stamp == stopped_stamp && partial->result.completed_steps == 2);
 
@@ -215,7 +226,7 @@ void stop_partial_step() {
   unadvanced->capture_states = true;
   unadvanced->states.reserve(256);
   world.submit(unadvanced);
-  world.boundary();
+  world.apply_commands();
   assert(unadvanced->phase == 1);
   world.stop();
   assert(unadvanced->phase == 4 && unadvanced->result.interrupted);

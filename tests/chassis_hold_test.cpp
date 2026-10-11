@@ -69,9 +69,20 @@ void run(World &world, int steps) {
   }
 }
 xgc2::chassis_hold::RobotState hold_state(World &world, const std::string &id) {
-  const auto snapshot = world.hold().state({id});
+  const auto snapshot = world.hold().domain().state({id});
   assert(snapshot.unknown.empty() && snapshot.robots.size() == 1);
   return snapshot.robots.front();
+}
+std::vector<xgc2::chassis_hold::RobotResult> release(
+    World &world, const std::string &instance, const std::vector<xgc2::chassis_hold::ReleaseChange> &changes) {
+  const auto pending = world.hold().domain().release(instance, changes);
+  world.boundary();
+  assert(pending.done());
+  return pending.results();
+}
+void release_boot_hold(World &world, const std::string &id) {
+  const auto result = release(world, world.hold().instance_id(), {{id, 1}});
+  assert(result[0].outcome == Outcome::released && result[0].state->revision == 2);
 }
 // Boundaries at about the world period for up to two seconds until the stage is reached.
 bool reach(World &world, const std::string &id, Stage stage) {
@@ -92,18 +103,22 @@ void roster_and_gate() {
   auto mecanum = add(world, Kind::Mecanum, "mecanum"); // the public ID defaults to the name
   assert(scout->public_id == "ugv-1" && mecanum->public_id == "mecanum" && flight->public_id == "uav");
   // Scout and Mecanum entities are the roster, by public ID; both report feedback.
-  const auto roster = world.hold().describe();
+  const auto roster = world.hold().domain().describe();
   assert(roster.robots.size() == 2);
   assert(roster.robots[0].robot_id == "mecanum" && roster.robots[1].robot_id == "ugv-1");
   assert(roster.robots[0].feedback && roster.robots[1].feedback);
-  const auto unknown = world.hold().engage({"uav", "scout"}); // neither is a public ID of the roster
+  const auto unknown = world.hold().domain().engage({"uav", "scout"}).results(); // neither is a public ID of the roster
   assert(unknown[0].outcome == Outcome::unknown_robot && unknown[1].outcome == Outcome::unknown_robot);
   // Another entity cannot take over a live public ID.
   add(world, Kind::Mecanum, "other", "ugv-1", false);
-  assert(world.hold().describe().robots.size() == 2);
+  assert(world.hold().domain().describe().robots.size() == 2);
   enable(world, scout);
   enable(world, mecanum);
 
+  // Initial robots are held and zeroed before motion is admitted.
+  assert(hold_state(world, "ugv-1").held && hold_state(world, "ugv-1").revision == 1);
+  release_boot_hold(world, "ugv-1");
+  release_boot_hold(world, "mecanum");
   // Released entities move.
   execute(world, drive(world, scout));
   execute(world, drive(world, mecanum, 0.5));
@@ -111,10 +126,10 @@ void roster_and_gate() {
   assert(state_of(world, scout).velocity.norm() > 0.9 && state_of(world, mecanum).velocity.norm() > 0.4);
 
   // Engage is immediate for the state and the gate, the zero is written at the next boundary.
-  const auto engaged = world.hold().engage({"ugv-1"});
+  const auto engaged = world.hold().domain().engage({"ugv-1"}).results();
   assert(engaged[0].outcome == Outcome::engaged);
-  assert(engaged[0].state->held && engaged[0].state->revision == 1 && engaged[0].state->stage == Stage::gated);
-  assert(world.hold().engage({"ugv-1"})[0].outcome == Outcome::already_held);
+  assert(engaged[0].state->held && engaged[0].state->revision == 3 && engaged[0].state->stage == Stage::gated);
+  assert(world.hold().domain().engage({"ugv-1"}).results()[0].outcome == Outcome::already_held);
   assert(state_of(world, scout).velocity.norm() > 0.9); // no boundary yet: the output has not changed
   const auto before = state_of(world, scout).stamp;
   world.boundary();
@@ -146,12 +161,17 @@ void roster_and_gate() {
 
   // Release: compare and set on the revision, new commands pass.
   const auto instance = world.hold().instance_id();
-  assert(world.hold().release("ffffffffffffffffffffffffffffffff", {{"ugv-1", 1}})[0].outcome == Outcome::conflict);
-  assert(world.hold().release(instance, {{"ugv-1", 7}})[0].outcome == Outcome::conflict);
-  const auto released = world.hold().release(instance, {{"ugv-1", 1}, {"mecanum", 0}});
-  assert(released[0].outcome == Outcome::released && released[0].state->revision == 2);
+  assert(release(world, "ffffffffffffffffffffffffffffffff", {{"ugv-1", 3}})[0].outcome == Outcome::conflict);
+  assert(release(world, instance, {{"ugv-1", 7}})[0].outcome == Outcome::conflict);
+  const auto pending = world.hold().domain().release(instance, {{"ugv-1", 3}, {"mecanum", 2}});
+  assert(!pending.done() && pending.results()[0].outcome == Outcome::pending);
+  assert(hold_state(world, "ugv-1").held && !world.hold().admit("ugv-1", world.hold().now()));
+  world.boundary();
+  assert(pending.done());
+  const auto released = pending.results();
+  assert(released[0].outcome == Outcome::released && released[0].state->revision == 4);
   assert(released[1].outcome == Outcome::not_held);
-  assert(world.hold().release(instance, {{"ugv-1", 1}})[0].outcome == Outcome::not_held); // no replay
+  assert(release(world, instance, {{"ugv-1", 3}})[0].outcome == Outcome::not_held); // no replay
   const auto accepted = drive(world, scout);
   execute(world, accepted);
   assert(accepted->result.success);
@@ -164,15 +184,16 @@ void commands_queued_before_release() {
   World world(epoch);
   auto scout = add(world, Kind::Scout, "scout", "ugv-1");
   enable(world, scout);
+  release_boot_hold(world, "ugv-1");
   // The command waits for its simulation time (the same queue that holds not-yet-due commands).
   auto stale = drive(world, scout);
   stale->at = world.metrics.sim_ns + 20000000;
   world.submit(stale);
   world.boundary();
   assert(stale->phase == 0);
-  // engage and release without a boundary in between: no tick cancelled the queued command.
-  world.hold().engage({"ugv-1"});
-  assert(world.hold().release(world.hold().instance_id(), {{"ugv-1", 1}})[0].outcome == Outcome::released);
+  // Queue engage and release before one tick: the release fence rejects the old command without a zero cancellation.
+  world.hold().domain().engage({"ugv-1"});
+  assert(release(world, world.hold().instance_id(), {{"ugv-1", 3}})[0].outcome == Outcome::released);
   // A command received after the release, due at the same time.
   auto fresh = drive(world, scout, 0.5);
   fresh->at = stale->at;
@@ -189,12 +210,13 @@ void pending_controls_are_cancelled() {
   World world(epoch);
   auto scout = add(world, Kind::Scout, "scout", "ugv-1");
   enable(world, scout);
+  release_boot_hold(world, "ugv-1");
   auto pending = drive(world, scout);
   pending->at = world.metrics.sim_ns + 1000000000;
   world.submit(pending);
   world.boundary();
   assert(pending->phase == 0);
-  world.hold().engage({"ugv-1"});
+  world.hold().domain().engage({"ugv-1"});
   assert(pending->phase == 0); // the cancellation is output: it happens at the next boundary
   world.boundary();
   assert(pending->phase == 3);
@@ -206,14 +228,14 @@ void recreated_entity_is_held() {
   World world(epoch);
   auto scout = add(world, Kind::Scout, "scout", "ugv-1");
   enable(world, scout);
-  world.hold().engage({"ugv-1"});
+  world.hold().domain().engage({"ugv-1"});
   world.boundary();
   assert(hold_state(world, "ugv-1").stage == Stage::zero_written);
   remove(world, scout);
-  assert(world.hold().describe().robots.empty());
-  const auto gone = world.hold().state({"ugv-1"});
+  assert(world.hold().domain().describe().robots.empty());
+  const auto gone = world.hold().domain().state({"ugv-1"});
   assert(gone.robots.empty() && gone.unknown.size() == 1);
-  assert(world.hold().engage({"ugv-1"})[0].outcome == Outcome::unknown_robot);
+  assert(world.hold().domain().engage({"ugv-1"}).results()[0].outcome == Outcome::unknown_robot);
   scout.reset();
 
   auto again = add(world, Kind::Scout, "scout_again", "ugv-1");
@@ -226,7 +248,7 @@ void recreated_entity_is_held() {
   assert(!refused->result.success && refused->result.reason == 6);
   run(world, 50);
   assert(state_of(world, again).velocity.norm() < 1e-12);
-  assert(world.hold().release(world.hold().instance_id(), {{"ugv-1", 1}})[0].outcome == Outcome::released);
+  assert(release(world, world.hold().instance_id(), {{"ugv-1", 1}})[0].outcome == Outcome::released);
   assert(hold_state(world, "ugv-1").revision == 2);
 }
 
@@ -235,10 +257,11 @@ void mecanum_reaches_stopped() {
   World world(epoch);
   auto mecanum = add(world, Kind::Mecanum, "mecanum", "ugv-m");
   enable(world, mecanum);
+  release_boot_hold(world, "ugv-m");
   execute(world, drive(world, mecanum));
   run(world, 50);
   assert(state_of(world, mecanum).velocity.norm() > 0.9);
-  world.hold().engage({"ugv-m"});
+  world.hold().domain().engage({"ugv-m"});
   world.boundary();
   assert(hold_state(world, "ugv-m").stage == Stage::zero_written);
   assert(state_of(world, mecanum).velocity.norm() < 1e-12);
@@ -248,22 +271,46 @@ void mecanum_reaches_stopped() {
 // A paused world sleeps until woken: the state changes at once, the zero is written at the next boundary.
 void paused_world_is_woken() {
   World world(epoch);
-  auto scout = add(world, Kind::Scout, "scout", "ugv-1");
-  enable(world, scout);
-  execute(world, drive(world, scout));
+  Config config;
+  config.kind = Kind::Scout;
+  config.name = "scout";
+  auto scout = std::make_shared<Entity>(config, "ugv-1");
+  auto create = command(Op::Add);
+  create->prepared = std::make_unique<Prepared>(Prepared{scout, prepare_model(config)});
+  world.submit(create);
+  world.apply_commands(); // no HOLD tick before the world thread exists
+  assert(create->result.success);
+  assert(hold_state(world, "ugv-1").stage == Stage::gated);
   world.metrics.paused = true;
   world.start();
+  assert(hold_state(world, "ugv-1").stage == Stage::zero_written);
+  auto enabled = command(Op::SetEnabled, {scout->id, scout->generation});
+  enabled->enabled = true;
+  world.submit(enabled);
+  assert(World::wait(enabled) && enabled->result.success);
+  auto boot_release = world.hold().domain().release(world.hold().instance_id(), {{"ugv-1", 1}});
+  auto deadline = Clock::now() + std::chrono::seconds(2);
+  while (!boot_release.done() && Clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  assert(boot_release.done() && boot_release.results()[0].outcome == Outcome::released);
+  auto moving = drive(world, scout);
+  world.submit(moving);
+  assert(World::wait(moving) && moving->result.success);
   const auto steps = world.metrics.steps.load();
-  const auto engaged = world.hold().engage({"ugv-1"});
-  assert(engaged[0].state->held && engaged[0].state->stage == Stage::gated);
-  world.wake(); // what the management route does after an engage
-  const auto deadline = Clock::now() + std::chrono::seconds(2);
+  const auto engaged = world.hold().domain().engage({"ugv-1"});
+  assert(engaged.results()[0].state->held);
+  // No explicit wake: the library wakes the sleeping world after closing the gate.
+  deadline = Clock::now() + std::chrono::seconds(2);
   while (hold_state(world, "ugv-1").stage == Stage::gated && Clock::now() < deadline)
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   assert(hold_state(world, "ugv-1").stage == Stage::zero_written);
   assert(world.metrics.steps == steps && world.metrics.paused);
-  // A release while paused is immediate too, and a command received after it is applied at the next boundary.
-  assert(world.hold().release(world.hold().instance_id(), {{"ugv-1", 1}})[0].outcome == Outcome::released);
+  // A release while paused is applied on the same world thread and wakes it through the library.
+  const auto released = world.hold().domain().release(world.hold().instance_id(), {{"ugv-1", 3}});
+  deadline = Clock::now() + std::chrono::seconds(2);
+  while (!released.done() && Clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  assert(released.done() && released.results()[0].outcome == Outcome::released);
   auto fresh = drive(world, scout, 0.5);
   world.submit(fresh);
   assert(World::wait(fresh) && fresh->result.success);

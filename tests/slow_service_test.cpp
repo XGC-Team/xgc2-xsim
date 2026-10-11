@@ -21,11 +21,11 @@ int main(int argc, char **argv) {
   add->prepared =
       std::make_unique<Prepared>(Prepared{e, prepare_model(e->config)});
   world.submit(add);
-  world.boundary();
+  world.apply_commands();
   auto start = std::make_shared<Command>();
   start->op=Op::Provider;start->action=1;start->key={e->id,0};
   start->prepared=std::make_unique<Prepared>(Prepared{e,prepare_model(e->config)});
-  world.submit(start);world.boundary();assert(start->result.success && e->enabled);
+  world.submit(start);world.apply_commands();assert(start->result.success && e->enabled);
   ros::NodeHandle n;
   n.setCallbackQueue(&services);
   std::atomic<unsigned> entered{0};

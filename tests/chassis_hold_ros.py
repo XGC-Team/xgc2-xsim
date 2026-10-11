@@ -138,6 +138,9 @@ def main():
             finally:
                 if driver is not None:
                     driver.stopping = True
+                    if driver.is_alive():
+                        driver.join(timeout=5)
+                    assert not driver.is_alive()
                 xsim.kill()
                 rospy.signal_shutdown("test finished")
                 os.killpg(master.pid, signal.SIGTERM)
@@ -145,6 +148,7 @@ def main():
                     master.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     os.killpg(master.pid, signal.SIGKILL)
+                    master.wait(timeout=10)
     print("PASS: chassis HOLD with ROS IO")
 
 
@@ -162,8 +166,11 @@ def scenario(x, driver):
     pose = {name: Feed("/%s/pose" % name, PoseStamped) for name in ROBOTS.values()}
     imu = Feed("/scout_a/imu/data_raw", Imu)
     cloud = Feed("/scout_a/cloud", PointCloud2)
+    boot = x.hold_state()
+    assert all(r["held"] and r["revision"] == 1 for r in boot.values()), boot
     for public_id in ROBOTS:
         x.enable(public_id)
+        assert x.release(public_id, 1)["outcome"] == "released"
     until(lambda: all(feed.snapshot()[1] for feed in pose.values()), "localization of every robot")
     until(lambda: all(p.get_num_connections() for p in driver.publishers.values()), "cmd_vel subscribers")
     driver.start()
@@ -180,7 +187,7 @@ def scenario(x, driver):
     # ---- engage one: zero written, then stopped; the others keep moving; its sensors keep publishing
     status, engaged = x.hold("Engage", {"robot_ids": ["ugv-a"]})
     assert status == 200 and engaged["robots"][0]["outcome"] == "engaged", engaged
-    assert engaged["robots"][0]["held"] is True and engaged["robots"][0]["revision"] == 1, engaged
+    assert engaged["robots"][0]["held"] is True and engaged["robots"][0]["revision"] == 3, engaged
     until(lambda: x.hold_state("ugv-a")["ugv-a"]["stage"] in ("zero_written", "stopped"), "zero written")
     until(lambda: x.hold_state("ugv-a")["ugv-a"]["stage"] == "stopped", "stopped (its own twist at rest)", 10)
     held = x.hold_state("ugv-a")["ugv-a"]
@@ -202,11 +209,11 @@ def scenario(x, driver):
 
     # ---- release: compare and set, and nothing commanded during the hold comes back
     assert x.release("ugv-a", 9)["outcome"] == "conflict"
-    assert x.release("ugv-a", 1, instance="f" * 32)["outcome"] == "conflict"
+    assert x.release("ugv-a", 3, instance="f" * 32)["outcome"] == "conflict"
     driver.drive("scout_a", False)
     time.sleep(0.3)  # the commands of the hold were all refused, none is left in flight
-    released = x.release("ugv-a", 1)
-    assert released["outcome"] == "released" and released["revision"] == 2 and released["held"] is False, released
+    released = x.release("ugv-a", 3)
+    assert released["outcome"] == "released" and released["revision"] == 4 and released["held"] is False, released
     a_x = pose["scout_a"].x()
     time.sleep(0.8)
     assert abs(pose["scout_a"].x() - a_x) < 0.01, "a command of the hold was replayed"
@@ -219,7 +226,7 @@ def scenario(x, driver):
     x.operation("POST", "/v1/world/pause")
     steps = x.call("GET", "/v1/world")[1]["steps"]
     status, engaged = x.hold("Engage", {"robot_ids": ["ugv-b"]})
-    assert status == 200 and engaged["robots"][0]["held"] is True and engaged["robots"][0]["revision"] == 1, engaged
+    assert status == 200 and engaged["robots"][0]["held"] is True and engaged["robots"][0]["revision"] == 3, engaged
     until(lambda: x.hold_state("ugv-b")["ugv-b"]["stage"] in ("zero_written", "stopped"), "zero written while paused")
     assert x.call("GET", "/v1/world")[1]["steps"] == steps, "HOLD does not advance a paused world"
     x.operation("POST", "/v1/world/resume")
@@ -227,8 +234,8 @@ def scenario(x, driver):
     time.sleep(1.0)
     assert abs(pose["scout_b"].x() - b_x) < 0.03, "the zero written while paused was lost"
     x.operation("POST", "/v1/world/pause")
-    released = x.release("ugv-b", 1)
-    assert released["outcome"] == "released" and released["revision"] == 2, released
+    released = x.release("ugv-b", 3)
+    assert released["outcome"] == "released" and released["revision"] == 4, released
     assert x.hold_state("ugv-b")["ugv-b"]["held"] is False
     time.sleep(0.3)  # the cmd_vel stream is admitted again and waits in the paused world
     x.operation("POST", "/v1/world/resume")
@@ -237,7 +244,7 @@ def scenario(x, driver):
     driver.drive("mec_m")
 
     # ---- a held robot that is removed and created again is still held
-    assert x.hold("Engage", {"robot_ids": ["ugv-m"]})[1]["robots"][0]["revision"] == 1
+    assert x.hold("Engage", {"robot_ids": ["ugv-m"]})[1]["robots"][0]["revision"] == 3
     until(lambda: x.hold_state("ugv-m")["ugv-m"]["stage"] in ("zero_written", "stopped"), "mecanum zero")
     x.operation("DELETE", "/v1/entities/ugv-m", {"generation": x.ref("ugv-m")["generation"]})
     status, gone = x.hold("State", {"robot_ids": ["ugv-m"]})
@@ -248,14 +255,14 @@ def scenario(x, driver):
         "id": "ugv-m", "role": "robot", "pose": {"position": [0, -3, 0], "orientation": [0, 0, 0, 1]},
         "asset": {"id": "mecanum-test", "realization": {"media_type": UNIT, "content": {"kind": "mecanum", "name": "mec_m"}}}}})
     again = x.hold_state("ugv-m")["ugv-m"]
-    assert again["held"] is True and again["revision"] == 1, again
+    assert again["held"] is True and again["revision"] == 3, again
     x.enable("ugv-m")
     until(lambda: x.hold_state("ugv-m")["ugv-m"]["stage"] in ("zero_written", "stopped"), "zero on the new model")
     until(lambda: driver.publishers["mec_m"].get_num_connections(), "cmd_vel subscriber of the new entity")
     m_x = pose["mec_m"].fresh_x()
     time.sleep(1.0)
     assert abs(pose["mec_m"].x() - m_x) < 0.01, "the re-created robot moved under HOLD"
-    assert x.release("ugv-m", 1)["outcome"] == "released"
+    assert x.release("ugv-m", 3)["outcome"] == "released"
     until(lambda: moved("mec_m") > 0.05, "released mecanum drives", 10)
 
     # ---- restart: a new instance, no persisted HOLD state, the old instance's release is rejected
@@ -266,7 +273,7 @@ def scenario(x, driver):
     assert x.instance != old
     status, fresh = x.hold("State")
     assert status == 200 and fresh["instance"] == x.instance, fresh
-    assert all(r["held"] is False and r["revision"] == 0 for r in fresh["robots"]), fresh
+    assert all(r["held"] is True and r["revision"] == 1 for r in fresh["robots"]), fresh
     stale = x.hold("Release", {"expected_instance": old, "changes": [{"robot_id": "ugv-a", "expected_revision": 1}]})
     assert stale[0] == 200 and stale[1]["robots"][0]["outcome"] == "conflict", stale
     x.hold("Engage", {"robot_ids": ["ugv-a"]})

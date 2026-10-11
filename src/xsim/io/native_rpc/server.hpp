@@ -4,13 +4,11 @@
 #include <csignal>
 #include <deque>
 #include <mutex>
-#include <xgc2/chassis_hold/service.hpp>
+#include <xgc2/chassis_hold/http_adapter.hpp>
 #include <xgc2/xrpc/http.hpp>
 #include <thread>
 #include <unordered_map>
 namespace xsim {
-// The capability the world serves through generic method calls, POST /v1/call/<capability>/<Method>.
-inline constexpr const char *chassis_hold_capability = "xgc2.chassis.hold";
 struct RpcOptions {
   std::string target_id;
   xgc2::xrpc::HttpLimits limits;
@@ -83,18 +81,14 @@ private:
   std::vector<xgc2::xrpc::HttpReply> health_waiters_;
   std::vector<ReadyWaiter> ready_waiters_;
   bool simulation_request(const xgc2::xrpc::HttpRequest &, const Json &, xgc2::xrpc::HttpReply);
-  // The capabilities of the world, served through POST /v1/call/<service>/<Method> (chassis.cpp).
-  Json capabilities();
-  bool capability_call(const xgc2::xrpc::HttpRequest &, const std::string &service, const std::string &method,
-                       xgc2::xrpc::HttpReply);
   void respond(xgc2::xrpc::HttpReply, int, Json);
 
   RuntimeIO io_;
   Json world_configuration_;
   World &world_;
   Sensors &sensors_;
+  xgc2::chassis_hold::HttpAdapter hold_http_;
   std::unique_ptr<xgc2::xrpc::HttpServer> transport_;
-  std::unique_ptr<xgc2::chassis_hold::Service> hold_service_; // before the transport it replies on goes
   std::unordered_map<std::string, Request> requests_;
   std::mutex view_mutex_;
   std::shared_ptr<const Frame> latest_;
