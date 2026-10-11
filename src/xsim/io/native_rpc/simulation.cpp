@@ -97,6 +97,8 @@ bool Server::simulation_request(const xgc2::xrpc::HttpRequest &request, const Js
   auto error = [&](int status, const std::string &code, const std::string &message) {
     reply.complete(xgc2::xrpc::http_error(status, code, message)); return true;
   };
+  if (method == "POST" && parts.size() == 4 && parts[1] == "call")
+    return capability_call(request, parts[2], parts[3], reply);
   harvest();
   prune_waiters();
   if (method == "GET" && path == "/v1/describe") {
@@ -228,7 +230,7 @@ bool Server::simulation_request(const xgc2::xrpc::HttpRequest &request, const Js
     }
     if (entities_.count(operation.public_id)) return error(409, "conflict", "entity ID already exists");
     if (entities_.size() >= entity_limit) return error(503, "resource_exhausted", "entity limit reached");
-    addition = std::make_shared<Entity>(parse_entity(native));
+    addition = std::make_shared<Entity>(parse_entity(native), operation.public_id);
     for (const auto &entry : entities_)
       if (auto e = entry.second.resource.lock(); e && e->config.name == addition->config.name)
         return error(409, "conflict", "entity model name already exists");
