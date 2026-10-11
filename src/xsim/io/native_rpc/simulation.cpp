@@ -105,10 +105,10 @@ void Server::answer_ready_waiters() {
       }), ready_waiters_.end());
 }
 Json Server::describe() {
-  return {{"service", "xgc2.simulation"}, {"api_version", "v1"}, {"ready", ready()}, {"facts", facts()},
-    {"describe_path", "/v1/describe"},
-    {"service_ref", {{"target_id", target_id_}, {"service", "xgc2.simulation"}, {"api_version", "v1"},
-      {"instance_id", instance_}, {"profile", "http.v1"}, {"endpoint", {{"kind", "unix"}, {"address", socket_path_}}}}},
+  auto current_facts = facts();
+  current_facts["service_ref"] = {{"target_id", target_id_}, {"service", "xgc2.simulation"}, {"api_version", "v1"},
+    {"instance_id", instance_}, {"profile", "http.v1"}, {"endpoint", {{"kind", "unix"}, {"address", socket_path_}}}};
+  current_facts["simulation"] = {{"describe_path", "/v1/describe"},
     {"engine", {{"name", "xsim"}}},
     {"capabilities", {{"health.observe", true}, {"entities.create", true}, {"entities.remove", true}, {"entities.reset", true},
       {"entities.set_state", {{"enabled", true}, {"pose", false}, {"twist", false}}},
@@ -124,6 +124,8 @@ Json Server::describe() {
     {"artifact_types", {"application/vnd.xgc2.xsim.world+json", "application/vnd.xgc2.xsim.entity+json"}},
     {"asset_schemas", {{"application/vnd.xgc2.xsim.entity+json", {{"kinds", {"fs150", "scout", "mecanum"}},
       {"initial_orientation", "yaw-only"}}}}}};
+  return {{"service", "xgc2.simulation"}, {"api_version", "v1"}, {"instance_id", instance_},
+    {"ready", ready()}, {"facts", std::move(current_facts)}};
 }
 
 bool Server::simulation_request(const xgc2::xrpc::HttpRequest &request, const Json &body,

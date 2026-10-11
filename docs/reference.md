@@ -188,11 +188,11 @@ Provider and reset use the Unix management interface; the configuration keys `ro
 
 ## Unix HTTP/JSON management interface
 
-The host uses the shared XRPC HTTP and BootstrapInput. `GET /v1/describe` returns the real ServiceRef; later requests are bound to this process by the instance, request ID and timeout headers of the shared SDK. The incarnation becomes invalid when the process exits.
+The host uses the shared XRPC HTTP and BootstrapInput. `GET /v1/describe` returns the real ServiceRef in `facts.service_ref`; later requests are bound to this process by the instance, request ID and timeout headers of the shared SDK. The incarnation becomes invalid when the process exits.
 
 | Path | Purpose |
 | --- | --- |
-| `GET /v1/describe[?wait_ready_ms=N]` | ServiceRef, capabilities, limits and readiness (`ready`, `facts`); the optional query holds the reply until the service is ready |
+| `GET /v1/describe[?wait_ready_ms=N]` | Five-field SDK Describe: ServiceRef in `facts.service_ref`, simulation metadata in `facts.simulation`, typed capabilities in `facts.capabilities`; the optional query holds the reply until the service is ready |
 | `GET /v1/health`, `POST /v1/health/observe` | readiness of the native components and waiting for a revision |
 | `GET /v1/world` | world time, step count, entities and native diagnostics |
 | `GET /v1/entities`, `GET /v1/entities/<id>` | public entity identity and state |
@@ -207,7 +207,9 @@ The accepted/running result of a mutation does not mean completion. The caller w
 
 ### Readiness
 
-`GET /v1/describe` carries `service` (`xgc2.simulation`), `api_version`, `instance_id`, `ready` and `facts` next to the simulation document. `ready` is true when the native health is `ready` and the output thread has delivered a world frame. `facts` holds `world_generation` (always `1`: xsim loads one world when the process starts, and another world is another process with another `instance_id`), `frames_flowing`, `health` (the state of `/v1/health`), `capabilities` (the capabilities served by method calls, with their entities) and, in a build with ROS IO, `ros_master_uri`, the master the node is bound to.
+`GET /v1/describe` carries exactly `service` (`xgc2.simulation`), `api_version`, `instance_id`, `ready` and `facts` at the top level. `facts.service_ref` identifies this world endpoint. `facts.simulation` holds the existing simulation document: `describe_path`, `engine`, simulation feature `capabilities`, `limits`, `world_frame`, `artifact_types` and `asset_schemas`. These provider fields never extend the SDK envelope, and simulation feature flags do not replace the typed `facts.capabilities` list.
+
+`ready` is true when the native health is `ready` and the output thread has delivered a world frame. `facts` also holds `world_generation` (always `1`: xsim loads one world when the process starts, and another world is another process with another `instance_id`), `frames_flowing`, `health` (the state of `/v1/health`), `capabilities` (the capabilities served by method calls, with their entities) and, in a build with ROS IO, `ros_master_uri`, the master the node is bound to.
 
 The query `wait_ready_ms=<0..30000>` holds the reply without polling until the service is ready, the wait elapses, the XRPC deadline of the call passes or the process starts to stop, and then answers with the current describe; `0`, no query or a ready service answers at once. Any other query on describe is `invalid_argument`, a query on another route is an unknown route, and at most 32 calls can be held (`resource_exhausted` beyond). XRPC 0.2.0 matches discovery by path only, so `GET /v1/describe?wait_ready_ms=N` is an unbound discovery call and needs no instance header.
 

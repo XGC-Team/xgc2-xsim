@@ -89,7 +89,7 @@ def main():
                 try:
                     code, description = call("GET", "/v1/describe?wait_ready_ms=5000", bound=False, timeout_ms=6000)
                     if code == 200:
-                        instance = description["service_ref"]["instance_id"]
+                        instance = description["instance_id"]
                         code, health = call("GET", "/v1/health")
                         if code == 200 and health["state"] == "ready":
                             return description, health
@@ -123,12 +123,30 @@ def main():
 
         try:
             description, health = start()
-            ref = description["service_ref"]
+            assert set(description) == {"service", "api_version", "instance_id", "ready", "facts"}, description
+            code, immediate = call("GET", "/v1/describe", bound=False)
+            assert code == 200 and set(immediate) == set(description), immediate
+            assert immediate["facts"]["simulation"] == description["facts"]["simulation"]
+            assert description["facts"]["capabilities"] == [{"name": "xgc2.chassis.hold", "entities": []}]
+            ref = description["facts"]["service_ref"]
             assert ref["api_version"] == "v1" and ref["target_id"] == "native-fixture:world"
             assert ref["service"] == "xgc2.simulation" and ref["endpoint"]["address"] == endpoint
-            assert description["limits"]["operations"] == 256
-            assert description["limits"]["inflight_operations"] == 32
-            assert description["limits"]["operation_payload_bytes"] == 16 * 1024 * 1024
+            assert ref["instance_id"] == description["instance_id"] == immediate["instance_id"]
+            simulation = description["facts"]["simulation"]
+            assert set(simulation) == {"describe_path", "engine", "capabilities", "limits", "world_frame",
+                                       "artifact_types", "asset_schemas"}, simulation
+            assert simulation["describe_path"] == "/v1/describe" and simulation["engine"] == {"name": "xsim"}
+            assert simulation["capabilities"]["world.reset"] == {
+                "all_entities": True, "entities": True, "reset_time": False, "atomic": True}
+            assert simulation["capabilities"]["entities.set_state"] == {"enabled": True, "pose": False, "twist": False}
+            assert simulation["limits"]["operations"] == 256
+            assert simulation["limits"]["inflight_operations"] == 32
+            assert simulation["limits"]["operation_payload_bytes"] == 16 * 1024 * 1024
+            assert simulation["world_frame"] == {"id": "world", "axes": "right-handed ENU", "gravity": [0, 0, -9.81]}
+            assert simulation["artifact_types"] == ["application/vnd.xgc2.xsim.world+json",
+                                                    "application/vnd.xgc2.xsim.entity+json"]
+            assert simulation["asset_schemas"] == {"application/vnd.xgc2.xsim.entity+json": {
+                "kinds": ["fs150", "scout", "mecanum"], "initial_orientation": "yaw-only"}}
             assert call("GET", "/v1/world", bound=False)[0] == 409
             assert call("GET", "/status")[0] == 404
             assert call("POST", "/v1/health/observe", {"after_revision": 0})[1]["state"] == "ready"
@@ -142,7 +160,7 @@ def main():
                 pass
             assert time.monotonic() - before_timeout < 1
             assert call("GET", "/v1/health")[1]["state"] == "ready"
-            evidence["checks"].append("formal identity, declared bounds, real health and held observation deadline")
+            evidence["checks"].append("strict five-field describe, typed capabilities, simulation facts, formal identity, declared bounds, real health and held observation deadline")
 
             create = {"entity": {"id": "frozen-id.alpha", "role": "robot",
                 "pose": {"position": [1, 2, 3], "orientation": [0, 0, 0, 1]},

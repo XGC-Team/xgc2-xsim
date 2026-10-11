@@ -88,13 +88,15 @@ def main(binary):
                 description = connection.getresponse()
                 assert description.status == 200
                 described = json.loads(description.read())
-                assert described["service_ref"]["endpoint"] == {"kind": "unix", "address": str(socket_path)}
+                assert set(described) == {"service", "api_version", "instance_id", "ready", "facts"}, described
+                assert described["facts"]["service_ref"]["endpoint"] == {"kind": "unix", "address": str(socket_path)}
                 connection.request("GET", "/v1/describe?wait_ready_ms=1000", headers=headers)
                 readiness = connection.getresponse()
                 assert readiness.status == 200
                 ready = json.loads(readiness.read())
-                assert ready["ready"] and ready["service_ref"] == described["service_ref"], ready
-                headers["X-Xrpc-Instance-ID"] = described["service_ref"]["instance_id"]
+                assert set(ready) == {"service", "api_version", "instance_id", "ready", "facts"}, ready
+                assert ready["ready"] and ready["facts"]["service_ref"] == described["facts"]["service_ref"], ready
+                headers["X-Xrpc-Instance-ID"] = described["instance_id"]
                 headers["X-Request-ID"] = "cli-world"
                 connection.request("GET", "/v1/world", headers=headers)
                 response = connection.getresponse()

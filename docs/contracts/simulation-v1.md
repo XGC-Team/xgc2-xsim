@@ -1,9 +1,15 @@
 # Simulation service v1
 
 Service name: `xgc2.simulation`. API version: `v1`. Transport: XRPC `http.v1`.
-Describe returns its identity under the `service_ref` field. This explicitly
-declared discovery route accepts an unbound request; business routes do not.
-Its `describe_path` is `/v1/describe`. The explicit process owner supplies the
+Describe has exactly five top-level fields: `service`, `api_version`,
+`instance_id`, `ready` and `facts`. Its ServiceRef is `facts.service_ref`;
+provider metadata (`describe_path`, `engine`, domain `capabilities`, `limits`,
+`world_frame`, `artifact_types` and `asset_schemas`, where supplied) is under
+`facts.simulation`. `facts.capabilities` remains the standard typed list of
+served capability names and entity IDs, separate from simulation feature flags.
+This explicitly declared discovery route accepts an unbound request; business
+routes do not. Its `facts.simulation.describe_path` is `/v1/describe`.
+The explicit process owner supplies the
 nonempty `target_id`, socket allocation and configuration/resource grants;
 there is no provider default target or constant instance identity.
 The endpoint identifies one live world. It is created and closed by the world
@@ -27,7 +33,7 @@ world and closes with it, like other native integrated services. A separate ROS
 translation sidecar or Core readiness assembler is not this ownership model.
 
 Core depends on these semantics and declared capabilities, never an engine
-name. `engine` is diagnostic information. A capability means a tested behavior,
+name. `facts.simulation.engine` is diagnostic information. A capability means a tested behavior,
 not merely that a method exists. Missing capabilities produce `unsupported`;
 there is no silent fallback, approximation or success stub. Physical fidelity,
 contact models, noise and hardware timing are not promised equal by this API.
@@ -131,7 +137,66 @@ Requests for unsupported state/configuration fields fail before effects.
 Discovery response:
 
 ```json
-{"service":"xgc2.simulation","api_version":"v1","instance_id":"fresh-world-identity","ready":true,"facts":{"world_generation":1,"frames_flowing":true,"health":"ready","capabilities":[{"name":"xgc2.chassis.hold","entities":["robot-1"]}]},"describe_path":"/v1/describe","service_ref":{"target_id":"lab-world","service":"xgc2.simulation","api_version":"v1","instance_id":"fresh-world-identity","profile":"http.v1","endpoint":{"kind":"unix","address":"/granted/runtime/simulation.sock"}},"capabilities":["entities.create","entities.remove","entities.set_state","entities.reset","world.pause","world.resume","world.step","world.reset.entities","world.reset.all_entities"],"world_frame":{"id":"world","axes":"right-handed z-up"},"artifact_types":["application/sdf+xml"],"limits":{"entities":256,"pending_commands":32,"operation_receipts":128,"operation_waiters":32,"operation_timeout_ms":60000,"receipt_retention_ms":300000,"artifact_bytes":65536}}
+{
+  "service": "xgc2.simulation",
+  "api_version": "v1",
+  "instance_id": "fresh-world-identity",
+  "ready": true,
+  "facts": {
+    "world_generation": 1,
+    "frames_flowing": true,
+    "health": "ready",
+    "capabilities": [
+      {
+        "name": "xgc2.chassis.hold",
+        "entities": [
+          "robot-1"
+        ]
+      }
+    ],
+    "service_ref": {
+      "target_id": "lab-world",
+      "service": "xgc2.simulation",
+      "api_version": "v1",
+      "instance_id": "fresh-world-identity",
+      "profile": "http.v1",
+      "endpoint": {
+        "kind": "unix",
+        "address": "/granted/runtime/simulation.sock"
+      }
+    },
+    "simulation": {
+      "describe_path": "/v1/describe",
+      "capabilities": [
+        "entities.create",
+        "entities.remove",
+        "entities.set_state",
+        "entities.reset",
+        "world.pause",
+        "world.resume",
+        "world.step",
+        "world.reset.entities",
+        "world.reset.all_entities"
+      ],
+      "world_frame": {
+        "id": "world",
+        "axes": "right-handed z-up"
+      },
+      "artifact_types": [
+        "application/sdf+xml"
+      ],
+      "limits": {
+        "entities": 256,
+        "pending_commands": 32,
+        "operation_receipts": 128,
+        "operation_waiters": 32,
+        "operation_timeout_ms": 60000,
+        "receipt_retention_ms": 300000,
+        "artifact_bytes": 65536
+      }
+    }
+  }
+}
 ```
 
 POST `/v1/entities`:

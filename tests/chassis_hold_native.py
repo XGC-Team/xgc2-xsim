@@ -61,11 +61,15 @@ def initial_entities_use_one_tick_thread(binary, root):
 def run(x):
     # ---- readiness: identity, facts, the bounded hold and its argument checks
     described = x.start()
+    assert set(described) == {"service", "api_version", "instance_id", "ready", "facts"}, described
     assert described["service"] == "xgc2.simulation" and described["api_version"] == "v1", described
-    assert described["instance_id"] == x.instance and described["service_ref"]["instance_id"] == x.instance
+    assert described["instance_id"] == x.instance and described["facts"]["service_ref"]["instance_id"] == x.instance
     assert described["facts"]["world_generation"] == 1 and "ros_master_uri" not in described["facts"], described
     started = time.monotonic()
     status, ready = x.call("GET", "/v1/describe?wait_ready_ms=5000", bound=False)
+    assert set(ready) == {"service", "api_version", "instance_id", "ready", "facts"}, ready
+    assert ready["facts"]["service_ref"] == described["facts"]["service_ref"]
+    assert ready["facts"]["simulation"] == described["facts"]["simulation"]
     assert status == 200 and ready["ready"] is True and ready["facts"]["frames_flowing"] is True, ready
     assert time.monotonic() - started < 2, "a ready service answers a waiting describe at once"
     assert x.call("GET", "/v1/describe?wait_ready_ms=0", bound=False)[1]["ready"] is True

@@ -322,7 +322,7 @@ def window(receiver, api, pid, duration):
 class Api:
     def __init__(self, path):
         self.path, self.instance, self.serial = path, None, 0
-        self.instance = self.get('/v1/describe')['service_ref']['instance_id']
+        self.instance = self.get('/v1/describe')['instance_id']
 
     def request(self, method, path, body=None):
         self.serial += 1
