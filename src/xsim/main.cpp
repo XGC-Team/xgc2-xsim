@@ -1,5 +1,6 @@
 #include "io/config.hpp"
 #include "io/native_rpc/server.hpp"
+#include "io/startup.hpp"
 #include <xgc2/xrpc/bootstrap.hpp>
 #include <fcntl.h>
 #include <unistd.h>
@@ -38,6 +39,12 @@ xsim::Json experiment_stdin() {
 volatile sig_atomic_t stopping = 0;
 void signal_stop(int) { stopping = 1; }
 #ifdef XSIM_ROS
+xgc2::xrpc::DirectoryGrant ros_directory(const char *name) {
+  const char *path = std::getenv(name);
+  if (!path || *path != '/')
+    throw std::invalid_argument(std::string(name) + " requires an explicit absolute directory");
+  return allocated_directory(path, xgc2::xrpc::GrantPurpose::Storage);
+}
 struct RosShutdown {
   ~RosShutdown() { ros::shutdown(); }
 };
@@ -45,13 +52,13 @@ struct RosShutdown {
 } // namespace
 int main(int argc, char **argv) {
   try {
-    std::string config_path, experiment_path, manifest_path, bootstrap_path, socket, scene_file;
+    std::string config_path, experiment_path, manifest_path, socket, target_id, scene_file;
     bool has_experiment_stdin = false;
-    bool has_config = false, has_experiment = false, has_manifest = false, has_bootstrap = false, has_socket = false, has_scene = false;
+    bool has_config = false, has_experiment = false, has_manifest = false, has_socket = false, has_target = false, has_scene = false;
     for (int i = 1; i < argc; ++i) {
       std::string arg = argv[i];
       if (arg == "--help") {
-        std::cout << "xsim --bootstrap-input BOOTSTRAP.json (--config WORLD.json | --experiment-file EXPERIMENT.json | --experiment-stdin | --manifest MANIFEST.json) [--socket SOCKET] [--scene-file SCENE.yaml]\n";
+        std::cout << "xsim --socket SOCKET --target-id TARGET (--config WORLD.json | --experiment-file EXPERIMENT.json | --experiment-stdin | --manifest MANIFEST.json) [--scene-file SCENE.yaml]\n";
         return 0;
       }
       if (arg == "--experiment-stdin") {
@@ -61,11 +68,11 @@ int main(int argc, char **argv) {
       }
       std::string *value = nullptr;
       bool *present = nullptr;
-      if (arg == "--bootstrap-input") { value = &bootstrap_path; present = &has_bootstrap; }
-      else if (arg == "--manifest") { value = &manifest_path; present = &has_manifest; }
+      if (arg == "--manifest") { value = &manifest_path; present = &has_manifest; }
       else if (arg == "--config") { value = &config_path; present = &has_config; }
       else if (arg == "--experiment-file") { value = &experiment_path; present = &has_experiment; }
       else if (arg == "--socket") { value = &socket; present = &has_socket; }
+      else if (arg == "--target-id") { value = &target_id; present = &has_target; }
       else if (arg == "--scene-file") { value = &scene_file; present = &has_scene; }
       else throw std::invalid_argument("unknown argument: " + arg);
       if (*present) throw std::invalid_argument("argument occurs more than once: " + arg);
@@ -74,26 +81,19 @@ int main(int argc, char **argv) {
       *present = true;
       *value = argv[++i];
     }
-    if (bootstrap_path.empty() || int(has_config) + int(has_experiment) + int(has_manifest) + int(has_experiment_stdin) != 1 ||
+    if (socket.empty() || target_id.empty() || int(has_config) + int(has_experiment) + int(has_manifest) + int(has_experiment_stdin) != 1 ||
         (has_config && config_path.empty()) || (has_experiment && experiment_path.empty()) ||
         (has_manifest && manifest_path.empty()))
-      throw std::invalid_argument("--bootstrap-input and exactly one native world input are required");
+      throw std::invalid_argument("--socket, --target-id and exactly one native world input are required");
     if (has_manifest && has_scene) throw std::invalid_argument("manifest world owns its scene artifact");
-    auto bootstrap = xgc2::xrpc::loadBootstrapInput(bootstrap_path);
-    const auto &binding = bootstrap.binding();
-    if (binding.service() != "xgc2.simulation" || binding.api_version() != "v1" ||
-        binding.profile() != "http.v1" || binding.endpoint().kind != "unix" ||
-        binding.authentication() != "local_private")
-      throw std::invalid_argument("xsim requires local-private simulation HTTP v1");
-    if (!has_socket) socket = binding.endpoint().address;
-    else if (socket != binding.endpoint().address)
-      throw std::invalid_argument("socket does not match the bootstrap endpoint");
-    const auto runtime = bootstrap.resolve_runtime([&](const auto &, const auto &) {
-      return allocated_directory(socket.substr(0, socket.rfind('/')), xgc2::xrpc::GrantPurpose::Runtime);
-    });
+    if (socket.front() != '/' || socket.back() == '/' || socket.find('\0') != std::string::npos)
+      throw std::invalid_argument("Unix socket requires an absolute filesystem path and filename");
+    const auto runtime = allocated_directory(socket.substr(0, socket.rfind('/')), xgc2::xrpc::GrantPurpose::Runtime);
+    // Validate every path component without replacing the retained owner allocation.
+    xsim::ensure_socket_parent(socket);
     OwnedFd runtime_fd{runtime.duplicate_fd()};
     xsim::RpcOptions rpc;
-    rpc.target_id = std::string(binding.target_id());
+    rpc.target_id = target_id;
     rpc.retained_parent_fd = runtime_fd.value;
     // The management host keeps the SDK's default HTTP limits (xgc2::xrpc::HttpLimits).
     xsim::Json config;
@@ -110,28 +110,10 @@ int main(int argc, char **argv) {
         (epoch.is_number_unsigned() && epoch.get<uint64_t>() > uint64_t(std::numeric_limits<int64_t>::max())))
       throw std::invalid_argument("epoch_ns must be an explicit int64 integer from the frozen configuration");
 #ifdef XSIM_ROS
-    const auto application = bootstrap.application_json();
-    if (!application) throw std::invalid_argument("ROS allocation grant names are required");
-    const auto allocations = xsim::Json::parse(*application);
-    if (!allocations.is_object() || allocations.size() != 2 ||
-        !allocations.contains("rosHomeGrant") || !allocations.contains("rosLogGrant") ||
-        !allocations.at("rosHomeGrant").is_string() || !allocations.at("rosLogGrant").is_string() ||
-        allocations.at("rosHomeGrant") == allocations.at("rosLogGrant") || binding.storage_grants().size() != 2)
-      throw std::invalid_argument("ROS requires distinct rosHomeGrant and rosLogGrant allocations");
-    const auto storage = bootstrap.resolve_storage([&](const auto &handle, const auto &) {
-      const char *name = nullptr;
-      if (handle.matches(allocations.at("rosHomeGrant").get<std::string>())) name = "ROS_HOME";
-      if (handle.matches(allocations.at("rosLogGrant").get<std::string>())) name = "ROS_LOG_DIR";
-      if (!name) throw std::invalid_argument("unresolved ROS storage allocation");
-      const char *path = std::getenv(name);
-      if (!path || *path != '/') throw std::invalid_argument("ROS requires an explicit absolute storage directory");
-      return allocated_directory(path, xgc2::xrpc::GrantPurpose::Storage);
-    });
+    const std::array<xgc2::xrpc::DirectoryGrant, 2> ros_directories = {
+      ros_directory("ROS_HOME"), ros_directory("ROS_LOG_DIR")};
     ros::init(argc, argv, "xsim", ros::init_options::NoSigintHandler);
     RosShutdown ros_shutdown;
-#else
-    if (!binding.storage_grants().empty())
-      throw std::invalid_argument("headless xsim has no storage allocations");
 #endif
     signal(SIGINT, signal_stop);
     signal(SIGTERM, signal_stop);

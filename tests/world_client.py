@@ -1,4 +1,4 @@
-"""One xsim process behind a private bootstrap, driven through its v1 management service.
+"""One xsim process behind a private Unix endpoint, driven through its v1 management service.
 
 Shared by the native and ROS integration tests: process start and stop, the XRPC request headers, operations
 that are awaited to their terminal state, and capability calls (chassis HOLD).
@@ -33,20 +33,11 @@ class Xsim:
         self.process = None
         self.log = None
         self.log_path = self.root / "xsim.log"
-        binding = {"schema_version": 1, "target_id": "test:world", "service": "xgc2.simulation",
-                   "api_version": "v1", "profile": "http.v1", "endpoint": {"kind": "unix", "address": self.endpoint},
-                   "runtime_grant": "test:runtime", "authentication": "local_private",
-                   "secret_handles": {}, "storage_grants": []}
-        bootstrap = {"schema_version": 1, "binding": binding, "grants": {}}
         self.env = dict(os.environ)
         if ros:
             for name in ("ros-home", "ros-log"):
                 (self.root / name).mkdir(mode=0o700, exist_ok=True)
-            binding["storage_grants"] = ["test:ros-home", "test:ros-log"]
-            bootstrap["application"] = {"rosHomeGrant": "test:ros-home", "rosLogGrant": "test:ros-log"}
             self.env.update(ROS_HOME=str(self.root / "ros-home"), ROS_LOG_DIR=str(self.root / "ros-log"))
-        self.bootstrap = self.root / "bootstrap.json"
-        write_private(self.bootstrap, bootstrap)
         self.world = self.root / "world.json"
         write_private(self.world, config)
 
@@ -54,7 +45,7 @@ class Xsim:
         """Start the process and return its first unbound describe (the discovery call)."""
         assert self.process is None or self.process.poll() is not None
         self.log = self.log_path.open("ab")
-        self.process = subprocess.Popen([self.binary, "--bootstrap-input", str(self.bootstrap), "--config", str(self.world)],
+        self.process = subprocess.Popen([self.binary, "--socket", self.endpoint, "--target-id", "test:world", "--config", str(self.world)],
                                         stdout=self.log, stderr=subprocess.STDOUT, env=self.env)
         self.instance = None
         deadline = time.monotonic() + timeout

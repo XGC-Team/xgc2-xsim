@@ -3,9 +3,9 @@
   "definitions": [
     {
       "id": "xsim-world",
-      "version": "1.4.0",
+      "version": "2.0.0",
       "label": "xsim world",
-      "description": "One native xsim world. The workflow supplies frozen Experiment input, scene and an explicit deployment bootstrap; the generic Process owns its OS lifecycle.",
+      "description": "One native xsim world. The workflow supplies frozen Experiment input, scene, target identity and a private Unix endpoint; the generic Process owns its OS lifecycle.",
       "parameters": {
         "properties": {
           "installRoot": {
@@ -35,12 +35,6 @@
             "default": "127.0.0.1",
             "output": true
           },
-          "rosLogDir": {
-            "type": "string",
-            "description": "Absolute ROS_LOG_DIR",
-            "x-xgc-path-kind": "directory",
-            "fixedOnly": true
-          },
           "rosMasterUri": {
             "type": "string",
             "description": "Pre-allocated session ROS_MASTER_URI; the master may start after xsim.",
@@ -51,18 +45,10 @@
             "default": "",
             "description": "Prepared scene file consumed and validated by xsim."
           },
-          "bootstrapInput": {
+          "targetId": {
             "type": "string",
-            "description": "Canonical private shared XRPC bootstrap file allocated by this deployment.",
-            "fixedOnly": true,
-            "sensitive": true,
-            "x-xgc-path-kind": "file"
-          },
-          "rosHome": {
-            "type": "string",
-            "description": "Existing deployment-owned ROS_HOME directory.",
-            "fixedOnly": true,
-            "x-xgc-path-kind": "directory"
+            "description": "Explicit workflow-owned world target identity, independent of the native process incarnation.",
+            "fixedOnly": true
           }
         },
         "groups": [
@@ -73,17 +59,13 @@
             "parameters": [
               "rosInstallPath",
               "rosIp",
-              "rosHome",
-              "rosLogDir",
               "rosMasterUri"
             ]
           }
         ],
         "required": [
           "socketPath",
-          "bootstrapInput",
-          "rosHome",
-          "rosLogDir",
+          "targetId",
           "rosMasterUri",
           "configJson"
         ]
@@ -91,21 +73,19 @@
       "command": {
         "executable": "${installRoot}/bin/xsim",
         "args": [
-          "--bootstrap-input",
-          "${bootstrapInput}",
           "--experiment-stdin",
           "--socket",
           "${socketPath}",
+          "--target-id",
+          "${targetId}",
           "--scene-file",
           "${sceneFile}"
         ],
         "env": {
           "ROS_HOSTNAME": "",
           "ROS_IP": "${rosIp}",
-          "ROS_LOG_DIR": "${rosLogDir}",
           "ROS_MASTER_URI": "${rosMasterUri}",
-          "ROS_NAMESPACE": "",
-          "ROS_HOME": "${rosHome}"
+          "ROS_NAMESPACE": ""
         },
         "stdinParameter": "configJson"
       },

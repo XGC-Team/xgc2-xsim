@@ -25,14 +25,7 @@ def main(binary):
         socket_path = root / "new" / "nested" / "world.sock"
         socket_path.parent.mkdir(parents=True, mode=0o700)
         socket_path.parent.parent.chmod(0o700)
-        allocation = root / "bootstrap.json"
-        allocation.write_text(json.dumps({"schema_version": 1, "binding": {
-            "schema_version": 1, "target_id": "native-fixture:cli", "service": "xgc2.simulation",
-            "api_version": "v1", "profile": "http.v1", "endpoint": {"kind": "unix", "address": str(socket_path)},
-            "runtime_grant": "fixture:runtime", "authentication": "local_private",
-            "secret_handles": {}, "storage_grants": []}, "grants": {}}))
-        allocation.chmod(0o600)
-        prefix = [binary, "--bootstrap-input", str(allocation)]
+        prefix = [binary, "--target-id", "native-fixture:cli"]
         command = prefix + ["--config", str(config), "--socket", str(socket_path)]
 
         def rejected(arguments, reason, payload=None):
@@ -42,16 +35,36 @@ def main(binary):
             assert not socket_path.exists(), "rejected config bound the socket"
 
         help_text = subprocess.check_output([binary, "--help"], text=True)
-        assert "--scene-file" in help_text and "--socket" in help_text
+        assert all(flag in help_text for flag in ("--scene-file", "--socket", "--target-id"))
+        assert "--bootstrap-input" not in help_text
         rejected(command + ["--scene-file"], "missing value")
         rejected(command + ["--scene-file", "", "--scene-file", ""], "more than once")
         rejected(command + ["--config", str(config)], "more than once")
         rejected(command + ["--socket", str(socket_path)], "more than once")
         rejected([binary, "--config", "--socket", str(socket_path)], "missing value")
         rejected([binary, "--config", str(config), "--socket"], "missing value")
-        for path in ("", str(root / "wrong.sock"), "relative.sock", "tcp://127.0.0.1:30000"):
-            rejected(prefix + ["--config", str(config), "--socket", path], "socket does not match")
-        assert not (root / "wrong.sock").exists()
+        rejected(command + ["--target-id", "other:world"], "more than once")
+        rejected(command + ["--bootstrap-input", str(root / "retired.json")], "unknown argument")
+        rejected([binary, "--config", str(config), "--socket", str(socket_path)], "--target-id")
+        rejected(prefix + ["--config", str(config)], "--socket")
+        rejected(prefix + ["--config", str(config), "--socket", ""], "--socket")
+        for path in ("relative.sock", "tcp://127.0.0.1:30000", str(root) + "/"):
+            rejected(prefix + ["--config", str(config), "--socket", path], "absolute filesystem path")
+        absent = root / "unallocated"
+        rejected(prefix + ["--config", str(config), "--socket", str(absent / "world.sock")], "directory allocation")
+        assert not absent.exists(), "launcher created an unallocated runtime directory"
+        socket_path.parent.chmod(0o755)
+        rejected(command, "bootstrap")  # DirectoryGrant rejects a non-private runtime owner.
+        assert stat.S_IMODE(socket_path.parent.stat().st_mode) == 0o755
+        socket_path.parent.chmod(0o700)
+        alias = root / "runtime-alias"
+        alias.symlink_to(socket_path.parent, target_is_directory=True)
+        rejected(prefix + ["--config", str(config), "--socket", str(alias / "world.sock")], "directory allocation")
+        ancestor = root / "ancestor-alias"
+        ancestor.symlink_to(socket_path.parent.parent, target_is_directory=True)
+        rejected(prefix + ["--config", str(config), "--socket", str(ancestor / "nested" / "world.sock")], "symbolic links")
+        for target in ("", "bad target"):
+            rejected([binary, "--target-id", target, "--config", str(config), "--socket", str(socket_path)], "target")
         rejected(command + ["--scene-file", str(root / "absent.yaml")], "bad file")
         configured = dict(original, scene_file=str(scene))
         config.write_text(json.dumps(configured))
@@ -90,6 +103,7 @@ def main(binary):
                 assert description.status == 200
                 described = json.loads(description.read())
                 assert set(described) == {"service", "api_version", "instance_id", "ready", "facts"}, described
+                assert described["facts"]["service_ref"]["target_id"] == "native-fixture:cli"
                 assert described["facts"]["service_ref"]["endpoint"] == {"kind": "unix", "address": str(socket_path)}
                 connection.request("GET", "/v1/describe?wait_ready_ms=1000", headers=headers)
                 readiness = connection.getresponse()
@@ -175,8 +189,8 @@ def main(binary):
         # through the same bounded reader before owning any socket/ROS effects.
         experiment = root / "experiment.json"
         fixture = Path(__file__).parent / "experiment-fixtures" / "empty-world.input.json"
-        bootstrap = json.loads(fixture.read_text())
-        experiment.write_text(json.dumps(bootstrap))
+        frozen = json.loads(fixture.read_text())
+        experiment.write_text(json.dumps(frozen))
         experiment_command = prefix + ["--experiment-file", str(experiment), "--socket", str(socket_path)]
         rejected(experiment_command + ["--config", str(config)], "exactly one")
         rejected(experiment_command + ["--experiment-file", str(experiment)], "more than once")
@@ -184,29 +198,32 @@ def main(binary):
         for invalid in ['{"sessionId":"one","sessionId":"two"}', '{} {}']:
             experiment.write_text(invalid)
             rejected(experiment_command, "configuration" if "sessionId" in invalid else "parse")
-        experiment.write_text(json.dumps(bootstrap))
+        experiment.write_text(json.dumps(frozen))
         process = start(experiment_command + ["--scene-file", str(scene)], native_epoch=True)
         process.terminate()
         _, stderr = process.communicate(timeout=5)
         assert process.returncode == 0, stderr
         assert not socket_path.exists(), "experiment-file shutdown leaked owned socket"
-        stdin_command = prefix + ["--experiment-stdin", "--scene-file", str(scene)]
+        stdin_command = prefix + ["--experiment-stdin", "--socket", str(socket_path), "--scene-file", str(scene)]
         rejected(stdin_command + ["--config", str(config)], "exactly one", "{}")
         rejected(stdin_command + ["--experiment-stdin"], "more than once", "{}")
         rejected(stdin_command, "parse", "{} {}")
         rejected(stdin_command, "duplicate configuration", '{"sessionId":"one","sessionId":"two"}')
         rejected(stdin_command, "exceeds 8 MiB", " " * (8 * 1024 * 1024 + 1))
-        process = start(stdin_command, json.dumps(bootstrap), native_epoch=True)
+        process = start(stdin_command, json.dumps(frozen), native_epoch=True)
         process.terminate()
         _, stderr = process.communicate(timeout=5)
         assert process.returncode == 0, stderr
         assert not socket_path.exists(), "experiment-stdin shutdown leaked owned socket"
         definition_path = Path(__file__).parent.parent / "process-definitions" / "xsim-world.json"
         definition = json.loads(definition_path.read_text())["definitions"][0]
-        values = {"bootstrapInput": str(allocation), "socketPath": str(socket_path), "sceneFile": ""}
+        assert not {"bootstrapInput", "startupInputPath", "rosHome", "rosLogDir"} & set(definition["parameters"]["properties"])
+        assert not {"ROS_HOME", "ROS_LOG_DIR"} & set(definition["command"]["env"])
+        assert "targetId" in definition["parameters"]["required"]
+        values = {"targetId": "native-fixture:cli", "socketPath": str(socket_path), "sceneFile": ""}
         definition_command = [binary] + [re.sub(r"\$\{(\w+)\}", lambda match: values[match.group(1)], argument)
                                          for argument in definition["command"]["args"]]
-        process = start(definition_command, json.dumps(bootstrap), native_epoch=True)
+        process = start(definition_command, json.dumps(frozen), native_epoch=True)
         process.terminate()
         _, stderr = process.communicate(timeout=5)
         assert process.returncode == 0, stderr
@@ -215,7 +232,7 @@ def main(binary):
                           "sceneConflictRefused": True,
                           "invalidSceneUsesOriginalParser": True, "explicitEpochUnchanged": True,
                           "nativeStartupEpochStable": True,
-                          "shippedDefinitionArgv": True, "bootstrapSocketMismatchRefused": True,
+                          "shippedDefinitionArgv": True, "retiredBootstrapRefused": True, "explicitTargetIdentity": True,
                           "unboundDescribeReadiness": True,
                           "experimentFile": True, "experimentStdin": True, "privateParents": True, "foreignSocketAndReplacementPreserved": True}))
 

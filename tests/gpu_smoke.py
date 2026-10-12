@@ -8,6 +8,9 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--xsim',required=True);p.add_argument('--module');p.add_argument('--output',required=True);a=p.parse_args()
     if a.module:os.environ['XSIM_LIDAR_GPU_MODULE']=str(Path(a.module).resolve())
     out=Path(a.output);out.mkdir(parents=True,exist_ok=True)
+    out.chmod(0o700)
+    for name in ("ros-home", "ros-log"):
+        (out / name).mkdir(mode=0o700, exist_ok=True)
     with socket.socket() as s:s.bind(('127.0.0.1',0));port=s.getsockname()[1]
     os.environ.update(ROS_MASTER_URI=f'http://127.0.0.1:{port}',ROS_IP='127.0.0.1',ROS_HOSTNAME='127.0.0.1',ROS_HOME=str(out/'ros-home'),ROS_LOG_DIR=str(out/'ros-log'))
     children=[];logs=[]
@@ -35,7 +38,7 @@ def main():
         cfg={'instance_id':'gpu-fixture','epoch_ns':1700000000000000000,'publish_clock':True,
              'scene':{'surface_spacing':.1,'obstacles':[{'type':'box','position':[5,0,0],'size':[1,6,4]}]},'entities':[]}
         (out/'world.json').write_text(json.dumps(cfg))
-        server=spawn([a.xsim,'--config',str(out/'world.json'),'--socket',str(out/'world.sock')],'xsim.log')
+        server=spawn([a.xsim,'--config',str(out/'world.json'),'--socket',str(out/'world.sock'),'--target-id','gpu:world'],'xsim.log')
         received=[[],[]]
         subs=[rospy.Subscriber('/gpu_'+str(i)+'/cloud',PointCloud2,lambda m,i=i:received[i].append((m.header.stamp.to_nsec(),m.width,m.point_step,m.header.frame_id)),queue_size=10) for i in range(2)]
         wait(lambda:(out/'world.sock').exists(),'socket')

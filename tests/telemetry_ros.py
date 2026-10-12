@@ -22,6 +22,9 @@ def main():
     args = parser.parse_args()
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
+    out.chmod(0o700)
+    for name in ("ros-home", "ros-log"):
+        (out / name).mkdir(mode=0o700, exist_ok=True)
     with socket.socket() as available:
         available.bind(('127.0.0.1', 0))
         port = available.getsockname()[1]
@@ -78,7 +81,7 @@ def main():
                                {'name': 'mecanum', 'kind': 'mecanum', 'position': [-3, 4, 0], 'yaw': -.9}]}
         (out / 'world.json').write_text(json.dumps(config, indent=2))
         socket_path = str(out / 'world.sock')
-        server = spawn([args.xsim, '--config', str(out / 'world.json'), '--socket', socket_path],
+        server = spawn([args.xsim, '--config', str(out / 'world.json'), '--socket', socket_path, '--target-id', 'telemetry:world'],
                        'xsim.log')
         until(lambda: server.poll() is None and Path(socket_path).exists(), 'native socket')
 

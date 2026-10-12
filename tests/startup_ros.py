@@ -280,6 +280,31 @@ def late_master(binary, root, port, long_test):
             log.close()
 
 
+def supervisor_directory_contract(binary, root):
+    """Reject absent or unsafe ROS directory inputs without starting a ROS graph."""
+    root.mkdir(mode=0o700)
+    world = root / "world.json"
+    world.write_text(json.dumps(config()))
+    endpoint = root / "world.sock"
+    command = [binary, "--config", str(world), "--socket", str(endpoint), "--target-id", "startup:directories"]
+    alias = root / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    regular = root / "regular"
+    regular.write_text("not a directory")
+    for name in ("ROS_HOME", "ROS_LOG_DIR"):
+        for value in (None, "relative", str(root / "unallocated"), str(alias), str(regular)):
+            env = dict(os.environ)
+            if value is None:
+                env.pop(name, None)
+            else:
+                env[name] = value
+            result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=5)
+            assert result.returncode == 1, (name, value, result)
+            assert "explicit absolute directory" in result.stderr or "directory allocation" in result.stderr, result.stderr
+            assert not endpoint.exists(), "invalid ROS environment exposed a native service"
+            assert not (root / "unallocated").exists(), "launcher created a ROS directory"
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--xsim", required=True)
@@ -298,6 +323,7 @@ def main():
         os.environ.update(ROS_MASTER_URI="http://127.0.0.1:%d" % port, ROS_IP="127.0.0.1", ROS_HOSTNAME="127.0.0.1",
                           ROS_HOME=str(root / "ros-home"), ROS_LOG_DIR=str(root / "ros-log"),
                           XSIM_LIDAR_GPU_MODULE="/nonexistent/xsim-lidar-gpu.so")
+        supervisor_directory_contract(args.xsim, root / "directories")
         if not args.long:
             stalled_master(args.xsim, root / "stalled")
         late_master(args.xsim, root, port, args.long)

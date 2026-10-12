@@ -452,6 +452,8 @@ def verify_windows(steady, congested, recovered, args):
 def run(args):
     out = Path(args.output);out.mkdir(parents=True, exist_ok=True)
     out.chmod(0o700)
+    for name in ("ros-home", "ros-log"):
+        (out / name).mkdir(mode=0o700, exist_ok=True)
     nofile, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
     assert nofile >= args.count * 11 + 64, ('TCPROS benchmark needs --ulimit nofile=4096:4096', nofile)
     with socket.socket() as available:
@@ -488,15 +490,7 @@ def run(args):
         (out/'world.json').write_text(json.dumps(config, indent=2)+'\n')
         (out/'world.json').chmod(0o600)
         socket_path = str(out/'world.sock')
-        bootstrap = {'schema_version': 1, 'binding': {'schema_version': 1, 'target_id': 'publishing:world',
-                     'service': 'xgc2.simulation', 'api_version': 'v1', 'profile': 'http.v1',
-                     'endpoint': {'kind': 'unix', 'address': socket_path}, 'runtime_grant': 'publishing:runtime',
-                     'authentication': 'local_private', 'secret_handles': {},
-                     'storage_grants': ['publishing:ros-home', 'publishing:ros-log']}, 'grants': {},
-                     'application': {'rosHomeGrant': 'publishing:ros-home', 'rosLogGrant': 'publishing:ros-log'}}
-        (out/'bootstrap.json').write_text(json.dumps(bootstrap))
-        (out/'bootstrap.json').chmod(0o600)
-        server = spawn([args.xsim, '--bootstrap-input', str(out/'bootstrap.json'),
+        server = spawn([args.xsim, '--socket', socket_path, '--target-id', 'publishing:world',
                         '--config', str(out/'world.json')], 'xsim.log')
         until(lambda: server.poll() is None and Path(socket_path).exists(), 'xsim native socket', 60)
         api = Api(socket_path)

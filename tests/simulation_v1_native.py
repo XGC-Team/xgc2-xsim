@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the actual native server through the formal XRPC bootstrap."""
+"""Exercise the actual native server through its private XRPC Unix endpoint."""
 import argparse
 import copy
 import http.client
@@ -36,23 +36,17 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
     parser.add_argument("--test-host", action="store_true",
-                        help="validate native domain via the explicit temporary host, not production bootstrap")
+                        help="validate native domain via the explicit temporary host, not the production launcher")
     parser.add_argument("--output")
     args = parser.parse_args()
     binary = str(Path(args.binary).resolve())
-    evidence = {"bootstrap": "not exercised: temporary native test host" if args.test_host else "formal local_private http.v1",
+    evidence = {"launcher": "temporary native test host" if args.test_host else "direct private Unix http.v1",
                 "checks": []}
     with tempfile.TemporaryDirectory(prefix="xsim-native-v1-") as directory:
         root = Path(directory)
         root.chmod(0o700)
         endpoint = str(root / "world.sock")
-        bootstrap = root / "bootstrap.json"
         configuration = root / "world.json"
-        write_private(bootstrap, {"schema_version": 1, "binding": {
-            "schema_version": 1, "target_id": "native-fixture:world", "service": "xgc2.simulation",
-            "api_version": "v1", "profile": "http.v1", "endpoint": {"kind": "unix", "address": endpoint},
-            "runtime_grant": "fixture:runtime", "authentication": "local_private",
-            "secret_handles": {}, "storage_grants": []}, "grants": {}})
         write_private(configuration, {"epoch_ns": 1000000000, "model_step_ns": 1000000,
             "output_period_ns": 4000000, "paused": True, "entities": []})
         process = None
@@ -78,8 +72,7 @@ def main():
 
         def start():
             nonlocal process, instance
-            command = ([binary, "--config", str(configuration), "--socket", endpoint, "--target-id", "native-fixture:world"]
-                       if args.test_host else [binary, "--bootstrap-input", str(bootstrap), "--config", str(configuration)])
+            command = [binary, "--config", str(configuration), "--socket", endpoint, "--target-id", "native-fixture:world"]
             process = subprocess.Popen(command,
                                        stdout=log, stderr=subprocess.STDOUT)
             deadline = time.monotonic() + 8
