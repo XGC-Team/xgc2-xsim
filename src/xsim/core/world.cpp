@@ -384,13 +384,13 @@ Result World::apply(Command &c) {
     return r;
   }
   auto &f = flights_[i];
-  if (c.op == Op::Arm && c.action != 0) {
+  if (c.op == Op::Arm && (c.action < 0 || c.action > 1)) {
     r.success = false;
     r.reason = 3;
     return r;
   }
   if (c.op == Op::Arm)
-    r.success = f.model.request_arm(c.arm);
+    r.success = f.model.request_arm(c.arm, c.action == 1);
   else if (c.op == Op::Mode) {
     FlightMode mode;
     if (c.mode == "OFFBOARD")

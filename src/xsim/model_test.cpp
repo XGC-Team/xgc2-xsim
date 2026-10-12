@@ -79,6 +79,19 @@ int main() {
   assert(model.control_output().position_control_valid);
   assert(!model.landed());
   assert(!model.request_arm(false));
+  {
+    FlightModel killed({0, 0, 1.5});
+    assert(killed.request_arm(true));
+    assert(!killed.request_arm(false));
+    const auto before = killed.state();
+    assert(killed.request_arm(false, true));
+    assert(!killed.armed());
+    assert((killed.state().position - before.position).norm() == 0);
+    assert(killed.state().velocity.norm() == 0);
+    killed.step(0.01);
+    assert(killed.control_output().allocation.target_rotor_speed.norm() == 0);
+    assert(killed.state().position.z() < before.position.z());
+  }
   assert((model.orientation() * model.specific_force_body() -
           (model.acceleration() + Eigen::Vector3d(0, 0, 9.8066))).norm() < 1e-6);
   const double realized_hover = model.control_output().normalized_thrust;

@@ -86,8 +86,8 @@ public:
     received_since_step_ = true;
     return true;
   }
-  bool request_arm(bool value) {
-    if (!value && armed_ && !landed())
+  bool request_arm(bool value, bool force = false) {
+    if (!value && armed_ && !landed() && !force)
       return false;
     if (value != armed_)
       controller_.reset();
