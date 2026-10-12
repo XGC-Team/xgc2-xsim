@@ -38,6 +38,17 @@ int main(int argc, char **argv) {
     }
   }
   auto original = xsim::load_json_object(root + "/default-mixed.input.json");
+  for (const bool locked : {false, true}) {
+    auto authored = original;
+    authored["scene"]["parameters"]["frozen"] = locked;
+    assert(config_for(authored) == config_for(original));
+  }
+  auto invalid_lock = original;
+  invalid_lock["scene"]["parameters"]["frozen"] = "false";
+  bool refused_lock = false;
+  try { (void)config_for(invalid_lock); } catch (const std::exception &) { refused_lock = true; }
+  assert(refused_lock);
+
   for (const char *key : {"sessionId", "runMode", "scene", "simulation", "robots", "visualizationTopics"}) {
     auto modified = original; modified.erase(key);
     bool rejected = false;

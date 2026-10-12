@@ -153,7 +153,8 @@ Json experiment_config(const Json &input, int64_t epoch_ns) {
   require(parameters.is_object(), "scene parameters must be an object");
   for (auto i = parameters.begin(); i != parameters.end(); ++i)
     require(i.key() == "modelStepMs" || i.key() == "outputPeriodMs" || i.key() == "commandPollMs" ||
-      i.key() == "pointCloudBackend" || i.key() == "fcuParameters" || i.key() == "generation", "unknown scene parameter: " + i.key());
+      i.key() == "pointCloudBackend" || i.key() == "fcuParameters" || i.key() == "generation" || i.key() == "frozen", "unknown scene parameter: " + i.key());
+  if (parameters.contains("frozen")) require(parameters.at("frozen").is_boolean(), "scene frozen must be a boolean");
   if (parameters.contains("generation")) {
     require(parameters.at("generation").is_object(), "generation parameters must be a numeric object");
     for (const auto &v : parameters.at("generation")) (void)number(v);
