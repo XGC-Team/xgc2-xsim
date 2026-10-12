@@ -215,6 +215,21 @@ def main(binary):
         _, stderr = process.communicate(timeout=5)
         assert process.returncode == 0, stderr
         assert not socket_path.exists(), "experiment-stdin shutdown leaked owned socket"
+        mixed = json.loads((fixture.parent / "default-mixed.input.json").read_text())
+        process = start(stdin_command, json.dumps(mixed), native_epoch=True)
+        connection = UnixHTTP(str(socket_path))
+        headers = {"X-Request-ID": "cli-enabled-roster", "X-Xrpc-Timeout-Ms": "2000"}
+        connection.request("GET", "/v1/describe", headers=headers)
+        described = json.loads(connection.getresponse().read())
+        headers["X-Xrpc-Instance-ID"] = described["instance_id"]
+        connection.request("GET", "/v1/entities", headers=headers)
+        entities = json.loads(connection.getresponse().read())["entities"]
+        assert {e["ref"]["id"] for e in entities} == {r["slotId"] for r in mixed["robots"]}
+        assert all(e["state"]["enabled"] for e in entities), entities
+        connection.close()
+        process.terminate()
+        _, stderr = process.communicate(timeout=5)
+        assert process.returncode == 0, stderr
         definition_path = Path(__file__).parent.parent / "process-definitions" / "xsim-world.json"
         definition = json.loads(definition_path.read_text())["definitions"][0]
         assert not {"bootstrapInput", "startupInputPath", "rosHome", "rosLogDir"} & set(definition["parameters"]["properties"])

@@ -57,6 +57,16 @@ Server::Server(const Json &config, const std::string &path, RpcOptions options,
     world_.apply_commands();
     if (!t->result.success)
       throw std::runtime_error("initial entity rejected");
+    if (options.frozen_experiment) {
+      auto enable = std::make_shared<Command>();
+      enable->op = Op::SetEnabled;
+      enable->key = t->result.key;
+      enable->enabled = true;
+      world_.submit(enable);
+      world_.apply_commands();
+      if (!enable->result.success)
+        throw std::runtime_error("initial frozen entity enable rejected");
+    }
     Json spec = j.value("specification", Json{{"id", id}, {"role", "robot"}});
     if (!entities_.emplace(id, PublicEntity{next_generation_++, std::move(spec), t->prepared->entity}).second)
       throw std::invalid_argument("duplicate initial entity ID");
