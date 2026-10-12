@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cstdlib>
+#include <chrono>
 #ifdef XSIM_ROS
 #include "io/ros/runtime.hpp"
 #include <ros/ros.h>
@@ -98,7 +99,9 @@ int main(int argc, char **argv) {
     xsim::Json config;
     if (has_experiment || has_experiment_stdin) {
       const auto frozen = has_experiment_stdin ? experiment_stdin() : xsim::load_json_object(experiment_path);
-      config = xsim::resolve_scene_file(xsim::experiment_config(frozen), scene_file);
+      const auto epoch_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count();
+      config = xsim::resolve_scene_file(xsim::experiment_config(frozen, epoch_ns), scene_file);
       rpc.robot_bindings = xsim::experiment_robot_bindings(frozen);
       rpc.frozen_experiment = true;
     } else config = has_manifest ? xsim::load_manifest(manifest_path) : xsim::load_config(config_path, scene_file);

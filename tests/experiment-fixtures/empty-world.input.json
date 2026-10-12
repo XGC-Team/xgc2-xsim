@@ -1,43 +1,27 @@
 {
-  "context": {
-    "containerizedDeployment": false,
-    "coreRosIp": "127.0.0.1",
-    "experimentCommitId": "swarm-commit",
-    "experimentName": "swarm",
-    "experimentResourceId": "swarm",
-    "localizationOffset": {
-      "x": 0,
-      "y": 0,
-      "z": 0
-    },
-    "openingAcceptedAtEpochNs": "1791271800123456789",
-    "openingRunId": "run-light-1",
-    "rootRunId": "run-light-1",
-    "runId": "run-light-1",
-    "runMode": "simulation",
-    "scene": {
-      "asset": "yard",
-      "simulator": "xsim"
-    },
-    "sessionId": "session-parity",
-    "simulation": {
-      "placement": "core",
-      "simulatorHostname": "localhost",
-      "rosMasterUri": "http://127.0.0.1:11311",
-      "rosIp": "127.0.0.1"
-    },
-    "targetId": "local",
-    "visualizationTopics": [],
-    "worldBoundary": null,
-    "worldClock": "simulation"
+  "coreRosIp": "127.0.0.1",
+  "experimentCommitId": "swarm-commit",
+  "experimentName": "swarm",
+  "experimentResourceId": "swarm",
+  "localizationOffset": {
+    "x": 0,
+    "y": 0,
+    "z": 0
   },
-  "epochNs": "1791271800123456789",
-  "instanceId": "run-light-1",
-  "robots": [],
-  "settings": {
-    "autoStartGazeboServer": true,
-    "autoStartRos": true,
-    "runMode": "simulation",
+  "runMode": "simulation",
+  "scene": {
+    "asset": "yard",
     "simulator": "xsim"
-  }
+  },
+  "sessionId": "session-parity",
+  "simulation": {
+    "placement": "core",
+    "simulatorHostname": "localhost",
+    "rosMasterUri": "http://127.0.0.1:11311",
+    "rosIp": "127.0.0.1"
+  },
+  "targetId": "local",
+  "visualizationTopics": [],
+  "worldBoundary": null,
+  "robots": []
 }

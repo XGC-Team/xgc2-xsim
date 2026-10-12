@@ -70,7 +70,8 @@ def main(binary):
             rejected(command, "configuration" if 'epoch_ns' in text or '"x"' in text else "parse")
         config.write_text(json.dumps(original))
 
-        def start(arguments, payload=None):
+        def start(arguments, payload=None, native_epoch=False):
+            before_start = time.time_ns()
             process = subprocess.Popen(arguments, stdin=subprocess.PIPE if payload is not None else subprocess.DEVNULL,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if payload is not None:
@@ -102,7 +103,16 @@ def main(binary):
                 response = connection.getresponse()
                 assert response.status == 200
                 value = json.loads(response.read())
-                assert value["diagnostics"]["epoch_ns"] == original["epoch_ns"], value
+                epoch = value["diagnostics"]["epoch_ns"]
+                if native_epoch:
+                    assert before_start <= epoch <= time.time_ns(), value
+                    headers["X-Request-ID"] = "cli-world-again"
+                    connection.request("GET", "/v1/world", headers=headers)
+                    response = connection.getresponse()
+                    assert response.status == 200
+                    assert json.loads(response.read())["diagnostics"]["epoch_ns"] == epoch
+                else:
+                    assert epoch == original["epoch_ns"], value
             finally:
                 connection.close()
             return process
@@ -161,23 +171,21 @@ def main(binary):
                 process.kill()
                 process.communicate(timeout=5)
         socket_path.unlink()  # prior replacement-fence fixture owns this foreign socket
-        # The independent product compiles a frozen public Experiment envelope
+        # The independent product compiles the current flat frozen Session
         # through the same bounded reader before owning any socket/ROS effects.
         experiment = root / "experiment.json"
         fixture = Path(__file__).parent / "experiment-fixtures" / "empty-world.input.json"
         bootstrap = json.loads(fixture.read_text())
-        bootstrap["epochNs"] = str(original["epoch_ns"])
-        bootstrap["context"]["openingAcceptedAtEpochNs"] = bootstrap["epochNs"]
         experiment.write_text(json.dumps(bootstrap))
         experiment_command = prefix + ["--experiment-file", str(experiment), "--socket", str(socket_path)]
         rejected(experiment_command + ["--config", str(config)], "exactly one")
         rejected(experiment_command + ["--experiment-file", str(experiment)], "more than once")
         rejected([binary, "--experiment-file", "--socket", str(socket_path)], "missing value")
-        for invalid in ['{"instanceId":"one","instanceId":"two"}', '{} {}']:
+        for invalid in ['{"sessionId":"one","sessionId":"two"}', '{} {}']:
             experiment.write_text(invalid)
-            rejected(experiment_command, "configuration" if "instanceId" in invalid else "parse")
+            rejected(experiment_command, "configuration" if "sessionId" in invalid else "parse")
         experiment.write_text(json.dumps(bootstrap))
-        process = start(experiment_command + ["--scene-file", str(scene)])
+        process = start(experiment_command + ["--scene-file", str(scene)], native_epoch=True)
         process.terminate()
         _, stderr = process.communicate(timeout=5)
         assert process.returncode == 0, stderr
@@ -186,9 +194,9 @@ def main(binary):
         rejected(stdin_command + ["--config", str(config)], "exactly one", "{}")
         rejected(stdin_command + ["--experiment-stdin"], "more than once", "{}")
         rejected(stdin_command, "parse", "{} {}")
-        rejected(stdin_command, "duplicate configuration", '{"instanceId":"one","instanceId":"two"}')
+        rejected(stdin_command, "duplicate configuration", '{"sessionId":"one","sessionId":"two"}')
         rejected(stdin_command, "exceeds 8 MiB", " " * (8 * 1024 * 1024 + 1))
-        process = start(stdin_command, json.dumps(bootstrap))
+        process = start(stdin_command, json.dumps(bootstrap), native_epoch=True)
         process.terminate()
         _, stderr = process.communicate(timeout=5)
         assert process.returncode == 0, stderr
@@ -198,14 +206,15 @@ def main(binary):
         values = {"bootstrapInput": str(allocation), "socketPath": str(socket_path), "sceneFile": ""}
         definition_command = [binary] + [re.sub(r"\$\{(\w+)\}", lambda match: values[match.group(1)], argument)
                                          for argument in definition["command"]["args"]]
-        process = start(definition_command, json.dumps(bootstrap))
+        process = start(definition_command, json.dumps(bootstrap), native_epoch=True)
         process.terminate()
         _, stderr = process.communicate(timeout=5)
         assert process.returncode == 0, stderr
         assert not socket_path.exists(), "shipped definition shutdown leaked owned socket"
         print(json.dumps({"ok": True, "emptySceneFlag": True, "validSceneFlagAndConfig": True,
                           "sceneConflictRefused": True,
-                          "invalidSceneUsesOriginalParser": True, "frozenEpochUnchanged": True,
+                          "invalidSceneUsesOriginalParser": True, "explicitEpochUnchanged": True,
+                          "nativeStartupEpochStable": True,
                           "shippedDefinitionArgv": True, "bootstrapSocketMismatchRefused": True,
                           "unboundDescribeReadiness": True,
                           "experimentFile": True, "experimentStdin": True, "privateParents": True, "foreignSocketAndReplacementPreserved": True}))

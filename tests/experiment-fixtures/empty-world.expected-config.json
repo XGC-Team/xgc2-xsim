@@ -2,7 +2,6 @@
   "entities": [],
   "epoch_ns": 1791271800123456789,
   "input_poll_ns": 5000000,
-  "instance_id": "run-light-1",
   "model_step_ns": 2000000,
   "output_period_ns": 8000000,
   "publish_clock": true,
