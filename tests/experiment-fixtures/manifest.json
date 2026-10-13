@@ -335,12 +335,6 @@
       "input": "reference-visible-ar.input.json",
       "name": "reference-visible-ar",
       "runMode": "simulation"
-    },
-    {
-      "expectedConfig": "reference-malformed-preset-skipped.expected-config.json",
-      "input": "reference-malformed-preset-skipped.input.json",
-      "name": "reference-malformed-preset-skipped",
-      "runMode": "simulation"
     }
   ]
 }

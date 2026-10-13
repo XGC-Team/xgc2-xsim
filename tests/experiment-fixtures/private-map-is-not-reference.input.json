@@ -22,14 +22,12 @@
   },
   "targetId": "local",
   "visualizationTopics": [
-    [
-      {
-        "topic": "/robot/private_map",
-        "messageType": "sensor_msgs/PointCloud2",
-        "role": "obstacle",
-        "visible3d": true
-      }
-    ]
+    {
+      "topic": "/robot/private_map",
+      "messageType": "sensor_msgs/PointCloud2",
+      "role": "obstacle",
+      "visible3d": true
+    }
   ],
   "worldBoundary": null,
   "robots": [

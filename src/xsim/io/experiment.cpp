@@ -42,34 +42,18 @@ int64_t timing(const Json &parameters, const char *key, int64_t fallback) {
   require(std::string(key) != "modelStepMs" || ms <= 10, "modelStepMs exceeds 10ms");
   return ms * 1000000;
 }
-bool reference_requested(const Json &groups) {
-  require(groups.is_array(), "visualizationTopics declarations are required");
-  for (const auto &group : groups) {
-    // The historical Go reader skipped the entire preset if any typed field
-    // could not decode. Keep that boundary while interpreting only declarations.
-    if (group.is_null()) continue;
-    if (!group.is_array()) continue;
-    bool valid = true, requested = false;
-    for (const auto &topic : group) {
-      if (topic.is_null()) continue;
-      if (!topic.is_object()) { valid = false; break; }
-      for (const char *key : {"topic", "messageType", "role"})
-        if (topic.contains(key) && !topic.at(key).is_null() && !topic.at(key).is_string()) valid = false;
-      for (const char *key : {"visible3d", "visibleAr"})
-        if (topic.contains(key) && !topic.at(key).is_null() && !topic.at(key).is_boolean()) valid = false;
-      if (!valid) break;
-      const auto string_value = [&](const char *key) {
-        return topic.contains(key) && topic.at(key).is_string() ? topic.at(key).get<std::string>() : std::string{};
-      };
-      const auto bool_value = [&](const char *key) { return topic.contains(key) && topic.at(key).is_boolean() && topic.at(key).get<bool>(); };
-      requested = requested || (string_value("topic") == "/xgc/scene/reference_cloud" &&
-        string_value("messageType") == "sensor_msgs/PointCloud2" && string_value("role") == "semantic" &&
-        (bool_value("visible3d") || bool_value("visibleAr")));
-    }
-    if (valid && requested) return true;
+bool reference_requested(const Json &topics) {
+  require(topics.is_array(), "visualizationTopics declarations are required");
+  for (const auto &topic : topics) {
+    require(topic.is_object(), "visualizationTopics entries must be objects");
+    if (topic.value("topic", std::string{}) == "/xgc/scene/reference_cloud" &&
+        topic.value("messageType", std::string{}) == "sensor_msgs/PointCloud2" &&
+        topic.value("role", std::string{}) == "semantic" &&
+        (topic.value("visible3d", false) || topic.value("visibleAr", false))) return true;
   }
   return false;
 }
+
 Json sensor(const Json &authored, const std::string &ns, const std::string &default_backend) {
   require(authored.is_object(), "binding.simulationSensors must be an object");
   // Core omits zero-valued binding.simulationSensors; omission is no sensor opt-in.

@@ -22,15 +22,13 @@
   },
   "targetId": "local",
   "visualizationTopics": [
-    [
-      {
-        "topic": "/xgc/scene/reference_cloud",
-        "messageType": "sensor_msgs/PointCloud2",
-        "role": "semantic",
-        "visible3d": false,
-        "visibleAr": true
-      }
-    ]
+    {
+      "topic": "/xgc/scene/reference_cloud",
+      "messageType": "sensor_msgs/PointCloud2",
+      "role": "semantic",
+      "visible3d": false,
+      "visibleAr": true
+    }
   ],
   "worldBoundary": null,
   "robots": [
