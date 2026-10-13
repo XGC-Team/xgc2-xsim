@@ -75,6 +75,7 @@ class opengl_pointcloud_render
     void input_dyn_clouds(pcl::PointCloud<pcl::PointXYZI> input_cloud);
 
     void activate() const { glfwMakeContextCurrent(window); }
+    void setOffscreen() { offscreen = true; }
     GLuint pointBuffer() const { return VBO; }
     void selectPoints(const std::vector<int>& indices) {
         points_index_infov.assign(indices.begin(), indices.end());
@@ -99,6 +100,7 @@ class opengl_pointcloud_render
     glm::mat4 projection, view;
     unsigned int VBO = 0, VAO = 0, EBO = 0;
     GLFWwindow* window = nullptr;
+    bool offscreen = false;
     bool glfw_started = false;
     bool glad_initialized = false;
     Shader ourShader;
@@ -786,8 +788,10 @@ void opengl_pointcloud_render::render_pointcloud(pcl::PointCloud<PointType>::Ptr
         // glDrawElements(GL_POINTS, g_eigen_pt_vec.size()/2, GL_UNSIGNED_INT, 0);
         glDrawElements(GL_POINTS, points_index_infov.size(), GL_UNSIGNED_INT, 0);
 
-        glfwSwapBuffers(window);
-        glfwPollEvents();
+        if (!offscreen) {
+            glfwSwapBuffers(window);
+            glfwPollEvents();
+        }
 
         // system_clock::time_point t3 = system_clock::now();
         // auto dur2 = t3 - t1;

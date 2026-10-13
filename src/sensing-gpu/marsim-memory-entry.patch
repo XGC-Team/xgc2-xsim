@@ -1,6 +1,6 @@
 --- a/local_sensing/include/opengl_sim.hpp
 +++ b/local_sensing/include/opengl_sim.hpp
-@@ -59,16 +59,30 @@
+@@ -59,16 +59,31 @@
      glViewport(0, 0, screen_width, screen_height);
  }
  
@@ -21,6 +21,7 @@
      void input_dyn_clouds(pcl::PointCloud<pcl::PointXYZI> input_cloud);
 +
 +    void activate() const { glfwMakeContextCurrent(window); }
++    void setOffscreen() { offscreen = true; }
 +    GLuint pointBuffer() const { return VBO; }
 +    void selectPoints(const std::vector<int>& indices) {
 +        points_index_infov.assign(indices.begin(), indices.end());
@@ -32,7 +33,7 @@
  
      private:
      int UI_WIDTH;
-@@ -83,8 +97,10 @@
+@@ -83,8 +98,11 @@
      float u0 = width*0.5;
      float v0 = width*0.5;
      glm::mat4 projection, view;
@@ -40,12 +41,13 @@
 -    GLFWwindow* window;
 +    unsigned int VBO = 0, VAO = 0, EBO = 0;
 +    GLFWwindow* window = nullptr;
++    bool offscreen = false;
 +    bool glfw_started = false;
 +    bool glad_initialized = false;
      Shader ourShader;
  
      int use_avia_pattern = 0;
-@@ -157,6 +173,8 @@
+@@ -157,6 +175,8 @@
      void load_normal_file(std::string file_name, pcl::PointCloud<pcl::Normal>& normal_ptcloud);
      inline void glDrawColouredCube_atrandompos(Eigen::Vector3f pos, double length);
      void HSV2BGR(HSV &hsv, BGR &bgr);
@@ -54,7 +56,7 @@
      void init_pointcloud_data();
      inline void glDrawColouredCube_alpha(GLfloat axis_min, GLfloat axis_max, float alpha);
      template<typename T>
-@@ -272,11 +290,19 @@
+@@ -272,11 +292,19 @@
  //     glViewport(0, 0, screen_width, screen_height);
  // }
  
@@ -76,7 +78,7 @@
      glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
      glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
      glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-@@ -293,8 +319,9 @@
+@@ -293,8 +321,9 @@
      if (window == NULL)
      {
          std::cout << "Failed to create GLFW window" << std::endl;
@@ -88,7 +90,7 @@
      }
      glfwMakeContextCurrent(window);
      // glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-@@ -309,8 +336,10 @@
+@@ -309,8 +338,10 @@
      if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
      {
          std::cout << "Failed to initialize GLAD" << std::endl;
@@ -101,7 +103,7 @@
  
      // configure global opengl state
      // -----------------------------
-@@ -337,6 +366,15 @@
+@@ -337,6 +368,15 @@
  
      std::cout << "shader path = " << vertex_path << std::endl;;
  
@@ -117,7 +119,7 @@
      // std::cout << "You Pushed a button, now open file: " << a_string.Get() << endl;
      load_pcd_file( map_filename ,cloud_color_mesh);
  
-@@ -420,6 +458,19 @@
+@@ -420,6 +460,19 @@
          }    
      }
  
@@ -137,7 +139,7 @@
      init_pointcloud_data();
      // preprocess(cloud_color_mesh,all_normals);
      cout << "Load data finish " << endl;
-@@ -450,11 +501,19 @@
+@@ -450,11 +503,19 @@
  }
  
  opengl_pointcloud_render::~opengl_pointcloud_render(){
@@ -162,7 +164,20 @@
  }
  
  void opengl_pointcloud_render::render_pointcloud(pcl::PointCloud<PointType>::Ptr output_pointcloud, Eigen::Vector3f camera_pos, \
-@@ -1881,7 +1940,7 @@
+@@ -727,8 +788,10 @@
+         // glDrawElements(GL_POINTS, g_eigen_pt_vec.size()/2, GL_UNSIGNED_INT, 0);
+         glDrawElements(GL_POINTS, points_index_infov.size(), GL_UNSIGNED_INT, 0);
+ 
+-        glfwSwapBuffers(window);
+-        glfwPollEvents();
++        if (!offscreen) {
++            glfwSwapBuffers(window);
++            glfwPollEvents();
++        }
+ 
+         // system_clock::time_point t3 = system_clock::now();
+         // auto dur2 = t3 - t1;
+@@ -1881,7 +1944,7 @@
      cout << "Number of points = " << g_eigen_pt_vec.size() / 20000.0 << "X 10000" << endl;
      cout << "Number of faces = " << g_eigen_tri_pt_vec.size() / 10000.0 << "X 10000" << endl;
  

@@ -45,7 +45,7 @@ public:
   pcl::PointCloud<pcl::PointXYZI>::Ptr rendered{new pcl::PointCloud<pcl::PointXYZI>};
   unsigned framebuffer = 0, color_buffer = 0, depth_buffer = 0, depth_format = 0;
   int buffer_width = 0, buffer_height = 0;
-  pcl::KdTreeFLANN<PointType> index;
+  pcl::KdTreeFLANN<PointType> index{false};
   std::vector<int> candidates;
   std::vector<float> distances;
   std::unique_ptr<PointFilter> filter;
@@ -130,6 +130,7 @@ public:
       glGenRenderbuffers(1, &color_buffer);
       glGenRenderbuffers(1, &depth_buffer);
     }
+    renderer->setOffscreen();
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     if (buffer_width != m.h_res || buffer_height != m.v_res) {
       const auto require_size = [&] {
@@ -190,8 +191,9 @@ int scan(void *renderer, const double position[3], const double orientation[4], 
     owner->renderer->activate();
     PointType center;center.x=p.x();center.y=p.y();center.z=p.z();
     owner->index.radiusSearch(center,m.range_m,owner->candidates,owner->distances);
-    // Keep source order for deterministic tie handling and coherent VBO access.
-    std::sort(owner->candidates.begin(),owner->candidates.end());
+    // Opaque rasterization preserves source order for deterministic depth ties.
+    // Penetrating point sets do not need the two O(N log N) distance/index sorts.
+    if (!projection->penetrating) std::sort(owner->candidates.begin(),owner->candidates.end());
     if(projection->penetrating) {
       if(!owner->filter) { owner->filter.reset(new PointFilter); owner->filter->load(owner->renderer->pointBuffer(),owner->index.getInputCloud()->size()); }
       owner->filter->scan(p,q,*projection,owner->candidates,*owner->rendered);
