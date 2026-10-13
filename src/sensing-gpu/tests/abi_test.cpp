@@ -1,4 +1,4 @@
-#include "lidar_gpu_module.h"
+#include <xgc2_sensing/gpu.h>
 #include <xgc2_math/scene/sensor_metadata.hpp>
 #include <cassert>
 #include <cmath>
@@ -12,13 +12,13 @@ int main(int argc, char **argv) {
   assert(argc == 2);
   void *module = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
   if (!module) { std::cerr << dlerror() << '\n'; return 1; }
-  auto entry = reinterpret_cast<decltype(&xsim_lidar_gpu_entry)>(dlsym(module, "xsim_lidar_gpu_entry"));
-  assert(entry && !entry(0) && !entry(XSIM_LIDAR_GPU_ABI + 1));
-  const auto *api = entry(XSIM_LIDAR_GPU_ABI);
-  assert(api && api->abi == XSIM_LIDAR_GPU_ABI && api->size >= sizeof(*api));
+  auto entry = reinterpret_cast<decltype(&xgc2_sensing_gpu_entry)>(dlsym(module, "xgc2_sensing_gpu_entry"));
+  assert(entry && !entry(0) && !entry(XGC2_SENSING_GPU_ABI + 1));
+  const auto *api = entry(XGC2_SENSING_GPU_ABI);
+  assert(api && api->abi == XGC2_SENSING_GPU_ABI && api->size >= sizeof(*api));
   assert(api->create && api->scan && api->destroy);
-  const xsim_lidar_gpu_projection valid{20, .2, 120, 60, 240, 120, .1, 10};
-  std::vector<xsim_lidar_gpu_projection> invalid;
+  const xgc2_sensing_gpu_projection valid{20, .2, 120, 60, 240, 120, .1, 10};
+  std::vector<xgc2_sensing_gpu_projection> invalid;
   for (double value : {0., -1., std::numeric_limits<double>::infinity(),
                        std::numeric_limits<double>::quiet_NaN()}) {
     auto p = valid; p.range_m = value; invalid.push_back(p);

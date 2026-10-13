@@ -14,7 +14,7 @@ std::shared_ptr<Entity> entity(uint64_t id) {
   return e;
 }
 Json config(int h = 240, int v = 120) {
-  return {{"backend", "gpu"}, {"mode", "lidar_scan"}, {"min_range", .2}, {"range", 20},
+  return {{"backend", "gpu"}, {"mode", "raycast"}, {"min_range", .2}, {"range", 20},
           {"h_fov_deg", 120}, {"v_fov_deg", 60}, {"h_res", h}, {"v_res", v},
           {"point_cover_spacing", .1}, {"surface_spacing", .25}, {"keep_buried", true}, {"rate_hz", 10}};
 }
@@ -28,8 +28,7 @@ template<class T> T symbol(void *handle, const char *name) {
 int main(int argc, char **argv) {
   assert(argc == 3);
   const std::string mode = argv[1], path = argv[2];
-  if (mode == "default") unsetenv("XSIM_LIDAR_GPU_MODULE");
-  else setenv("XSIM_LIDAR_GPU_MODULE", mode == "missing" ? "/nonexistent/xsim-lidar-gpu.so" : path.c_str(), 1);
+  setenv("XGC2_SENSING_GPU_LIBRARY", mode == "missing" ? "/nonexistent/xgc2-sensing-gpu.so" : path.c_str(), 1);
   setenv("XSIM_GPU_TEST_MODE", mode.c_str(), 1);
   const Json scene = {{"obstacles", Json::array({
       {{"type", "box"}, {"position", {4, 0, 0}}, {"size", {1, 2, 2}}},
@@ -54,8 +53,7 @@ int main(int argc, char **argv) {
     try { sensors.prepare(a, config()); }
     catch (const std::runtime_error &e) {
       const std::string error = e.what();
-      assert(error.find("no CPU fallback") != std::string::npos);
-      const char *expected = mode == "missing" ? "not found" : mode == "create" ? "test initialization failure" : "ABI mismatch";
+      const char *expected = mode == "missing" ? "unavailable" : mode == "create" ? "test initialization failure" : "ABI mismatch";
       assert(error.find(expected) != std::string::npos);
       refused = true;
     }

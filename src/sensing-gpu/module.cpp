@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-#include "lidar_gpu_module.h"
+#include <xgc2_sensing/gpu.h>
 #include <xgc2_math/scene/sensor_metadata.hpp>
 #include <opengl_sim.hpp>
 #include <algorithm>
@@ -9,9 +9,11 @@
 #include <memory>
 #include <omp.h>
 #include <stdexcept>
+#include <tuple>
 
 namespace {
-xgc2_math::scene::SensorMetadata metadata(const xsim_lidar_gpu_projection *p) {
+#include "point_filter.hpp"
+xgc2_math::scene::SensorMetadata metadata(const xgc2_sensing_gpu_projection *p) {
   if (!p) throw std::invalid_argument("GPU projection required");
   xgc2_math::scene::SensorMetadata m;
   m.backend = "gpu";
@@ -27,7 +29,10 @@ xgc2_math::scene::SensorMetadata metadata(const xsim_lidar_gpu_projection *p) {
   m.frame_id = "world";
   m.stamp_policy = "pose";
   m.pose_type = "geometry_msgs/PoseStamped";
-  xgc2_math::scene::validateGpuSensorMetadata(m);
+  if (!p->penetrating) xgc2_math::scene::validateGpuSensorMetadata(m);
+  else if (!std::isfinite(m.range_m) || m.range_m <= m.min_range_m || m.min_range_m < 0
+           || m.h_fov_deg <= 0 || m.h_fov_deg > 360 || m.v_fov_deg <= 0 || m.v_fov_deg > 180)
+    throw std::invalid_argument("Invalid penetrating sensor bounds");
   return m;
 }
 void error_text(char *error, size_t size, const char *message) noexcept {
@@ -40,8 +45,26 @@ public:
   pcl::PointCloud<pcl::PointXYZI>::Ptr rendered{new pcl::PointCloud<pcl::PointXYZI>};
   unsigned framebuffer = 0, color_buffer = 0, depth_buffer = 0, depth_format = 0;
   int buffer_width = 0, buffer_height = 0;
+  pcl::KdTreeFLANN<PointType> index;
+  std::vector<int> candidates;
+  std::vector<float> distances;
+  std::unique_ptr<PointFilter> filter;
 
+  xgc2_sensing_gpu_projection last_projection{};
+  xgc2_math::scene::SensorMetadata last_metadata;
+  bool configured = false;
+  const xgc2_math::scene::SensorMetadata& configuration(const xgc2_sensing_gpu_projection* p) {
+    if (!p) throw std::invalid_argument("GPU projection required");
+    const auto key=[](const auto& v){return std::tie(v.range_m,v.min_range_m,v.h_fov_deg,v.v_fov_deg,
+      v.h_res,v.v_res,v.point_cover_spacing_m,v.publish_rate_hz,v.penetrating,v.heading_crop,
+      v.heading_cos_min,v.vertical_slab_tan);};
+    if (!configured || key(*p) != key(last_projection)) {
+      last_metadata=metadata(p);last_projection=*p;configured=true;
+    }
+    return last_metadata;
+  }
   ~Renderer() {
+    renderer->activate();
     // Release projection buffers before the renderer destroys its owner context.
     if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
     if (color_buffer) glDeleteRenderbuffers(1, &color_buffer);
@@ -68,6 +91,8 @@ public:
     }
     if (!renderer->read_pointcloud_frommemory(cloud))
       throw std::runtime_error("original GPU context/static upload initialization failed; no CPU fallback");
+    index.setInputCloud(cloud.makeShared());
+    candidates.reserve(count);distances.reserve(count);rendered->points.reserve(count);
     const char *vendor = reinterpret_cast<const char *>(glGetString(GL_VENDOR));
     const char *name = reinterpret_cast<const char *>(glGetString(GL_RENDERER));
     const char *version = reinterpret_cast<const char *>(glGetString(GL_VERSION));
@@ -133,7 +158,7 @@ public:
   }
 };
 
-void *create(const float *xyz, size_t count, const xsim_lidar_gpu_projection *first,
+void *create(const float *xyz, size_t count, const xgc2_sensing_gpu_projection *first,
              char *error, size_t error_size) noexcept {
   error_text(error, error_size, "");
   try {
@@ -150,20 +175,28 @@ void *create(const float *xyz, size_t count, const xsim_lidar_gpu_projection *fi
   return nullptr;
 }
 int scan(void *renderer, const double position[3], const double orientation[4], double stamp,
-         const xsim_lidar_gpu_projection *projection, xsim_lidar_gpu_grow grow, void *context,
+         const xgc2_sensing_gpu_projection *projection, xgc2_sensing_gpu_grow grow, void *context,
          char *error, size_t error_size) noexcept {
   error_text(error, error_size, "");
   try {
-    omp_set_dynamic(0);
-    omp_set_num_threads(1);
-    const auto m = metadata(projection);
     if (!renderer || !position || !orientation || !grow || !std::isfinite(stamp))
       throw std::invalid_argument("GPU scan requires renderer, pose, stamp and storage");
     const Eigen::Vector3d p(position[0], position[1], position[2]);
     const Eigen::Quaterniond q(orientation[0], orientation[1], orientation[2], orientation[3]);
     if (!p.allFinite() || !q.coeffs().allFinite() || q.norm() < 1e-12)
       throw std::invalid_argument("GPU scan pose invalid");
-    const auto &points = static_cast<Renderer *>(renderer)->scan(p, q, stamp, m);
+    auto* owner = static_cast<Renderer*>(renderer);
+    const auto& m = owner->configuration(projection);
+    owner->renderer->activate();
+    PointType center;center.x=p.x();center.y=p.y();center.z=p.z();
+    owner->index.radiusSearch(center,m.range_m,owner->candidates,owner->distances);
+    // Keep source order for deterministic tie handling and coherent VBO access.
+    std::sort(owner->candidates.begin(),owner->candidates.end());
+    if(projection->penetrating) {
+      if(!owner->filter) { owner->filter.reset(new PointFilter); owner->filter->load(owner->renderer->pointBuffer(),owner->index.getInputCloud()->size()); }
+      owner->filter->scan(p,q,*projection,owner->candidates,*owner->rendered);
+    } else { owner->renderer->selectPoints(owner->candidates); owner->scan(p, q, stamp, m); }
+    const auto &points = *owner->rendered;
     if (points.size() > SIZE_MAX / 16) throw std::length_error("GPU scan payload too large");
     auto *bytes = static_cast<unsigned char *>(grow(context, points.size() * 16));
     if (!bytes && !points.empty()) throw std::runtime_error("GPU scan storage unavailable");
@@ -178,10 +211,10 @@ int scan(void *renderer, const double position[3], const double orientation[4], 
   return -1;
 }
 void destroy(void *renderer) noexcept { delete static_cast<Renderer *>(renderer); }
-const xsim_lidar_gpu_api api = {XSIM_LIDAR_GPU_ABI, sizeof(xsim_lidar_gpu_api), create, scan, destroy};
+const xgc2_sensing_gpu_api api = {XGC2_SENSING_GPU_ABI, sizeof(xgc2_sensing_gpu_api), create, scan, destroy};
 }
 
 extern "C" __attribute__((visibility("default")))
-const xsim_lidar_gpu_api *xsim_lidar_gpu_entry(uint32_t abi) {
-  return abi == XSIM_LIDAR_GPU_ABI ? &api : nullptr;
+const xgc2_sensing_gpu_api *xgc2_sensing_gpu_entry(uint32_t abi) {
+  return abi == XGC2_SENSING_GPU_ABI ? &api : nullptr;
 }

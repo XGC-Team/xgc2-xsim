@@ -19,6 +19,13 @@ struct Sample {
 struct SensorPayload {
   std::vector<uint8_t> data, beam_data;
 };
+struct GpuScene {
+  std::vector<float> points;
+  xgc2_sensing_gpu_projection initial{};
+  void *renderer = nullptr; // Created and destroyed only by the GPU owner thread.
+  bool initialized = false;
+  std::string error;
+};
 struct Sensor {
   static constexpr size_t payload_pool_size = 4;
   std::weak_ptr<Entity> entity;
@@ -27,7 +34,8 @@ struct Sensor {
   std::unique_ptr<xgc2_math::scene::WorldLidar> cpu;
   // Worker-owned beam scratch of a publish_beams sensor, reused by every scan.
   xgc2_math::scene::BeamScan beams;
-  xsim_lidar_gpu_projection gpu_config{};
+  xgc2_sensing_gpu_projection gpu_config{};
+  std::shared_ptr<GpuScene> gpu_scene;
   bool gpu = false, with_bodies=false, publish_beams=false;
   bool cacheable = false, cache_valid = false;
   Eigen::Vector3d translation{Eigen::Vector3d::Zero()};
@@ -98,11 +106,8 @@ private:
   std::vector<std::thread> cpu_threads_;
   std::thread gpu_thread_;
   bool stopping_ = false;
-  std::vector<float> gpu_map_;
-  const xsim_lidar_gpu_api *gpu_api_ = nullptr;
-  xsim_lidar_gpu_projection gpu_initial_config_{};
-  bool gpu_ready_ = false;
-  std::string gpu_error_;
+  std::map<std::pair<double, bool>, std::shared_ptr<GpuScene>> gpu_scenes_;
+  const xgc2_sensing_gpu_api *gpu_api_ = nullptr;
   void work(bool gpu);
   void submit_sample(const State &, const std::shared_ptr<const Frame> &);
   uint64_t fixture_geometry_revision(const Frame &);

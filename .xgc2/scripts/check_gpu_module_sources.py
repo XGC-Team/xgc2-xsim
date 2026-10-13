@@ -9,7 +9,7 @@ import tempfile
 
 
 def main():
-    root = Path(__file__).resolve().parents[2] / 'src/xsim-lidar-gpu'
+    root = Path(__file__).resolve().parents[2] / 'src/sensing-gpu'
     pin = json.loads((root / 'source-pin.json').read_text())
     for item in pin['files']:
         source = root / ('LICENSE' if item['path'] == 'LICENSE' else 'upstream/' + item['path'])

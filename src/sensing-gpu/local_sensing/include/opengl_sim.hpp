@@ -59,6 +59,8 @@ void framebuffer_size_callback(GLFWwindow* window, int screen_width, int screen_
     glViewport(0, 0, screen_width, screen_height);
 }
 
+inline unsigned xgc2_glfw_context_users = 0;
+
 class opengl_pointcloud_render
 {
     public:
@@ -71,6 +73,16 @@ class opengl_pointcloud_render
                  float vertical_fov_,float near,float far,int sensing_rate,int use_avia_pattern, int use_os128_pattern, int use_minicf_pattern);
     void render_pointcloud(pcl::PointCloud<PointType>::Ptr output_pointcloud, Eigen::Vector3f camera_pos, Eigen::Quaternionf camera_q, double t_pattern_start);
     void input_dyn_clouds(pcl::PointCloud<pcl::PointXYZI> input_cloud);
+
+    void activate() const { glfwMakeContextCurrent(window); }
+    GLuint pointBuffer() const { return VBO; }
+    void selectPoints(const std::vector<int>& indices) {
+        points_index_infov.assign(indices.begin(), indices.end());
+        glBindVertexArray(VAO);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, indices.size()*sizeof(unsigned int), indices.data());
+        glBindVertexArray(0);
+    }
 
     private:
     int UI_WIDTH;
@@ -287,8 +299,9 @@ bool opengl_pointcloud_render::initialize_context(){
         std::cerr << "MARSIM renderer already initialized" << std::endl;
         return false;
     }
-    if (!glfwInit())
+    if (xgc2_glfw_context_users == 0 && !glfwInit())
         return false;
+    ++xgc2_glfw_context_users;
     glfw_started = true;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
@@ -306,7 +319,7 @@ bool opengl_pointcloud_render::initialize_context(){
     if (window == NULL)
     {
         std::cout << "Failed to create GLFW window" << std::endl;
-        glfwTerminate();
+        if (--xgc2_glfw_context_users == 0) glfwTerminate();
         glfw_started = false;
         return false;
     }
@@ -499,7 +512,7 @@ opengl_pointcloud_render::~opengl_pointcloud_render(){
     }
     if (window != nullptr)
         glfwDestroyWindow(window);
-    if (glfw_started)
+    if (glfw_started && --xgc2_glfw_context_users == 0)
         glfwTerminate();
 }
 
@@ -1927,7 +1940,7 @@ void opengl_pointcloud_render::init_pointcloud_data()
     cout << "Number of points = " << g_eigen_pt_vec.size() / 20000.0 << "X 10000" << endl;
     cout << "Number of faces = " << g_eigen_tri_pt_vec.size() / 10000.0 << "X 10000" << endl;
 
-    cloud_color_mesh.clear();
+    pcl::PointCloud<PointType>().swap(cloud_color_mesh);
 }
 
 

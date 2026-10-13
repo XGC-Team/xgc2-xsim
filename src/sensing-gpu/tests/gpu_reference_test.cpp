@@ -15,7 +15,7 @@ int main() {
   std::vector<float> map;
   for (const auto &p : source.globalMap(.1))
     for (int k = 0; k < 3; ++k) map.push_back(static_cast<float>(p[k]));
-  xsim_lidar_gpu_projection configs[2] = {{20, .2, 90, 30, 120, 40, .1, 10},
+  xgc2_sensing_gpu_projection configs[2] = {{20, .2, 90, 30, 120, 40, .1, 10},
                                         {20, .2, 90, 30, 240, 80, .1, 10}};
   pcl::PointCloud<pcl::PointXYZI> references[2];
   for (int i = 0; i < 2; ++i) {
@@ -24,7 +24,7 @@ int main() {
     references[i] = original.scan({0, double(i), 0}, Eigen::Quaterniond::Identity(), 1700000000);
     assert(!references[i].empty());
   }
-  const auto *api = xsim_lidar_gpu_entry(XSIM_LIDAR_GPU_ABI);
+  const auto *api = xgc2_sensing_gpu_entry(XGC2_SENSING_GPU_ABI);
   char error[512] = {};
   auto *shared = api->create(map.data(), map.size() / 3, configs, error, sizeof(error));
   if (!shared) { std::cerr << error << '\n'; return 1; }

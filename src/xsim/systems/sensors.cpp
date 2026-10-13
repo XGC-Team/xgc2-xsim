@@ -116,11 +116,15 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
   if (j.contains("rotation"))
     s->rotation = quat(j.at("rotation"));
   const auto backend = j.value("backend", std::string("cpu"));
-  if (backend != "cpu" && backend != "gpu")
-    throw std::invalid_argument("backend must be cpu or gpu");
-  s->gpu = backend == "gpu";
-  s->with_bodies=j.value("world_bodies",false);s->publish_beams=j.value("publish_beams",false);
-  if(s->gpu && (s->with_bodies || s->publish_beams)) throw std::invalid_argument("original GPU has static map points and no beams");
+  if (backend != "auto" && backend != "cpu" && backend != "gpu")
+    throw std::invalid_argument("backend must be auto, cpu or gpu");
+  const bool automatic = backend == "auto";
+  s->gpu = backend != "cpu";
+  const bool requested_bodies = j.value("world_bodies",false);
+  s->with_bodies=requested_bodies;s->publish_beams=j.value("publish_beams",false);
+  if (s->publish_beams && automatic) s->gpu = false;
+  if (s->gpu && s->publish_beams) throw std::invalid_argument("GPU point observations do not publish rays");
+  if (s->gpu) s->with_bodies = false;
   xgc2_math::scene::SensorConfig c;
   c.range = j.value("range", 20.0);
   c.min_range = j.value("min_range", 0.0);
@@ -129,8 +133,8 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
   c.h_fov_deg = j.value("h_fov_deg", 360.0);
   c.v_fov_deg = j.value("v_fov_deg", 30.0);
   c.noise_std = j.value("noise_std", 0.0);
-  // Only zero-noise CPU scans reuse geometry bytes.
-  s->cacheable = !s->gpu && c.noise_std == 0;
+  // Static observation bytes depend on pose/geometry, not the transport stamp.
+  s->cacheable = c.noise_std == 0;
   c.seed = j.value("seed", 0u);
   c.surface_spacing = spacing_;
   c.penetrating_keep_buried = j.value("keep_buried",buried_);
@@ -151,10 +155,10 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
     c.fy = j.value("fy", 0.0);
     c.cx = j.value("cx", 0.0);
     c.cy = j.value("cy", 0.0);
-  } else if (!(s->gpu && mode == "lidar_scan"))
-    throw std::invalid_argument("unknown sensor model");
+  } else throw std::invalid_argument("unknown sensor model");
   if(s->publish_beams && c.mode==xgc2_math::scene::SensorConfig::kPenetrating)throw std::invalid_argument("penetrating model has no beams");
-  if (!s->gpu) {
+  auto prepare_cpu = [&] {
+    s->with_bodies = requested_bodies;
     s->cpu = std::make_unique<xgc2_math::scene::WorldLidar>(c);
     if(c.mode==xgc2_math::scene::SensorConfig::kPenetrating && (c.surface_spacing!=spacing_ || c.penetrating_keep_buried!=buried_)) {
       const auto key=std::make_pair(c.surface_spacing,c.penetrating_keep_buried);
@@ -162,10 +166,13 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
       if(!scene)scene=std::make_shared<xgc2_math::scene::LidarScene>(obstacles_,key.first,key.second);
       s->cpu->setScene(scene);
     } else s->cpu->setScene(scene_);
-  } else {
-    if (mode != "lidar_scan" || c.noise_std != 0)
+  };
+  if (!s->gpu) prepare_cpu();
+  else {
+    try {
+    if (c.mode == xgc2_math::scene::SensorConfig::kDepthFrustum || c.noise_std != 0)
       throw std::invalid_argument(
-          "original GPU supports lidar_scan without range noise only");
+          "GPU supports angular and penetrating observations without range noise");
     xgc2_math::scene::SensorMetadata m;
     m.backend = "gpu";
     m.observation_model = "lidar_scan";
@@ -180,32 +187,38 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
     m.frame_id = s->frame;
     m.stamp_policy = "pose";
     m.pose_type = "geometry_msgs/PoseStamped";
-    xgc2_math::scene::validateGpuSensorMetadata(m);
+    if (c.mode != xgc2_math::scene::SensorConfig::kPenetrating) xgc2_math::scene::validateGpuSensorMetadata(m);
     s->gpu_config = {m.range_m, m.min_range_m, m.h_fov_deg, m.v_fov_deg,
-                     m.h_res, m.v_res, m.point_cover_spacing_m, m.publish_rate_hz};
+                     m.h_res, m.v_res, m.point_cover_spacing_m, m.publish_rate_hz,
+                     uint32_t(c.mode == xgc2_math::scene::SensorConfig::kPenetrating),
+                     uint32_t(c.penetrating_heading_crop), c.heading_cos_min, c.vertical_slab_tan};
+    } catch (...) { if (!automatic) throw; s->gpu=false;prepare_cpu(); }
   }
   std::unique_lock<std::mutex> lock(mutex_);
   if (s->gpu && !gpu_thread_.joinable()) {
-    gpu_api_ = &load_gpu_module();
-    // One static map, with the first GPU sensor's spacing and buried policy,
-    // sampled by the same Math API as CPU sensing, without a beam pattern.
-    xgc2_math::scene::SensorConfig map;
-    map.mode = xgc2_math::scene::SensorConfig::kPenetrating;
-    map.surface_spacing = c.surface_spacing;
-    map.penetrating_keep_buried = c.penetrating_keep_buried;
-    xgc2_math::scene::WorldLidar source(map);
-    auto map_scene = scene_;
-    if (c.surface_spacing != spacing_ || c.penetrating_keep_buried != buried_) {
-      const auto key = std::make_pair(c.surface_spacing, c.penetrating_keep_buried);
-      auto &sampled = sampled_scenes_[key];
-      if (!sampled)
-        sampled = std::make_shared<xgc2_math::scene::LidarScene>(obstacles_, key.first, key.second);
-      map_scene = sampled;
+    try { gpu_api_ = &load_gpu_module(); } catch (...) {
+      if (!automatic) throw;
+      s->gpu = false;lock.unlock();prepare_cpu();lock.lock();
     }
-    source.setScene(map_scene);
-    for (const auto &p : source.globalMap(c.surface_spacing))
-      for (int axis = 0; axis < 3; ++axis) gpu_map_.push_back(float(p[axis]));
-    gpu_initial_config_ = s->gpu_config;
+  }
+  if (s->gpu) {
+    const auto key = std::make_pair(c.surface_spacing, c.penetrating_keep_buried);
+    auto &group = gpu_scenes_[key];
+    if (!group) {
+      group = std::make_shared<GpuScene>();
+      auto map_scene = scene_;
+      if (key != std::make_pair(spacing_, buried_)) {
+        auto &sampled = sampled_scenes_[key];
+        if (!sampled)
+          sampled = std::make_shared<xgc2_math::scene::LidarScene>(obstacles_, key.first, key.second);
+        map_scene = sampled;
+      }
+      group->points.reserve(map_scene->sampleCount() * 3);
+      for (const auto &p : map_scene->samples())
+        for (int axis = 0; axis < 3; ++axis) group->points.push_back(float(p[axis]));
+      group->initial = s->gpu_config;
+    }
+    s->gpu_scene = group;
   }
   sensors_.erase(
       std::remove_if(sensors_.begin(), sensors_.end(),
@@ -216,12 +229,14 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
     if (!gpu_thread_.joinable()) {
       gpu_thread_ = std::thread([this] { work(true); });
     }
-    wake_.wait(lock,
-               [&] { return gpu_ready_ || !gpu_error_.empty() || stopping_; });
-    if (!gpu_ready_)
-      throw std::runtime_error(gpu_error_.empty() ? "sensor owner stopped"
-                                                  : gpu_error_);
-  } else if (cpu_threads_.empty())
+    wake_.notify_all();
+    wake_.wait(lock, [&] { return s->gpu_scene->initialized || stopping_; });
+    if (!s->gpu_scene->renderer) {
+      if (!automatic) throw std::runtime_error(s->gpu_scene->error.empty() ? "sensor owner stopped" : s->gpu_scene->error);
+      s->gpu = false;lock.unlock();prepare_cpu();lock.lock();
+    }
+  }
+  if (!s->gpu && cpu_threads_.empty())
     for (unsigned i = 0; i < workers_; ++i)
       cpu_threads_.emplace_back([this] { work(false); });
   wake_.notify_all();
@@ -358,29 +373,6 @@ void Sensors::work(bool gpu) {
   if (!errno && inherited_nice < 5)
     (void)setpriority(PRIO_PROCESS, tid, 5);
 #endif
-  std::unique_ptr<void, void (*)(void *)> renderer(nullptr, [](void *) {});
-  if (gpu) {
-    try {
-      char error[512] = {};
-      renderer = {gpu_api_->create(gpu_map_.data(), gpu_map_.size() / 3,
-                                  &gpu_initial_config_, error, sizeof(error)),
-                  gpu_api_->destroy};
-      if (!renderer)
-        throw std::runtime_error(std::string("GPU module create failed: ") + error + "; no CPU fallback");
-      {
-        std::lock_guard<std::mutex> l(mutex_);
-        gpu_ready_ = true;
-      }
-      wake_.notify_all();
-    } catch (const std::exception &e) {
-      {
-        std::lock_guard<std::mutex> l(mutex_);
-        gpu_error_ = e.what();
-      }
-      wake_.notify_all();
-      return;
-    }
-  }
   size_t cursor = 0;
   for (;;) {
     std::shared_ptr<Sensor> selected;
@@ -389,6 +381,23 @@ void Sensors::work(bool gpu) {
       std::unique_lock<std::mutex> lock(mutex_);
       if (stopping_)
         break;
+      if (gpu) {
+        // Geometry policies share one index/context each; robots do not own maps.
+        for (const auto &entry : gpu_scenes_) {
+          auto &group = *entry.second;
+          if (group.initialized) continue;
+          lock.unlock();
+          char error[512] = {};
+          auto *renderer = gpu_api_->create(group.points.data(), group.points.size() / 3,
+                                            &group.initial, error, sizeof(error));
+          lock.lock();
+          group.renderer = renderer;
+          group.error = renderer ? "" : std::string("GPU module create failed: ") + error;
+          group.initialized = true;
+          std::vector<float>().swap(group.points);
+          wake_.notify_all();
+        }
+      }
       for (size_t n = 0; n < sensors_.size(); ++n) {
         auto s = sensors_[(cursor + n) % sensors_.size()].lock();
         if (!s || s->gpu != gpu)
@@ -485,7 +494,7 @@ void Sensors::work(bool gpu) {
               catch (...) { return nullptr; }
             };
             char error[512] = {};
-            if (gpu_api_->scan(renderer.get(), position, orientation,
+            if (gpu_api_->scan(s.gpu_scene->renderer, position, orientation,
                   double(sample.stamp) * 1e-9, &s.gpu_config, grow, &data, error, sizeof(error)) != 0)
               throw std::runtime_error(std::string("GPU module scan failed: ") + error + "; no CPU fallback");
             if (data.size() % 16)
@@ -562,6 +571,13 @@ void Sensors::work(bool gpu) {
       } else
         ++s.misses;
     }
+  }
+  if (gpu) {
+    for (const auto &entry : gpu_scenes_)
+      if (entry.second->renderer) {
+        gpu_api_->destroy(entry.second->renderer);
+        entry.second->renderer = nullptr;
+      }
   }
 }
 bool Sensors::take_shared(const std::shared_ptr<Sensor> &s, Sample &p,

@@ -60,7 +60,7 @@ if [[ "$XSIM_NATIVE_CONTRACTS" == true ]]; then
   bash /source/.xgc2/scripts/check_native_contracts.sh /source/.xgc2/build-inputs/fs150
 fi
 bash /source/.xgc2/scripts/build_package.sh /source/.xgc2/build-inputs/fs150 /output
-apt-get install -y /output/xsim_*.deb /output/xsim-lidar-gpu_*.deb
+apt-get install -y /output/xsim_*.deb /output/libxgc2-sensing-*.deb
 bash /source/.xgc2/scripts/check_installed_packages.sh
 bash /source/.xgc2/scripts/check_native_package_payload.sh /output /output
 XSIM_BUILD

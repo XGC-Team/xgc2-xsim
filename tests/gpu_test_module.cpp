@@ -1,4 +1,4 @@
-#include "sensors/lidar_gpu_module.h"
+#include <xgc2_sensing/gpu.h>
 #include <atomic>
 #include <cassert>
 #include <cstdio>
@@ -21,7 +21,7 @@ void owner(Renderer *renderer = nullptr) {
   assert(std::strcmp(name, "xsim-gpu") == 0);
   assert(!renderer || pthread_equal(renderer->owner, pthread_self()));
 }
-void *create(const float *xyz, size_t count, const xsim_lidar_gpu_projection *p,
+void *create(const float *xyz, size_t count, const xgc2_sensing_gpu_projection *p,
              char *error, size_t size) {
   owner(); ++creates;
   assert(xyz && count && p && p->h_res == 240);
@@ -35,7 +35,7 @@ void *create(const float *xyz, size_t count, const xsim_lidar_gpu_projection *p,
   return new Renderer{pthread_self()};
 }
 int scan(void *handle, const double position[3], const double q[4], double stamp,
-         const xsim_lidar_gpu_projection *p, xsim_lidar_gpu_grow grow, void *context,
+         const xgc2_sensing_gpu_projection *p, xgc2_sensing_gpu_grow grow, void *context,
          char *error, size_t size) {
   owner(static_cast<Renderer *>(handle)); ++scans;
   if (mode("scan")) {
@@ -51,9 +51,9 @@ void destroy(void *handle) {
   owner(static_cast<Renderer *>(handle)); ++destroys; delete static_cast<Renderer *>(handle);
 }
 }
-extern "C" const xsim_lidar_gpu_api *xsim_lidar_gpu_entry(uint32_t abi) {
-  static xsim_lidar_gpu_api api{XSIM_LIDAR_GPU_ABI, sizeof(xsim_lidar_gpu_api), create, scan, destroy};
-  if (abi != XSIM_LIDAR_GPU_ABI) return nullptr;
+extern "C" const xgc2_sensing_gpu_api *xgc2_sensing_gpu_entry(uint32_t abi) {
+  static xgc2_sensing_gpu_api api{XGC2_SENSING_GPU_ABI, sizeof(xgc2_sensing_gpu_api), create, scan, destroy};
+  if (abi != XGC2_SENSING_GPU_ABI) return nullptr;
   if (mode("abi")) api.abi = 99;
   if (mode("size")) api.size = sizeof(api) - 1;
   return &api;

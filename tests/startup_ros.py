@@ -322,7 +322,7 @@ def main():
             (root / name).mkdir(mode=0o700)
         os.environ.update(ROS_MASTER_URI="http://127.0.0.1:%d" % port, ROS_IP="127.0.0.1", ROS_HOSTNAME="127.0.0.1",
                           ROS_HOME=str(root / "ros-home"), ROS_LOG_DIR=str(root / "ros-log"),
-                          XSIM_LIDAR_GPU_MODULE="/nonexistent/xsim-lidar-gpu.so")
+                          XGC2_SENSING_GPU_LIBRARY="/nonexistent/libxgc2-sensing-gpu.so")
         supervisor_directory_contract(args.xsim, root / "directories")
         if not args.long:
             stalled_master(args.xsim, root / "stalled")

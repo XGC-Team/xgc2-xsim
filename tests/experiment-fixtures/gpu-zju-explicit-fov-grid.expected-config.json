@@ -27,7 +27,7 @@
         "heading_crop": true,
         "keep_buried": true,
         "min_range": 0.1,
-        "mode": "lidar_scan",
+        "mode": "penetrating",
         "point_cover_spacing": 0.1,
         "publish_beams": false,
         "range": 5,

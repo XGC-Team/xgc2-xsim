@@ -15,8 +15,8 @@ mkdir -p "$package_output"
 build_output="$(mktemp -d "$package_output/build.XXXXXX")"
 trap 'rm -rf -- "$build_output"' EXIT
 python3 "$sim_source/.xgc2/scripts/check_gpu_module_sources.py"
-cmake -S "$sim_source/src/xsim-lidar-gpu" -B "$build_output/gpu" \
- -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/xgc2/xsim \
+cmake -S "$sim_source/src/sensing-gpu" -B "$build_output/gpu" \
+ -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
  -DCMAKE_PREFIX_PATH="$cmake_prefix_list" -DXGC2_MATH_INCLUDE="${XGC2_MATH_INCLUDE:-/usr/include}"
 cmake --build "$build_output/gpu" --parallel 2
 (cd "$build_output/gpu" && ctest --output-on-failure)

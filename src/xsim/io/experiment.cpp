@@ -67,7 +67,7 @@ Json sensor(const Json &authored, const std::string &ns, const std::string &defa
   const std::set<std::string> allowed{"enabled", "mode", "preset", "acceleration", "rateHz", "rangeMeters", "hFovDeg", "vFovDeg", "hRes", "vRes", "publishBeams"};
   for (auto i = lidar.begin(); i != lidar.end(); ++i) require(allowed.count(i.key()) != 0, "unknown authored lidar field: " + i.key());
   const auto acceleration = lidar.value("acceleration", std::string{});
-  require(acceleration.empty() || acceleration == "cpu" || acceleration == "gpu", "unsupported authored acceleration");
+  require(acceleration.empty() || acceleration == "auto" || acceleration == "cpu" || acceleration == "gpu", "unsupported authored acceleration");
   const auto backend = acceleration.empty() ? default_backend : acceleration;
   const auto enabled = lidar.value("enabled", false);
   (void)lidar.value("publishBeams", false);
@@ -88,10 +88,9 @@ Json sensor(const Json &authored, const std::string &ns, const std::string &defa
   require(mode_authored.empty() || mode_authored == "raycast" || mode_authored == "penetrating" || mode_authored == "depth_frustum", "unsupported lidar mode");
   require(preset.empty() || preset == "bridge_equivalent" || preset == "zju_cpu_crop" || preset == "zju_cpu_crop_ego_v2", "unsupported lidar preset");
   if (!enabled) return nullptr;
-  if (mode_authored.empty() && preset.empty()) preset = "bridge_equivalent";
   std::string mode = "raycast";
   double rate = 10, range = 20, hfov = 360, vfov = 30, heading_cos = 0, slab = 0;
-  int hres = 360, vres = 32;
+  int hres = 360, vres = backend == "cpu" ? 32 : 30;
   bool buried = false, crop = false;
   if (!preset.empty()) {
     mode = "penetrating"; vfov = 180; buried = true; range = 5;
@@ -110,15 +109,14 @@ Json sensor(const Json &authored, const std::string &ns, const std::string &defa
       if (v > 0) *pair.second = static_cast<int>(v);
     }
   const bool beams = lidar.value("publishBeams", false);
-  require(!(beams && backend == "cpu" && mode == "penetrating"), "penetrating has no rays for beams");
-  require(!(beams && backend == "gpu"), "GPU lidar_scan does not produce beams");
+  require(!(beams && mode == "penetrating"), "penetrating has no rays for beams");
+  require(!(beams && backend == "gpu"), "GPU point observations do not produce beams");
   if (mode == "depth_frustum") mode = "depth";
-  if (backend == "gpu") mode = "lidar_scan";
   Json result{{"backend", backend}, {"mode", mode}, {"topic", ns + "/simple_lidar/points"}, {"frame", "world"},
     {"rate_hz", rate}, {"range", range}, {"h_fov_deg", hfov}, {"v_fov_deg", vfov}, {"h_res", hres}, {"v_res", vres},
     {"surface_spacing", 0.1}, {"keep_buried", buried}, {"heading_crop", crop}, {"heading_cos_min", heading_cos},
-    {"vertical_slab_tan", slab}, {"publish_beams", beams}, {"world_bodies", backend == "cpu" && (mode == "raycast" || mode == "depth")}};
-  if (backend == "gpu") { result["min_range"] = 0.1; result["point_cover_spacing"] = 0.1; }
+    {"vertical_slab_tan", slab}, {"publish_beams", beams}, {"world_bodies", (mode == "raycast" || mode == "depth")}};
+  if (backend != "cpu") { result["min_range"] = 0.1; result["point_cover_spacing"] = 0.1; }
   return result;
 }
 } // namespace
@@ -148,8 +146,8 @@ Json experiment_config(const Json &input, int64_t epoch_ns) {
   const auto output = timing(parameters, "outputPeriodMs", 8);
   const auto poll = timing(parameters, "commandPollMs", 5);
   require(step <= INT64_MAX - epoch_ns && output <= INT64_MAX - epoch_ns, "native epoch plus timing overflows");
-  const auto backend = parameters.value("pointCloudBackend", std::string("cpu"));
-  require(backend == "cpu" || backend == "gpu", "pointCloudBackend must be cpu or gpu");
+  const auto backend = parameters.value("pointCloudBackend", std::string("auto"));
+  require(backend == "auto" || backend == "cpu" || backend == "gpu", "pointCloudBackend must be auto, cpu or gpu");
   const auto fcu = parameters.value("fcuParameters", Json::object());
   require(fcu.is_object(), "fcuParameters must be a numeric object");
   FlightControllerParameters fcu_validator;

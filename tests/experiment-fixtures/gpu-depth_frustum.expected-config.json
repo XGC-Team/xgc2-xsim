@@ -27,7 +27,7 @@
         "heading_crop": false,
         "keep_buried": false,
         "min_range": 0.1,
-        "mode": "lidar_scan",
+        "mode": "depth",
         "point_cover_spacing": 0.1,
         "publish_beams": false,
         "range": 6,
@@ -35,9 +35,9 @@
         "surface_spacing": 0.1,
         "topic": "/ugv1/simple_lidar/points",
         "v_fov_deg": 60,
-        "v_res": 32,
+        "v_res": 30,
         "vertical_slab_tan": 0,
-        "world_bodies": false
+        "world_bodies": true
       },
       "yaw": 0.5
     },
