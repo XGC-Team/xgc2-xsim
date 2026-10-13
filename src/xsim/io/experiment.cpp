@@ -70,7 +70,7 @@ bool reference_requested(const Json &groups) {
   }
   return false;
 }
-Json sensor(const Json &authored, const std::string &ns, const std::string &backend) {
+Json sensor(const Json &authored, const std::string &ns, const std::string &default_backend) {
   require(authored.is_object(), "binding.simulationSensors must be an object");
   // Core omits zero-valued binding.simulationSensors; omission is no sensor opt-in.
   if (authored.empty()) return nullptr;
@@ -84,6 +84,7 @@ Json sensor(const Json &authored, const std::string &ns, const std::string &back
   for (auto i = lidar.begin(); i != lidar.end(); ++i) require(allowed.count(i.key()) != 0, "unknown authored lidar field: " + i.key());
   const auto acceleration = lidar.value("acceleration", std::string{});
   require(acceleration.empty() || acceleration == "cpu" || acceleration == "gpu", "unsupported authored acceleration");
+  const auto backend = acceleration.empty() ? default_backend : acceleration;
   const auto enabled = lidar.value("enabled", false);
   (void)lidar.value("publishBeams", false);
   for (const auto &bound : {std::pair<const char *, double>{"rateHz", 100}, {"rangeMeters", 200}, {"hFovDeg", 360}, {"vFovDeg", 180}})

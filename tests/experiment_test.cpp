@@ -38,6 +38,13 @@ int main(int argc, char **argv) {
     }
   }
   auto original = xsim::load_json_object(root + "/default-mixed.input.json");
+  for (const auto *backend : {"cpu", "gpu"}) {
+    auto selected = original;
+    selected["scene"]["parameters"]["pointCloudBackend"] = std::string(backend) == "cpu" ? "gpu" : "cpu";
+    selected["robots"][0]["binding"]["simulationSensors"]["simpleLidar"] = {
+      {"enabled", true}, {"acceleration", backend}, {"hFovDeg", 360}, {"vFovDeg", 90}, {"hRes", 360}, {"vRes", 90}};
+    assert(config_for(selected)["entities"][0]["sensor"]["backend"] == backend);
+  }
   for (const bool locked : {false, true}) {
     auto authored = original;
     authored["scene"]["parameters"]["frozen"] = locked;
