@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <fcntl.h>
+#include <filesystem>
 #include <set>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -120,8 +121,16 @@ Json resolve_scene_file(Json j, const std::string &scene_file) {
       throw std::invalid_argument("--scene-file conflicts with configuration scene_file");
     j["scene_file"] = scene_file;
   }
-  if(j.contains("scene_file") && !j.at("scene_file").get<std::string>().empty())
-    j["scene"]["document"]=yaml_json(YAML::LoadFile(j.at("scene_file").get<std::string>()));
+  if(j.contains("scene_file") && !j.at("scene_file").get<std::string>().empty()) {
+    const auto path = j.at("scene_file").get<std::string>();
+    j["scene"]["document"] = yaml_json(YAML::LoadFile(path));
+    const auto manifest = std::filesystem::path(path).parent_path() / "manifest.json";
+    // The scene adapter owns a sealed asset's original point cloud. XSim
+    // publishes a sampled reference only for geometry without that attachment.
+    if (j.contains("reference_cloud_topic") && std::filesystem::is_regular_file(manifest) &&
+        load_json_object(manifest.string()).contains("pointCloud"))
+      j.erase("reference_cloud_topic");
+  }
   return j;
 }
 Json load_config(const std::string &path, const std::string &scene_file) {

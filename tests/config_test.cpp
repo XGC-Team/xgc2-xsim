@@ -49,6 +49,12 @@ int main() {
   assert(from_flag.at("instance_id") == original.at("instance_id"));
   assert(from_flag.at("entities") == original.at("entities"));
   assert(from_flag.at("scene").at("keep") == "source-value");
+  auto reference = original;
+  reference["reference_cloud_topic"] = "/xgc/scene/reference_cloud";
+  assert(xsim::resolve_scene_file(reference, scene).contains("reference_cloud_topic"));
+  std::ofstream(root / "manifest.json") << R"({"pointCloud":{"file":"original-volume.xyz.f32"}})";
+  assert(!xsim::resolve_scene_file(reference, scene).contains("reference_cloud_topic"));
+  std::filesystem::remove(root / "manifest.json");
   const auto &document = from_flag.at("scene").at("document");
   assert(document.at("name") == "original-scene");
   assert(document.at("enabled") == true);
