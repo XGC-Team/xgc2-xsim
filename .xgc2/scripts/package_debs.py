@@ -43,14 +43,14 @@ def package(stage, output_dir, dependencies, gpu_dependencies):
             control = root / 'DEBIAN'
             control.mkdir()
             (control / 'control').write_text(f'''Package: {name}
-Version: 1.3.0-2
+Version: 1.3.0-3
 Architecture: {arch}
 Maintainer: XGC Team <dev@xgc.team>
 Depends: {deps}
 {extra}Description: {description}
 ''')
             subprocess.run(['dpkg-deb', '--build', '--root-owner-group', str(root),
-                            str(output_dir / f'{name}_1.3.0-2_{arch}.deb')], check=True)
+                            str(output_dir / f'{name}_1.3.0-3_{arch}.deb')], check=True)
 
 
 def main():

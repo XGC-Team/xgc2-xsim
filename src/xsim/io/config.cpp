@@ -22,7 +22,11 @@ Json yaml_json(const YAML::Node &n) {
   if(n.IsSequence()){Json j=Json::array();for(const auto& x:n)j.push_back(yaml_json(x));return j;}
   if(n.IsMap()){Json j=Json::object();for(const auto& x:n)j[x.first.as<std::string>()]=yaml_json(x.second);return j;}
   auto text=n.as<std::string>();
-  if(text=="true")return true;if(text=="false")return false;
+  // Quoted and explicitly tagged strings keep their YAML type. Scene IDs may
+  // look numeric without being numbers.
+  if(n.Tag()=="!" || n.Tag()=="tag:yaml.org,2002:str")return text;
+  if(text=="true")return true;
+  if(text=="false")return false;
   try {size_t end=0;double value=std::stod(text,&end);if(end==text.size())return value;}catch(const std::exception&){}
   return text;
 }

@@ -29,7 +29,7 @@ int main() {
   const auto configuration = (root / "world.json").string();
   const auto scene = (root / "scene.yaml").string();
   const auto other = (root / "other.yaml").string();
-  std::ofstream(scene) << "name: original-scene\nenabled: true\norigin: [1, 2.5, -3]\nobjects:\n  - vertices: [[0, 0, 0], [1, 2, 3]]\n";
+  std::ofstream(scene) << "name: original-scene\nenabled: true\norigin: [1, 2.5, -3]\nobjects:\n  - id: '1'\n    name: \"false\"\n    label: !!str 42\n    vertices: [[0, 0, 0], [1, 2, 3]]\n";
   std::ofstream(other) << "name: other-scene\n";
   xsim::Json original{{"instance_id", "frozen-instance"}, {"epoch_ns", int64_t(1791250000000000000)},
                       {"entities", xsim::Json::array()}, {"scene", {{"keep", "source-value"}}}};
@@ -53,6 +53,9 @@ int main() {
   assert(document.at("name") == "original-scene");
   assert(document.at("enabled") == true);
   assert(document.at("origin").at(1) == 2.5);
+  assert(document.at("objects").at(0).at("id").get<std::string>() == "1");
+  assert(document.at("objects").at(0).at("name").get<std::string>() == "false");
+  assert(document.at("objects").at(0).at("label").get<std::string>() == "42");
   rejects([&] { xsim::load_config(configuration, other); }, "conflicts");
   // Conflict precedes loading either file; do not silently prefer a new path.
   configured["scene_file"] = (root / "missing-from-config.yaml").string();
