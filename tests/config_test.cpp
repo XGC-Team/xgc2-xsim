@@ -53,7 +53,12 @@ int main() {
   reference["reference_cloud_topic"] = "/xgc/scene/reference_cloud";
   assert(xsim::resolve_scene_file(reference, scene).contains("reference_cloud_topic"));
   std::ofstream(root / "manifest.json") << R"({"pointCloud":{"file":"original-volume.xyz.f32"}})";
-  assert(!xsim::resolve_scene_file(reference, scene).contains("reference_cloud_topic"));
+  reference["entities"].push_back({{"name", "uav1"}, {"sensor", {{"backend", "gpu"}}}});
+  const auto fixed_cloud = xsim::resolve_scene_file(reference, scene);
+  assert(!fixed_cloud.contains("reference_cloud_topic"));
+  assert(!fixed_cloud.at("entities").at(0).contains("sensor"));
+  reference.erase("reference_cloud_topic");
+  assert(!xsim::resolve_scene_file(reference, scene).at("entities").at(0).contains("sensor"));
   std::filesystem::remove(root / "manifest.json");
   const auto &document = from_flag.at("scene").at("document");
   assert(document.at("name") == "original-scene");
