@@ -10,6 +10,7 @@ mkdir -p "$shlibs/debian"
 printf 'Source: xsim\nSection: science\nPriority: optional\nMaintainer: XGC Team <dev@xgc.team>\n\nPackage: xsim\nArchitecture: any\n' > "$shlibs/debian/control"
 deps="$(cd "$shlibs" && dpkg-shlibdeps -O -e"$stage/opt/xgc2/xsim/bin/xsim")";deps="${deps#shlibs:Depends=}"
 gpu_deps="$(cd "$shlibs" && dpkg-shlibdeps -O -e"$stage/opt/xgc2/xsim/lib/xsim/libxsim-lidar-gpu.so")";gpu_deps="${gpu_deps#shlibs:Depends=}"
-python3 "$root/.xgc2/scripts/package_debs.py" --stage "$stage" --output-dir "$out" \
+version="$(awk -F': *' '/^version:/ {print $2;exit}' "$root/.xgc2/product.yml")"
+python3 "$root/.xgc2/scripts/package_debs.py" --version "$version" --stage "$stage" --output-dir "$out" \
  --depends "$deps, ros-noetic-roscpp, ros-noetic-mavros-msgs, ros-noetic-rosgraph-msgs" \
  --gpu-depends "$gpu_deps, libglfw3 (>= 3.3)"
