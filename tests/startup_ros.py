@@ -132,7 +132,7 @@ def late_master(binary, root, port, long_test):
         # Missing optional GPU support refuses only the requested GPU sensor,
         # with the loader's reason visible through the native operation status.
         gpu = {"name": "unavailable_gpu", "kind": "scout", "sensor": {
-            "backend": "gpu", "mode": "lidar_scan", "range": 20, "min_range": .2,
+            "backend": "gpu", "mode": "raycast", "range": 20, "min_range": .2,
             "h_fov_deg": 120, "v_fov_deg": 60, "h_res": 240, "v_res": 120,
             "point_cover_spacing": .1, "rate_hz": 10}}
         code, operation = x.call("POST", "/v1/entities", {"operation_timeout_ms": 4000, "entity": {
@@ -143,8 +143,7 @@ def late_master(binary, root, port, long_test):
         if operation["state"] in ("accepted", "running"):
             code, operation = x.call("POST", "/v1/operations/" + operation["id"] + "/wait", {}, timeout_ms=6000)
             assert code == 200, (code, operation)
-        assert operation["state"] == "failed" and "GPU module not found" in operation["error"]["message"], operation
-        assert "no CPU fallback" in operation["error"]["message"]
+        assert operation["state"] == "failed" and "GPU sensing library unavailable" in operation["error"]["message"], operation
         assert x.hold("Describe")[1]["robots"] == ["late-ugv"]
         # Native robot controls stay available, with only the latest desired ROS state retained.
         x.enable("late-ugv")

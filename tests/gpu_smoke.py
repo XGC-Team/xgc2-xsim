@@ -6,7 +6,7 @@ from native_http import NativeProvider, UnixHTTP, assert_retired_ros_surfaces_ab
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--xsim',required=True);p.add_argument('--module');p.add_argument('--output',required=True);a=p.parse_args()
-    if a.module:os.environ['XSIM_LIDAR_GPU_MODULE']=str(Path(a.module).resolve())
+    if a.module:os.environ['XGC2_SENSING_GPU_LIBRARY']=str(Path(a.module).resolve())
     out=Path(a.output);out.mkdir(parents=True,exist_ok=True)
     out.chmod(0o700)
     for name in ("ros-home", "ros-log"):
@@ -34,7 +34,7 @@ def main():
         entities=[]
         for i,(h,v) in enumerate(((120,40),(240,80))):
             entities.append({'name':'gpu_'+str(i),'kind':'mecanum','position':[0,i,0],
-                'sensor':{'backend':'gpu','mode':'lidar_scan','h_res':h,'v_res':v,'h_fov_deg':90,'v_fov_deg':30,'min_range':.2,'range':20,'rate_hz':10,'point_cover_spacing':.1}})
+                'sensor':{'backend':'gpu','mode':'raycast','h_res':h,'v_res':v,'h_fov_deg':90,'v_fov_deg':30,'min_range':.2,'range':20,'rate_hz':10,'point_cover_spacing':.1}})
         cfg={'instance_id':'gpu-fixture','epoch_ns':1700000000000000000,'publish_clock':True,
              'scene':{'surface_spacing':.1,'obstacles':[{'type':'box','position':[5,0,0],'size':[1,6,4]}]},'entities':[]}
         (out/'world.json').write_text(json.dumps(cfg))
