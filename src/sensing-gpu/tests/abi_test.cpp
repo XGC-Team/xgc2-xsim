@@ -31,8 +31,6 @@ int main(int argc, char **argv) {
   auto p = valid; p.h_res = 0; invalid.push_back(p);
   p = valid; p.v_res = -1; invalid.push_back(p);
   p = valid; p.h_res = INT32_MAX; p.v_res = 2; invalid.push_back(p);
-  p = valid; p.h_res = 241; invalid.push_back(p);
-  p = valid; p.v_res = 30; invalid.push_back(p);
   p = valid; p.point_cover_spacing_m = 1; invalid.push_back(p);
   p = valid; p.min_range_m = p.range_m; invalid.push_back(p);
   p = valid; p.h_fov_deg = 361; invalid.push_back(p);

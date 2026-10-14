@@ -69,7 +69,7 @@ class opengl_pointcloud_render
     // One immutable world per renderer; input is already in world coordinates.
     bool read_pointcloud_frommemory(const pcl::PointCloud<PointType>& world_cloud);
     ~opengl_pointcloud_render();
-    void setParameters(int width, int height, float fx, float fy, float downsample_res, float polar_res_, float yaw_fov_,\
+    void setParameters(int width, int height, float fx, float fy, float downsample_res, float yaw_fov_,\
                  float vertical_fov_,float near,float far,int sensing_rate,int use_avia_pattern, int use_os128_pattern, int use_minicf_pattern);
     void render_pointcloud(pcl::PointCloud<PointType>::Ptr output_pointcloud, Eigen::Vector3f camera_pos, Eigen::Quaternionf camera_q, double t_pattern_start);
     void input_dyn_clouds(pcl::PointCloud<pcl::PointXYZI> input_cloud);
@@ -121,7 +121,8 @@ class opengl_pointcloud_render
     int cube_numx,cube_numy,cube_numz;
 
     float downsample_res = 0.01;
-    float polar_res = 0.2;
+    float horizontal_step = 0.2;
+    float vertical_step = 0.2;
     float cover_dis = 0.55 * 1.7321 * downsample_res;
     float polar_resolution_max = 1.0/fu*(cos(1)*cos(1))*180/M_PI;;
     float effect_range = cover_dis / sin(0.5 * polar_resolution_max * M_PI / 180.0);;
@@ -202,7 +203,7 @@ class opengl_pointcloud_render
 
 };
 
-void opengl_pointcloud_render::setParameters(int width, int height, float fx, float fy, float downsample_res, float polar_res_, float yaw_fov_, float vertical_fov_,\
+void opengl_pointcloud_render::setParameters(int width, int height, float fx, float fy, float downsample_res, float yaw_fov_, float vertical_fov_,\
                                     float near,float far,int sensing_rate,int use_avia_pattern, int use_os128_pattern, int use_minicf_pattern)
 {
     this->width = width;
@@ -216,13 +217,14 @@ void opengl_pointcloud_render::setParameters(int width, int height, float fx, fl
     this->yaw_fov = yaw_fov_;
     this->vertical_fov = vertical_fov_;
     this->downsample_res = downsample_res;
-    this->polar_res = polar_res_;
+    this->horizontal_step = yaw_fov_ / width;
+    this->vertical_step = vertical_fov_ / height;
     this->camera2world = Eigen::Matrix3f::Identity();
     this->camera = Eigen::Vector3f(0,0,0);
     this->camera_pos_world = Eigen::Vector3f(0,0,0);
     this->cover_dis = 0.55 * 1.7321 * downsample_res;
     this->polar_resolution_max = 1.0/fu*(cos(1)*cos(1))*180/M_PI;
-    this->effect_range = cover_dis / sin(0.5 * polar_res * M_PI / 180.0);
+    this->effect_range = cover_dis / sin(0.5 * std::min(horizontal_step, vertical_step) * M_PI / 180.0);
     this->sensing_rate = sensing_rate;
     this->use_avia_pattern = use_avia_pattern;
     this->use_os128_pattern = use_os128_pattern;
@@ -588,8 +590,8 @@ void opengl_pointcloud_render::render_pointcloud(pcl::PointCloud<PointType>::Ptr
         }else if(use_os128_pattern == 1)
         {
             pattern_matrix.setConstant(0);
-            int step = round((45.0) / 128 / polar_res);
-            int bottom_pattern = -ceil(22.5 / polar_res);
+            int step = round((45.0) / 128 / vertical_step);
+            int bottom_pattern = -ceil(22.5 / vertical_step);
             for (int i = 0; i < 128; i++)
             {
             int y = bottom_pattern + i * step + round(0.5 * height);
@@ -621,8 +623,8 @@ void opengl_pointcloud_render::render_pointcloud(pcl::PointCloud<PointType>::Ptr
 
             for (double t_i = t_start; t_i < t_start + t_duration; t_i = t_i + point_duration)
             {
-            int x = (int(-round(-62050.63 * t_i + 3.11 * cos(314159.2 * t_i) * sin(628.318 * 2 * t_i))) % 360) / polar_res;
-            int y = round(25.5 * cos(20 * PI * t_i) + 4 * cos(2 * PI / 0.006 * t_i) * cos(10000 * PI * t_i) + 22.5) / polar_res + round(0.5 * height);
+            int x = (int(-round(-62050.63 * t_i + 3.11 * cos(314159.2 * t_i) * sin(628.318 * 2 * t_i))) % 360) / horizontal_step;
+            int y = round(25.5 * cos(20 * PI * t_i) + 4 * cos(2 * PI / 0.006 * t_i) * cos(10000 * PI * t_i) + 22.5) / vertical_step + round(0.5 * height);
 
             // ROS_INFO("X = %d, Y = %d",x,y);
             if (x > (width - 1))
@@ -689,8 +691,8 @@ void opengl_pointcloud_render::render_pointcloud(pcl::PointCloud<PointType>::Ptr
         glm::vec2 fov = glm::vec2(yaw_fov,vertical_fov);
         ourShader.setVec2("fov",fov);
 
-        glm::vec2 res = glm::vec2(downsample_res,polar_res);
-        ourShader.setVec2("res",res);
+        ourShader.setVec2("angular_step", glm::vec2(horizontal_step, vertical_step));
+        ourShader.setFloat("point_spacing", downsample_res);
 
         glm::mat3 rotation_mat;
         Eigen::Matrix3f world2body = body2world_matrix.transpose();//
@@ -866,8 +868,8 @@ void opengl_pointcloud_render::render_dynclouds_on_depthimage(cv::Mat& depth_ima
             continue;
 
         Eigen::Vector3f temp_point_cam_norm = temp_point_cam.normalized();
-        int cen_theta_index = atan2(temp_point_cam_norm(1),temp_point_cam_norm(0)) / M_PI * 180.0 /polar_res + round(0.5*width);
-        int cen_fi_index = atan2(temp_point_cam_norm(2),sqrt(temp_point_cam_norm(0)*temp_point_cam_norm(0)+temp_point_cam_norm(1)*temp_point_cam_norm(1))) / M_PI * 180.0 /polar_res + round(0.5*height);
+        int cen_theta_index = atan2(temp_point_cam_norm(1),temp_point_cam_norm(0)) / M_PI * 180.0 /horizontal_step + round(0.5*width);
+        int cen_fi_index = atan2(temp_point_cam_norm(2),sqrt(temp_point_cam_norm(0)*temp_point_cam_norm(0)+temp_point_cam_norm(1)*temp_point_cam_norm(1))) / M_PI * 180.0 /vertical_step + round(0.5*height);
         if(cen_theta_index < 0 || cen_theta_index >= width || cen_fi_index < 0 || cen_fi_index >= height)
             continue;
 
@@ -879,17 +881,18 @@ void opengl_pointcloud_render::render_dynclouds_on_depthimage(cv::Mat& depth_ima
             if(depth_image.at<float>(cen_fi_index,cen_theta_index) > depth)
                 depth_image.at<float>(cen_fi_index,cen_theta_index) = depth;
         }else{
-            int half_cover_angle = ceil(
-                (asin(cover_dis / depth) / (M_PI * polar_res / 180.0)));
+            const float cover_angle = asin(cover_dis / depth) * 180.0 / M_PI;
+            const int horizontal_cover = ceil(cover_angle / horizontal_step);
+            const int vertical_cover = ceil(cover_angle / vertical_step);
 
             // cout << "half_cover_angle = " << half_cover_angle << endl;
             // cout << "cen_theta_index = " << cen_theta_index << endl;
             // cout << "cen_fi_index = " << cen_fi_index << endl;
 
-            int theta_start = cen_theta_index - half_cover_angle;
-            int theta_end = cen_theta_index + half_cover_angle;
-            int fi_start = cen_fi_index - half_cover_angle;
-            int fi_end = cen_fi_index + half_cover_angle;
+            int theta_start = cen_theta_index - horizontal_cover;
+            int theta_end = cen_theta_index + horizontal_cover;
+            int fi_start = cen_fi_index - vertical_cover;
+            int fi_end = cen_fi_index + vertical_cover;
 
             for (int theta_index_o = theta_start;
                 theta_index_o <= theta_end; theta_index_o++)
@@ -1243,7 +1246,8 @@ void opengl_pointcloud_render::depth_to_pointcloud(cv::Mat& depth_image, pcl::Po
 
     //trans polar depth image to point clouds 
     // float polar_resolution = 0.2/180.0*3.14159265358;
-    float polar_res_rad = polar_res/180.0*3.14159265358;
+    const float horizontal_rad = horizontal_step/180.0*3.14159265358;
+    const float vertical_rad = vertical_step/180.0*3.14159265358;
     for (int v = 0; v < height; v++)
     {
         for (int u = 0; u < width; u++)
@@ -1269,9 +1273,9 @@ void opengl_pointcloud_render::depth_to_pointcloud(cv::Mat& depth_image, pcl::Po
                 // temp_point(1) = -depth * sin(vertical_fov/2/180.0*3.14159265358*(v - v0)/(0.5*height));
                 // temp_point(2) = -depth * cos(vertical_fov/2/180.0*3.14159265358*(v - v0)/(0.5*height)) * cos(polar_res*(u-u0));
 
-                temp_point(0) = depth * cos(polar_res_rad*(v - v0)) * sin(polar_res_rad*(u-u0));
-                temp_point(1) = -depth * sin(polar_res_rad*(v - v0));
-                temp_point(2) = -depth * cos(polar_res_rad*(v - v0)) * cos(polar_res_rad*(u-u0));
+                temp_point(0) = depth * cos(vertical_rad*(v - v0)) * sin(horizontal_rad*(u-u0));
+                temp_point(1) = -depth * sin(vertical_rad*(v - v0));
+                temp_point(2) = -depth * cos(vertical_rad*(v - v0)) * cos(horizontal_rad*(u-u0));
 
 
                 // if(v == v0 && u ==u0)
@@ -1309,9 +1313,9 @@ void opengl_pointcloud_render::depth_to_pointcloud(cv::Mat& depth_image, pcl::Po
                 // temp_point(0) = (u - u0) * depth / fu;
                 // temp_point(1) = -(v - v0) * depth / fv;
                 // temp_point(2) = -depth;
-                temp_point(0) = depth * cos(polar_res_rad*(v - v0)) * sin(polar_res_rad*(u-u0));
-                temp_point(1) = -depth * sin(polar_res_rad*(v - v0));
-                temp_point(2) = -depth * cos(polar_res_rad*(v - v0)) * cos(polar_res_rad*(u-u0));
+                temp_point(0) = depth * cos(vertical_rad*(v - v0)) * sin(horizontal_rad*(u-u0));
+                temp_point(1) = -depth * sin(vertical_rad*(v - v0));
+                temp_point(2) = -depth * cos(vertical_rad*(v - v0)) * cos(horizontal_rad*(u-u0));
 
                 //using R and T from opengl
                 // temp_point_world = camera2world.transpose() * (temp_point - camera);//.transpose()

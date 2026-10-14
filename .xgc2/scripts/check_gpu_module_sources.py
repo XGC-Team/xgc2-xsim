@@ -21,9 +21,10 @@ def main():
         shutil.copytree(root / 'upstream/local_sensing', work / 'local_sensing')
         subprocess.run(['patch', '--batch', '--fuzz=0', '-p1', '-i', str(root / 'marsim-memory-entry.patch')],
                        cwd=work, check=True)
-        path = Path('local_sensing/include/opengl_sim.hpp')
-        if (work / path).read_bytes() != (root / path).read_bytes():
-            raise SystemExit('GPU memory-entry patch does not reproduce the compiled source')
+        for name in ('opengl_sim.hpp', '360camera.vs', 'camera.fs'):
+            path = Path('local_sensing/include') / name
+            if (work / path).read_bytes() != (root / path).read_bytes():
+                raise SystemExit('GPU memory-entry patch does not reproduce: ' + name)
     print('PASS: %d pinned inputs and exact patch reproduction' % len(pin['files']))
 
 

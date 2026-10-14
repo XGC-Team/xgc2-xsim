@@ -1,6 +1,6 @@
 --- a/local_sensing/include/opengl_sim.hpp
 +++ b/local_sensing/include/opengl_sim.hpp
-@@ -59,16 +59,31 @@
+@@ -59,17 +59,32 @@
      glViewport(0, 0, screen_width, screen_height);
  }
  
@@ -15,11 +15,12 @@
 +    // One immutable world per renderer; input is already in world coordinates.
 +    bool read_pointcloud_frommemory(const pcl::PointCloud<PointType>& world_cloud);
      ~opengl_pointcloud_render();
-     void setParameters(int width, int height, float fx, float fy, float downsample_res, float polar_res_, float yaw_fov_,\
+-    void setParameters(int width, int height, float fx, float fy, float downsample_res, float polar_res_, float yaw_fov_,\
++    void setParameters(int width, int height, float fx, float fy, float downsample_res, float yaw_fov_,\
                   float vertical_fov_,float near,float far,int sensing_rate,int use_avia_pattern, int use_os128_pattern, int use_minicf_pattern);
      void render_pointcloud(pcl::PointCloud<PointType>::Ptr output_pointcloud, Eigen::Vector3f camera_pos, Eigen::Quaternionf camera_q, double t_pattern_start);
      void input_dyn_clouds(pcl::PointCloud<pcl::PointXYZI> input_cloud);
-+
+ 
 +    void activate() const { glfwMakeContextCurrent(window); }
 +    void setOffscreen() { offscreen = true; }
 +    GLuint pointBuffer() const { return VBO; }
@@ -30,9 +31,10 @@
 +        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, indices.size()*sizeof(unsigned int), indices.data());
 +        glBindVertexArray(0);
 +    }
- 
++
      private:
      int UI_WIDTH;
+     int width = 350;
 @@ -83,8 +98,11 @@
      float u0 = width*0.5;
      float v0 = width*0.5;
@@ -47,7 +49,17 @@
      Shader ourShader;
  
      int use_avia_pattern = 0;
-@@ -157,6 +175,8 @@
+@@ -103,7 +121,8 @@
+     int cube_numx,cube_numy,cube_numz;
+ 
+     float downsample_res = 0.01;
+-    float polar_res = 0.2;
++    float horizontal_step = 0.2;
++    float vertical_step = 0.2;
+     float cover_dis = 0.55 * 1.7321 * downsample_res;
+     float polar_resolution_max = 1.0/fu*(cos(1)*cos(1))*180/M_PI;;
+     float effect_range = cover_dis / sin(0.5 * polar_resolution_max * M_PI / 180.0);;
+@@ -157,6 +176,8 @@
      void load_normal_file(std::string file_name, pcl::PointCloud<pcl::Normal>& normal_ptcloud);
      inline void glDrawColouredCube_atrandompos(Eigen::Vector3f pos, double length);
      void HSV2BGR(HSV &hsv, BGR &bgr);
@@ -56,7 +68,33 @@
      void init_pointcloud_data();
      inline void glDrawColouredCube_alpha(GLfloat axis_min, GLfloat axis_max, float alpha);
      template<typename T>
-@@ -272,11 +292,19 @@
+@@ -182,7 +203,7 @@
+ 
+ };
+ 
+-void opengl_pointcloud_render::setParameters(int width, int height, float fx, float fy, float downsample_res, float polar_res_, float yaw_fov_, float vertical_fov_,\
++void opengl_pointcloud_render::setParameters(int width, int height, float fx, float fy, float downsample_res, float yaw_fov_, float vertical_fov_,\
+                                     float near,float far,int sensing_rate,int use_avia_pattern, int use_os128_pattern, int use_minicf_pattern)
+ {
+     this->width = width;
+@@ -196,13 +217,14 @@
+     this->yaw_fov = yaw_fov_;
+     this->vertical_fov = vertical_fov_;
+     this->downsample_res = downsample_res;
+-    this->polar_res = polar_res_;
++    this->horizontal_step = yaw_fov_ / width;
++    this->vertical_step = vertical_fov_ / height;
+     this->camera2world = Eigen::Matrix3f::Identity();
+     this->camera = Eigen::Vector3f(0,0,0);
+     this->camera_pos_world = Eigen::Vector3f(0,0,0);
+     this->cover_dis = 0.55 * 1.7321 * downsample_res;
+     this->polar_resolution_max = 1.0/fu*(cos(1)*cos(1))*180/M_PI;
+-    this->effect_range = cover_dis / sin(0.5 * polar_res * M_PI / 180.0);
++    this->effect_range = cover_dis / sin(0.5 * std::min(horizontal_step, vertical_step) * M_PI / 180.0);
+     this->sensing_rate = sensing_rate;
+     this->use_avia_pattern = use_avia_pattern;
+     this->use_os128_pattern = use_os128_pattern;
+@@ -272,11 +294,19 @@
  //     glViewport(0, 0, screen_width, screen_height);
  // }
  
@@ -78,7 +116,7 @@
      glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
      glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);
      glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-@@ -293,8 +321,9 @@
+@@ -293,8 +323,9 @@
      if (window == NULL)
      {
          std::cout << "Failed to create GLFW window" << std::endl;
@@ -90,20 +128,20 @@
      }
      glfwMakeContextCurrent(window);
      // glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-@@ -309,8 +338,10 @@
+@@ -309,9 +340,11 @@
      if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
      {
          std::cout << "Failed to initialize GLAD" << std::endl;
 -        return ;
--    }
 +        return false;
-+    }
-+
-+    glad_initialized = true;
+     }
  
++    glad_initialized = true;
++
      // configure global opengl state
      // -----------------------------
-@@ -337,6 +368,15 @@
+     glEnable(GL_DEPTH_TEST);
+@@ -337,6 +370,15 @@
  
      std::cout << "shader path = " << vertex_path << std::endl;;
  
@@ -119,7 +157,7 @@
      // std::cout << "You Pushed a button, now open file: " << a_string.Get() << endl;
      load_pcd_file( map_filename ,cloud_color_mesh);
  
-@@ -420,6 +460,19 @@
+@@ -420,6 +462,19 @@
          }    
      }
  
@@ -139,7 +177,7 @@
      init_pointcloud_data();
      // preprocess(cloud_color_mesh,all_normals);
      cout << "Load data finish " << endl;
-@@ -450,11 +503,19 @@
+@@ -450,11 +505,19 @@
  }
  
  opengl_pointcloud_render::~opengl_pointcloud_render(){
@@ -164,7 +202,40 @@
  }
  
  void opengl_pointcloud_render::render_pointcloud(pcl::PointCloud<PointType>::Ptr output_pointcloud, Eigen::Vector3f camera_pos, \
-@@ -727,8 +788,10 @@
+@@ -527,8 +590,8 @@
+         }else if(use_os128_pattern == 1)
+         {
+             pattern_matrix.setConstant(0);
+-            int step = round((45.0) / 128 / polar_res);
+-            int bottom_pattern = -ceil(22.5 / polar_res);
++            int step = round((45.0) / 128 / vertical_step);
++            int bottom_pattern = -ceil(22.5 / vertical_step);
+             for (int i = 0; i < 128; i++)
+             {
+             int y = bottom_pattern + i * step + round(0.5 * height);
+@@ -560,8 +623,8 @@
+ 
+             for (double t_i = t_start; t_i < t_start + t_duration; t_i = t_i + point_duration)
+             {
+-            int x = (int(-round(-62050.63 * t_i + 3.11 * cos(314159.2 * t_i) * sin(628.318 * 2 * t_i))) % 360) / polar_res;
+-            int y = round(25.5 * cos(20 * PI * t_i) + 4 * cos(2 * PI / 0.006 * t_i) * cos(10000 * PI * t_i) + 22.5) / polar_res + round(0.5 * height);
++            int x = (int(-round(-62050.63 * t_i + 3.11 * cos(314159.2 * t_i) * sin(628.318 * 2 * t_i))) % 360) / horizontal_step;
++            int y = round(25.5 * cos(20 * PI * t_i) + 4 * cos(2 * PI / 0.006 * t_i) * cos(10000 * PI * t_i) + 22.5) / vertical_step + round(0.5 * height);
+ 
+             // ROS_INFO("X = %d, Y = %d",x,y);
+             if (x > (width - 1))
+@@ -628,8 +691,8 @@
+         glm::vec2 fov = glm::vec2(yaw_fov,vertical_fov);
+         ourShader.setVec2("fov",fov);
+ 
+-        glm::vec2 res = glm::vec2(downsample_res,polar_res);
+-        ourShader.setVec2("res",res);
++        ourShader.setVec2("angular_step", glm::vec2(horizontal_step, vertical_step));
++        ourShader.setFloat("point_spacing", downsample_res);
+ 
+         glm::mat3 rotation_mat;
+         Eigen::Matrix3f world2body = body2world_matrix.transpose();//
+@@ -727,8 +790,10 @@
          // glDrawElements(GL_POINTS, g_eigen_pt_vec.size()/2, GL_UNSIGNED_INT, 0);
          glDrawElements(GL_POINTS, points_index_infov.size(), GL_UNSIGNED_INT, 0);
  
@@ -177,7 +248,79 @@
  
          // system_clock::time_point t3 = system_clock::now();
          // auto dur2 = t3 - t1;
-@@ -1881,7 +1944,7 @@
+@@ -803,8 +868,8 @@
+             continue;
+ 
+         Eigen::Vector3f temp_point_cam_norm = temp_point_cam.normalized();
+-        int cen_theta_index = atan2(temp_point_cam_norm(1),temp_point_cam_norm(0)) / M_PI * 180.0 /polar_res + round(0.5*width);
+-        int cen_fi_index = atan2(temp_point_cam_norm(2),sqrt(temp_point_cam_norm(0)*temp_point_cam_norm(0)+temp_point_cam_norm(1)*temp_point_cam_norm(1))) / M_PI * 180.0 /polar_res + round(0.5*height);
++        int cen_theta_index = atan2(temp_point_cam_norm(1),temp_point_cam_norm(0)) / M_PI * 180.0 /horizontal_step + round(0.5*width);
++        int cen_fi_index = atan2(temp_point_cam_norm(2),sqrt(temp_point_cam_norm(0)*temp_point_cam_norm(0)+temp_point_cam_norm(1)*temp_point_cam_norm(1))) / M_PI * 180.0 /vertical_step + round(0.5*height);
+         if(cen_theta_index < 0 || cen_theta_index >= width || cen_fi_index < 0 || cen_fi_index >= height)
+             continue;
+ 
+@@ -816,17 +881,18 @@
+             if(depth_image.at<float>(cen_fi_index,cen_theta_index) > depth)
+                 depth_image.at<float>(cen_fi_index,cen_theta_index) = depth;
+         }else{
+-            int half_cover_angle = ceil(
+-                (asin(cover_dis / depth) / (M_PI * polar_res / 180.0)));
++            const float cover_angle = asin(cover_dis / depth) * 180.0 / M_PI;
++            const int horizontal_cover = ceil(cover_angle / horizontal_step);
++            const int vertical_cover = ceil(cover_angle / vertical_step);
+ 
+             // cout << "half_cover_angle = " << half_cover_angle << endl;
+             // cout << "cen_theta_index = " << cen_theta_index << endl;
+             // cout << "cen_fi_index = " << cen_fi_index << endl;
+ 
+-            int theta_start = cen_theta_index - half_cover_angle;
+-            int theta_end = cen_theta_index + half_cover_angle;
+-            int fi_start = cen_fi_index - half_cover_angle;
+-            int fi_end = cen_fi_index + half_cover_angle;
++            int theta_start = cen_theta_index - horizontal_cover;
++            int theta_end = cen_theta_index + horizontal_cover;
++            int fi_start = cen_fi_index - vertical_cover;
++            int fi_end = cen_fi_index + vertical_cover;
+ 
+             for (int theta_index_o = theta_start;
+                 theta_index_o <= theta_end; theta_index_o++)
+@@ -1180,7 +1246,8 @@
+ 
+     //trans polar depth image to point clouds 
+     // float polar_resolution = 0.2/180.0*3.14159265358;
+-    float polar_res_rad = polar_res/180.0*3.14159265358;
++    const float horizontal_rad = horizontal_step/180.0*3.14159265358;
++    const float vertical_rad = vertical_step/180.0*3.14159265358;
+     for (int v = 0; v < height; v++)
+     {
+         for (int u = 0; u < width; u++)
+@@ -1206,9 +1273,9 @@
+                 // temp_point(1) = -depth * sin(vertical_fov/2/180.0*3.14159265358*(v - v0)/(0.5*height));
+                 // temp_point(2) = -depth * cos(vertical_fov/2/180.0*3.14159265358*(v - v0)/(0.5*height)) * cos(polar_res*(u-u0));
+ 
+-                temp_point(0) = depth * cos(polar_res_rad*(v - v0)) * sin(polar_res_rad*(u-u0));
+-                temp_point(1) = -depth * sin(polar_res_rad*(v - v0));
+-                temp_point(2) = -depth * cos(polar_res_rad*(v - v0)) * cos(polar_res_rad*(u-u0));
++                temp_point(0) = depth * cos(vertical_rad*(v - v0)) * sin(horizontal_rad*(u-u0));
++                temp_point(1) = -depth * sin(vertical_rad*(v - v0));
++                temp_point(2) = -depth * cos(vertical_rad*(v - v0)) * cos(horizontal_rad*(u-u0));
+ 
+ 
+                 // if(v == v0 && u ==u0)
+@@ -1246,9 +1313,9 @@
+                 // temp_point(0) = (u - u0) * depth / fu;
+                 // temp_point(1) = -(v - v0) * depth / fv;
+                 // temp_point(2) = -depth;
+-                temp_point(0) = depth * cos(polar_res_rad*(v - v0)) * sin(polar_res_rad*(u-u0));
+-                temp_point(1) = -depth * sin(polar_res_rad*(v - v0));
+-                temp_point(2) = -depth * cos(polar_res_rad*(v - v0)) * cos(polar_res_rad*(u-u0));
++                temp_point(0) = depth * cos(vertical_rad*(v - v0)) * sin(horizontal_rad*(u-u0));
++                temp_point(1) = -depth * sin(vertical_rad*(v - v0));
++                temp_point(2) = -depth * cos(vertical_rad*(v - v0)) * cos(horizontal_rad*(u-u0));
+ 
+                 //using R and T from opengl
+                 // temp_point_world = camera2world.transpose() * (temp_point - camera);//.transpose()
+@@ -1881,7 +1948,7 @@
      cout << "Number of points = " << g_eigen_pt_vec.size() / 20000.0 << "X 10000" << endl;
      cout << "Number of faces = " << g_eigen_tri_pt_vec.size() / 10000.0 << "X 10000" << endl;
  
@@ -186,3 +329,181 @@
  }
  
  
+--- a/local_sensing/include/360camera.vs
++++ b/local_sensing/include/360camera.vs
+@@ -3,126 +3,34 @@
+ layout (location = 1) in vec3 aColor;
+ 
+ out vec3 ourColor;
+-
+-uniform mat4 view;
+-uniform mat4 projection;
++flat out vec2 coverage;
+ uniform vec2 range;
+-
+ uniform mat3 rot;
+ uniform vec3 pos;
+-
+-// uniform vec3 ()
+ uniform vec2 fov;
+-uniform vec2 res;
+-// uniform float downsample_res;
+-// uniform float polar_res;
++uniform vec2 angular_step;
++uniform float point_spacing;
+ 
+ void main()
+ {
+-	float PI = 3.14159265358;
+-	// float yaw_fov = 360.0;
+-	// float vertical_fov = 50.0;
+-	// float downsample_res = 0.1;
+-	// float polar_res = 0.2;
+-	// float cover_dis = 0.55 * 1.7321 * downsample_res;
+-	float cover_dis = 0.55 * 1.7321 * res.x;
+-
+-	//log(aPos.z/sqrt(aPos.x*aPos.x + aPos.y*aPos.y) + 1/sqrt(1 + pow(aPos.z/sqrt(aPos.x*aPos.x + aPos.y*aPos.y),2)))
+-	//atan2(aPos.z,sqrt(aPos.x*aPos.x + aPos.y*aPos.y))
+-	// if(aPos.z/sqrt(aPos.x*aPos.x + aPos.y*aPos.y) > 0 )
+-	// {
+-		// sqrt(aPos.x*aPos.x + aPos.y*aPos.y + aPos.z*aPos.z)
+-		// (atan2(aPos.y,aPos.x)+PI)/(2*PI)
+-			// gl_Position = vec4(atan(aPos.y/aPos.x),atan(aPos.z/sqrt(aPos.x*aPos.x + aPos.y*aPos.y)), 0.0f, 1.0f);
+-			// gl_Position = vec4(atan(aPos.y/aPos.x),atan(aPos.z/sqrt(aPos.x*aPos.x + aPos.y*aPos.y)), 0.0f, 1.0f);
+-			// gl_Position = vec4((aPos.y*aPos.x),(aPos.z*(aPos.x*aPos.x + aPos.y*aPos.y)), 0.0f, 1.0f);
+-
+-	// }
+-	// gl_Position = projection * view * vec4(aPos, 1.0f);
+-	
+-	//normal speed
+-	// gl_Position = vec4(aPos,1.0f);
+-
+-	//normal speed
+-	// gl_Position = vec4(aPos*aPos,1.0f);
+-
+-	//normal speed
+-	// gl_Position = vec4(aPos.x*aPos.x, aPos.y*aPos.y, 0.0f,1.0f);
+-
+-	// cost 0.5s 1 frame
+-	// gl_Position = vec4(atan(aPos.y/aPos.x),atan(aPos.z/sqrt(aPos.x*aPos.x + aPos.y*aPos.y)), 0.0f, 1.0f);
+-
+-	//trans from world to body coordinate
+-	vec3 bodypos = rot * (aPos - pos);
+-	// vec4 bodypos4 = view * vec4(aPos, 1.0f);
+-	// vec3 bodypos;
+-	// bodypos.x = bodypos4.x;
+-	// bodypos.y = bodypos4.y;
+-	// bodypos.z = bodypos4.z;
+-
+-	//opengl polar coordinate, large point cloud slow
+-	float y_x;// 
+-	float z_yx;//
+-	float depth = sqrt(bodypos.x*bodypos.x + bodypos.y*bodypos.y + (bodypos.z)*(bodypos.z));///range.y
+-	// depth = -depth* (zFar + zNear) / (zFar - zNear); 
+-
+-	if(depth > range.y || depth < range.x)
+-	{
+-		gl_Position = vec4(0.0f,0.0f,0.0f,0.0f);
+-		ourColor = aColor;
+-	}else{
+-		y_x = -(atan(bodypos.y,bodypos.x))/(PI)* (360.0/fov.x);// 
+-		z_yx = (atan((bodypos.z),sqrt(bodypos.x*bodypos.x + bodypos.y*bodypos.y))/PI)* (360.0/fov.y) ;//
+-		// depth = (depth + 1.0) * 2.0;
+-		gl_Position = vec4(y_x, z_yx, depth/range.y, 1.0f);
+-		// int half_cover_angle = ceil((asin(cover_dis / 1.0) / (PI * polar_res / 180.0)));//dot(aPos,aPos)
+-		gl_PointSize = 2*ceil((asin(cover_dis / (depth)) / (PI * res.y / 180.0)));
+-		// gl_PointSize = 1;		
+-		// if(abs(y_x) < 0.05 && abs(z_yx) < 0.05)
+-		// {
+-		// 	ourColor = vec3(depth,0.0f,(depth));
+-		// }else{
+-			// ourColor = vec3(depth,(depth),(depth));
+-		// }
+-		
+-	}
+-
+-	// //opengl polar coordinate, large point cloud slow
+-	// float y_x;// 
+-	// float z_yx;//
+-	// float depth = sqrt(aPos.x*aPos.x + aPos.y*aPos.y + (aPos.z -1)*(aPos.z -1));///range.y
+-	// // depth = -depth* (zFar + zNear) / (zFar - zNear); 
+-
+-	// if(depth > range.y || depth < range.x)
+-	// {
+-	// 	gl_Position = vec4(0.0f,0.0f,0.0f,0.0f);
+-	// 	ourColor = aColor;
+-	// }else{
+-	// 	y_x = -(atan(aPos.y,aPos.x))/(PI)* (360.0/fov.x);// 
+-	// 	z_yx = (atan((aPos.z-1),sqrt(aPos.x*aPos.x + aPos.y*aPos.y))/PI)* (360.0/fov.y) ;//
+-	// 	// depth = (depth + 1.0) * 2.0;
+-	// 	gl_Position = vec4(y_x, z_yx, depth/range.y, 1.0f);
+-	// 	// int half_cover_angle = ceil((asin(cover_dis / 1.0) / (PI * polar_res / 180.0)));//dot(aPos,aPos)
+-	// 	gl_PointSize = 2*ceil((asin(cover_dis / (depth)) / (PI * res.y / 180.0)));
+-	// 	// gl_PointSize = 1;		
+-	// 	// if(abs(y_x) < 0.05 && abs(z_yx) < 0.05)
+-	// 	// {
+-	// 	// 	ourColor = vec3(depth,0.0f,(depth));
+-	// 	// }else{
+-	// 		ourColor = vec3(depth,(depth),(depth));
+-	// 	// }
+-		
+-	// }
+-
+-
+-	//opengl three image
+-	// gl_Position = projection *view * vec4(aPos, 1.0f);// 
+-
+-	// gl_Position = vec4(0.0f,0.0f,-10.0f,1.0f);
+-	// gl_PointSize = 5;
+-	// if(gl_Position.z < range.x || gl_Position.z > range.y)
+-	// {
+-	// 	gl_Position = vec4(0.0f,0.0f,0.0f,0.0f);
+-	// }
+-	ourColor = aColor;
+-}
+\ No newline at end of file
++    const float PI = 3.14159265358;
++    vec3 body = rot * (aPos - pos);
++    float depth = length(body);
++    ourColor = aColor;
++    coverage = vec2(1.0);
++    if (depth > range.y || depth < range.x) {
++        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
++        gl_PointSize = 1.0;
++        return;
++    }
++    gl_Position = vec4(-atan(body.y, body.x) / PI * (360.0 / fov.x),
++                       atan(body.z, length(body.xy)) / PI * (360.0 / fov.y),
++                       depth / range.y, 1.0);
++    // GL point sprites are square in pixels, whereas the two angular steps
++    // need not match. Rasterize the larger extent and clip the other axis.
++    float cover_angle = degrees(asin(0.55 * 1.7321 * point_spacing / depth));
++    vec2 extent = ceil(vec2(cover_angle) / angular_step);
++    float half_size = max(extent.x, extent.y);
++    gl_PointSize = 2.0 * half_size;
++    coverage = extent / half_size;
++}
+--- a/local_sensing/include/camera.fs
++++ b/local_sensing/include/camera.fs
+@@ -1,15 +1,11 @@
+ #version 330 core
+ out vec4 FragColor;
+-
+ in vec3 ourColor;
+-
+-// texture samplers
+-// uniform sampler2D texture1;
+-// uniform sampler2D texture2;
++flat in vec2 coverage;
+ 
+ void main()
+ {
+-	// linearly interpolate between both textures (80% container, 20% awesomeface)
+-	// FragColor = mix(texture(texture1, TexCoord), texture(texture2, TexCoord), 0.2);
+-	FragColor = vec4(ourColor, 1.0f);
+-}
+\ No newline at end of file
++    if (any(greaterThan(abs(2.0 * gl_PointCoord - 1.0), coverage)))
++        discard;
++    FragColor = vec4(ourColor, 1.0);
++}

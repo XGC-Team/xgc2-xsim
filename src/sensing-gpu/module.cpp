@@ -73,7 +73,6 @@ public:
   void projection(const xgc2_math::scene::SensorMetadata &m) {
     renderer->setParameters(m.h_res, m.v_res, 250.0f, 250.0f,
         static_cast<float>(m.point_cover_spacing_m),
-        static_cast<float>(m.h_fov_deg) / static_cast<float>(m.h_res),
         static_cast<float>(m.h_fov_deg), static_cast<float>(m.v_fov_deg),
         static_cast<float>(m.min_range_m), static_cast<float>(m.range_m),
         static_cast<int>(m.publish_rate_hz), 0, 0, 0);
