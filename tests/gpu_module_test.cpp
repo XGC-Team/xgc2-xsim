@@ -40,7 +40,7 @@ int main(int argc, char **argv) {
     auto cpu = entity(100);
     cpu->sensor = sensors.prepare(cpu, {{"backend", "cpu"}, {"h_res", 8}, {"v_res", 2}});
     assert(!dlopen(path.c_str(), RTLD_NOW | RTLD_NOLOAD));
-    auto bad = config(); bad["v_res"] = 30;
+    auto bad = config(); bad["v_res"] = 0;
     bool refused = false;
     try { sensors.prepare(entity(101), bad); }
     catch (const std::invalid_argument &) { refused = true; }
@@ -60,7 +60,7 @@ int main(int argc, char **argv) {
     assert(refused); sensors.stop();
   } else {
     a->sensor = sensors.prepare(a, config());
-    b->sensor = sensors.prepare(b, config(120, 60));
+    b->sensor = sensors.prepare(b, config(120, 30));
     void *handle = dlopen(path.c_str(), RTLD_NOW | RTLD_NOLOAD); assert(handle);
     const auto creates = symbol<unsigned (*)()>(handle, "xsim_gpu_test_creates");
     const auto scans = symbol<unsigned (*)()>(handle, "xsim_gpu_test_scans");
