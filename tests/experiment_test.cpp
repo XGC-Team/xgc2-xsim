@@ -38,6 +38,13 @@ int main(int argc, char **argv) {
     }
   }
   auto original = xsim::load_json_object(root + "/default-mixed.input.json");
+  for (const char *scope : {"global", "individual"}) {
+    auto authored = original;
+    authored["scene"]["parameters"]["lidar"] = {
+      {"scope", scope}, {"settings", {{"enabled", true}, {"acceleration", "gpu"}}}};
+    // The frozen per-slot binding is authoritative; this is authoring metadata.
+    assert(config_for(authored) == config_for(original));
+  }
   for (const auto *backend : {"cpu", "gpu"}) {
     auto selected = original;
     selected["scene"]["parameters"]["pointCloudBackend"] = std::string(backend) == "cpu" ? "gpu" : "cpu";

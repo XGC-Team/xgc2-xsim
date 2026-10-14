@@ -132,8 +132,10 @@ Json experiment_config(const Json &input, int64_t epoch_ns) {
   require(text(input.at("simulation"), "placement") == "core", "xsim must be centralized on Core");
   const auto &robots = input.at("robots");
   require(robots.is_array() && robots.size() <= 256, "robots must be the frozen roster");
-  const auto parameters = input.at("scene").value("parameters", Json::object());
+  auto parameters = input.at("scene").value("parameters", Json::object());
   require(parameters.is_object(), "scene parameters must be an object");
+  // Robot projection already lowered Scene scope into the frozen slot bindings.
+  parameters.erase("lidar");
   for (auto i = parameters.begin(); i != parameters.end(); ++i)
     require(i.key() == "modelStepMs" || i.key() == "outputPeriodMs" || i.key() == "commandPollMs" ||
       i.key() == "pointCloudBackend" || i.key() == "fcuParameters" || i.key() == "generation" || i.key() == "frozen", "unknown scene parameter: " + i.key());
