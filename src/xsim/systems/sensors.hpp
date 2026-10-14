@@ -50,6 +50,7 @@ struct Sensor {
   std::mutex mutex;
   Sample pending, completed;
   bool has_pending = false, busy = false, has_completed = false;
+  bool queued = false; // Sensors::mutex_; one ready token, never one per sample
   // Fixed owners; only the single scan worker may rewrite a unique payload.
   std::array<std::shared_ptr<SensorPayload>, payload_pool_size> payload_pool;
   size_t payload_cursor = 0;
@@ -89,6 +90,15 @@ public:
   Json status() const;
 
 private:
+  // Reused circular storage; capacity grows only when sensors are prepared.
+  // Weak tokens do not retain removed sensors or their payload/frame pools.
+  struct Ready {
+    std::vector<std::weak_ptr<Sensor>> slots;
+    size_t head = 0, count = 0;
+    void reserve(size_t);
+    void push(const std::shared_ptr<Sensor>&);
+    std::shared_ptr<Sensor> pop();
+  };
   struct FixtureGeometry {
     Key key;
     bool enabled = false;
@@ -106,6 +116,9 @@ private:
   std::map<std::pair<double,bool>,std::shared_ptr<const xgc2_math::scene::LidarScene>> sampled_scenes_;
   mutable std::mutex mutex_;
   std::condition_variable wake_;
+  std::condition_variable cpu_wake_;
+  Ready cpu_ready_, gpu_ready_;
+  size_t gpu_initializations_ = 0;
   std::vector<std::weak_ptr<Sensor>> sensors_;
   std::vector<std::thread> cpu_threads_;
   std::thread gpu_thread_;
@@ -113,6 +126,7 @@ private:
   std::map<std::pair<double, bool>, std::shared_ptr<GpuScene>> gpu_scenes_;
   const xgc2_sensing_gpu_api *gpu_api_ = nullptr;
   void work(bool gpu);
+  void enqueue(const std::shared_ptr<Sensor>&);
   void submit_sample(const State &, const std::shared_ptr<const Frame> &, uint64_t body_revision = 0);
   uint64_t fixture_geometry_revision(const Frame &);
 };

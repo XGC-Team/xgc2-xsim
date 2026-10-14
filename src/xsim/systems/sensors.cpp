@@ -1,6 +1,7 @@
 #include "sensors.hpp"
 #include <xgc2_math/scene/scene_conversion.hpp>
 #include <cstring>
+#include <cassert>
 #include <limits>
 #include <pthread.h>
 #ifdef __linux__
@@ -36,6 +37,25 @@ bool same_observation(const Sample &a, const Sample &b) {
                               a.geometry_revision == b.geometry_revision));
 }
 } // namespace
+void Sensors::Ready::reserve(size_t needed) {
+  if (slots.size() >= needed) return;
+  std::vector<std::weak_ptr<Sensor>> larger(std::max(needed, slots.size() * 2 + 8));
+  for (size_t i = 0; i < count; ++i) larger[i] = std::move(slots[(head + i) % slots.size()]);
+  slots.swap(larger);
+  head = 0;
+}
+void Sensors::Ready::push(const std::shared_ptr<Sensor>& sensor) {
+  assert(count < slots.size());
+  slots[(head + count++) % slots.size()] = sensor;
+}
+std::shared_ptr<Sensor> Sensors::Ready::pop() {
+  assert(count);
+  auto sensor = slots[head].lock();
+  slots[head].reset();
+  head = (head + 1) % slots.size();
+  --count;
+  return sensor;
+}
 Sensors::Sensors(const Json &j, unsigned workers) : workers_(workers) {
   if (!workers)
     throw std::invalid_argument("sensor_workers must be positive");
@@ -217,6 +237,7 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
       for (const auto &p : map_scene->samples())
         for (int axis = 0; axis < 3; ++axis) group->points.push_back(float(p[axis]));
       group->initial = s->gpu_config;
+      ++gpu_initializations_;
     }
     s->gpu_scene = group;
   }
@@ -225,6 +246,10 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
                      [](const auto &weak) { return weak.expired(); }),
       sensors_.end());
   sensors_.push_back(s);
+  // Include stale weak tokens as well as the current roster. Each live sensor
+  // can enqueue at most once, including after an automatic GPU fallback.
+  cpu_ready_.reserve(cpu_ready_.count + sensors_.size());
+  gpu_ready_.reserve(gpu_ready_.count + sensors_.size());
   if (s->gpu) {
     if (!gpu_thread_.joinable()) {
       gpu_thread_ = std::thread([this] { work(true); });
@@ -360,7 +385,21 @@ void Sensors::submit_sample(const State &v, const std::shared_ptr<const Frame> &
   }
   s->has_pending = true;
   s->last_submitted_stamp = v.stamp;
-  wake_.notify_all();
+  const bool ready = !s->busy;
+  lock.unlock();
+  if (ready) enqueue(s);
+}
+void Sensors::enqueue(const std::shared_ptr<Sensor>& sensor) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_ || sensor->queued) return;
+    std::lock_guard<std::mutex> sl(sensor->mutex);
+    if (sensor->busy || !sensor->has_pending) return;
+    sensor->queued = true;
+    (sensor->gpu ? gpu_ready_ : cpu_ready_).push(sensor);
+  }
+  if (sensor->gpu) wake_.notify_all(); // GPU owner and prepare's initialization waiter
+  else cpu_wake_.notify_one();
 }
 void Sensors::work(bool gpu) {
   pthread_setname_np(pthread_self(), gpu ? "xsim-gpu" : "xsim-sensor");
@@ -374,7 +413,6 @@ void Sensors::work(bool gpu) {
   if (!errno && inherited_nice < 5)
     (void)setpriority(PRIO_PROCESS, tid, 5);
 #endif
-  size_t cursor = 0;
   for (;;) {
     std::shared_ptr<Sensor> selected;
     Sample sample;
@@ -382,7 +420,7 @@ void Sensors::work(bool gpu) {
       std::unique_lock<std::mutex> lock(mutex_);
       if (stopping_)
         break;
-      if (gpu) {
+      if (gpu && gpu_initializations_) {
         // Geometry policies share one index/context each; robots do not own maps.
         for (const auto &entry : gpu_scenes_) {
           auto &group = *entry.second;
@@ -395,14 +433,16 @@ void Sensors::work(bool gpu) {
           group.renderer = renderer;
           group.error = renderer ? "" : std::string("GPU module create failed: ") + error;
           group.initialized = true;
+          --gpu_initializations_;
           std::vector<float>().swap(group.points);
           wake_.notify_all();
         }
       }
-      for (size_t n = 0; n < sensors_.size(); ++n) {
-        auto s = sensors_[(cursor + n) % sensors_.size()].lock();
-        if (!s || s->gpu != gpu)
-          continue;
+      auto& ready = gpu ? gpu_ready_ : cpu_ready_;
+      while (ready.count) {
+        auto s = ready.pop();
+        if (!s) continue;
+        s->queued = false;
         auto e = s->entity.lock();
         if (!e || !e->alive || !e->enabled) {
           std::lock_guard<std::mutex> sl(s->mutex);
@@ -425,12 +465,13 @@ void Sensors::work(bool gpu) {
           sample = std::move(s->pending);
           s->pending = {};
           selected = s;
-          cursor = (cursor + n + 1) % sensors_.size();
           break;
         }
       }
       if (!selected) {
-        wake_.wait_for(lock, std::chrono::milliseconds(2));
+        const auto available = [&] { return stopping_ || ready.count || (gpu && gpu_initializations_); };
+        if (gpu) wake_.wait(lock, available);
+        else cpu_wake_.wait(lock, available);
         continue;
       }
     }
@@ -547,6 +588,7 @@ void Sensors::work(bool gpu) {
     // Raycasting is done. Metadata/publication and the geometry cache must not
     // retain the world frame or compete with later snapshots for pool slots.
     sample.bodies.reset();
+    bool again = false;
     {
       std::lock_guard<std::mutex> l(s.mutex);
       s.busy = false;
@@ -596,7 +638,9 @@ void Sensors::work(bool gpu) {
         else if (new_period < old_period) ++s.rate_recoveries;
       } else
         ++s.misses;
+      again = s.has_pending;
     }
+    if (again) enqueue(selected);
   }
   if (gpu) {
     for (const auto &entry : gpu_scenes_)
@@ -675,16 +719,20 @@ void Sensors::stop() {
     stopping_ = true;
   }
   wake_.notify_all();
+  cpu_wake_.notify_all();
   for (auto &t : cpu_threads_)
     if (t.joinable())
       t.join();
   if (gpu_thread_.joinable())
     gpu_thread_.join();
   std::lock_guard<std::mutex> l(mutex_);
+  cpu_ready_ = {};
+  gpu_ready_ = {};
   for (const auto &weak : sensors_)
     if (auto sensor = weak.lock()) {
       std::lock_guard<std::mutex> sl(sensor->mutex);
       sensor->has_pending = false;
+      sensor->queued = false;
       sensor->pending.bodies.reset();
       sensor->completed.bodies.reset();
       sensor->cached_sample.bodies.reset();

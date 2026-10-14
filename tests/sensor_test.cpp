@@ -178,12 +178,12 @@ int main() {
   assert(first_payload->data == shared_cloud);
   assert(immutable.use_count() == 1);
   // A stopped body-observing sensor must also release queued frame ownership.
+  mutable_shared = std::make_shared<Frame>(*immutable);
+  mutable_shared->stamp += 100000000;
+  for (auto &s : mutable_shared->states) s.stamp = mutable_shared->stamp;
+  immutable = std::move(mutable_shared);
+  sensors.submit_frame(immutable);
   shared_source->enabled = false;
-  {
-    std::lock_guard<std::mutex> lock(shared_source->sensor->mutex);
-    shared_source->sensor->pending.bodies = immutable;
-    shared_source->sensor->has_pending = true;
-  }
   const auto release_deadline = Clock::now() + std::chrono::seconds(3);
   while (immutable.use_count() > 1) {
     assert(Clock::now() < release_deadline);
