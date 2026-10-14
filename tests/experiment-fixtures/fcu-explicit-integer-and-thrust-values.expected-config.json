@@ -2,6 +2,7 @@
   "entities": [
     {
       "kind": "scout",
+      "body_returns": false,
       "name": "ugv1",
       "position": [
         1,
@@ -27,6 +28,7 @@
         "THR_MDL_FAC": 0.3
       },
       "kind": "fs150",
+      "body_returns": false,
       "name": "uav1",
       "position": [
         -1,
@@ -52,6 +54,7 @@
         "THR_MDL_FAC": 0.3
       },
       "kind": "fs150",
+      "body_returns": false,
       "name": "uav2",
       "position": [
         -2,
@@ -72,6 +75,7 @@
     },
     {
       "kind": "mecanum",
+      "body_returns": false,
       "name": "mecanum1",
       "position": [
         0,

@@ -2,6 +2,7 @@
   "entities": [
     {
       "kind": "scout",
+      "body_returns": false,
       "name": "ugv1",
       "position": [
         1,
@@ -37,12 +38,13 @@
         "v_fov_deg": 30,
         "v_res": 30,
         "vertical_slab_tan": 0,
-        "world_bodies": true
+        "world_bodies": false
       },
       "yaw": 0.5
     },
     {
       "kind": "mecanum",
+      "body_returns": false,
       "name": "mecanum1",
       "position": [
         0,

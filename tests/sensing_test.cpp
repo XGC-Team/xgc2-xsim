@@ -16,8 +16,8 @@ constexpr int64_t epoch = 1700000000000000000LL;
 constexpr int64_t period = 100000000;
 using Bytes = std::vector<uint8_t>;
 
-std::shared_ptr<Entity> entity(uint64_t id, const std::string &name) {
-  auto e = std::make_shared<Entity>(parse_entity({{"name", name}, {"kind", "scout"}}));
+std::shared_ptr<Entity> entity(uint64_t id, const std::string &name, bool body_returns = false) {
+  auto e = std::make_shared<Entity>(parse_entity({{"name", name}, {"kind", "scout"}, {"body_returns", body_returns}}));
   e->id = id;
   e->alive = e->enabled = true;
   e->generation = 1;
@@ -29,6 +29,7 @@ State state(const std::shared_ptr<Entity> &e, int64_t stamp, const Eigen::Vector
   s.entity = e;
   s.key = {e->id, e->generation};
   s.enabled = true;
+  s.body_returns = e->config.body_returns;
   s.stamp = stamp;
   s.position = position;
   s.orientation = orientation;
@@ -170,7 +171,7 @@ void raycast_and_noise() {
 // (x y z dx dy dz range hit vehicle_id, 36 bytes; points x y z vehicle_id, 16 bytes).
 void beams_and_bodies() {
   Sensors sensors(world(), 2);
-  auto source = entity(1, "source"), body = entity(2, "body");
+  auto source = entity(1, "source"), body = entity(2, "body", true);
   source->sensor = sensors.prepare(source, {{"h_res", 48}, {"v_res", 6}, {"h_fov_deg", 90}, {"v_fov_deg", 20},
       {"range", 14}, {"world_bodies", true}, {"publish_beams", true}, {"rate_hz", 10}});
   scene::SensorConfig c;

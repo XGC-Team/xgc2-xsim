@@ -38,6 +38,15 @@ int main(int argc, char **argv) {
     }
   }
   auto original = xsim::load_json_object(root + "/default-mixed.input.json");
+  // Target visibility survives lowering even when that target has no sensor.
+  for (const bool visible : {false, true}) {
+    auto selected = original;
+    selected["robots"][0]["binding"]["simulationSensors"]["simpleLidar"] = {
+      {"enabled", false}, {"bodyReturns", visible}};
+    const auto lowered = config_for(selected).at("entities")[0];
+    assert(lowered.at("body_returns") == visible && !lowered.contains("sensor"));
+    assert(xsim::parse_entity(lowered).body_returns == visible);
+  }
   for (const char *scope : {"global", "individual"}) {
     auto authored = original;
     authored["scene"]["parameters"]["lidar"] = {

@@ -2,6 +2,7 @@
   "entities": [
     {
       "kind": "scout",
+      "body_returns": false,
       "name": "ugv1",
       "position": [
         1,
@@ -37,12 +38,13 @@
         "v_fov_deg": 39,
         "v_res": 17,
         "vertical_slab_tan": 0,
-        "world_bodies": true
+        "world_bodies": false
       },
       "yaw": 0.5
     },
     {
       "kind": "fs150",
+      "body_returns": false,
       "name": "uav1",
       "position": [
         -1,
@@ -63,6 +65,7 @@
     },
     {
       "kind": "fs150",
+      "body_returns": false,
       "name": "uav2",
       "position": [
         -2,
@@ -83,6 +86,7 @@
     },
     {
       "kind": "mecanum",
+      "body_returns": false,
       "name": "mecanum1",
       "position": [
         0,

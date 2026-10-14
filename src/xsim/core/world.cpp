@@ -551,6 +551,7 @@ State World::state(uint64_t id, const Slot &s) const {
   v.key = {id, e.generation};
   v.stamp = time_;
   v.enabled = e.enabled;
+  v.body_returns = e.config.body_returns;
   const auto i = s.dense;
   if (e.config.kind == Kind::FS150) {
     const auto &f = flights_[i];

@@ -53,6 +53,7 @@ Config parse_entity(const Json &j) {
     c.initial = vec3(j.at("position"));
   c.yaw = j.value("yaw", 0.0);
   c.ground_z = j.value("ground_z", 0.0);
+  c.body_returns = j.value("body_returns", false);
   if (!std::isfinite(c.yaw) || !std::isfinite(c.ground_z))
     throw std::invalid_argument("nonfinite pose");
   if (j.contains("local_origin"))

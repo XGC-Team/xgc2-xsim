@@ -22,6 +22,7 @@ struct Config {
       local_origin{Eigen::Vector3d::Zero()};
   double yaw = 0, ground_z = 0;
   FlightControllerParameters fcu;
+  bool body_returns = false;
 };
 struct Entity;
 struct State {
@@ -37,6 +38,7 @@ struct State {
   FlightControlOutput control;
   Eigen::Vector4d rotors{Eigen::Vector4d::Zero()};
   bool enabled = false, armed = false, landed = true;
+  bool body_returns = false;
   std::array<char, 24> mode{};
 };
 struct Frame {

@@ -8,8 +8,8 @@ using namespace xsim;
 namespace {
 constexpr int64_t epoch = 1700000000000000000LL;
 
-std::shared_ptr<Entity> entity(uint64_t id, const char *name) {
-  auto e = std::make_shared<Entity>(parse_entity({{"name", name}, {"kind", "scout"}}));
+std::shared_ptr<Entity> entity(uint64_t id, const char *name, bool body_returns = false) {
+  auto e = std::make_shared<Entity>(parse_entity({{"name", name}, {"kind", "scout"}, {"body_returns", body_returns}}));
   e->id = id;
   e->alive = e->enabled = true;
   e->generation = 1;
@@ -20,6 +20,7 @@ State state(const std::shared_ptr<Entity> &e, int64_t stamp) {
   s.entity = e;
   s.key = {e->id, e->generation};
   s.enabled = true;
+  s.body_returns = e->config.body_returns;
   s.stamp = stamp;
   return s;
 }
@@ -80,7 +81,7 @@ int main() {
   cadence_checks();
   Sensors sensors({{"obstacles", Json::array({{{"type", "box"},
       {"position", {4, 0, 0}}, {"size", {1, 2, 2}}}})}}, 2);
-  auto source = entity(1, "source"), body = entity(2, "body");
+  auto source = entity(1, "source"), body = entity(2, "body", true);
   Json config = {{"backend", "cpu"}, {"h_fov_deg", 60}, {"v_fov_deg", 30},
       {"h_res", 32}, {"v_res", 16}, {"rate_hz", 10},
       {"world_bodies", true}, {"publish_beams", true}, {"translation", {0.5, 0, 0}}};
@@ -145,7 +146,7 @@ int main() {
   sensors.submit_frame(immutable);
   const auto first_payload = receive_shared(shared_source->sensor, sample);
   const auto shared_growth = shared_source->sensor->payload_grows.load();
-  assert(sample.geometry_revision == 999 && sample.body_observation && !sample.bodies);
+  assert(sample.geometry_revision > 0 && sample.body_observation && !sample.bodies);
   assert(immutable.use_count() == 1);
   {
     std::lock_guard<std::mutex> lock(shared_source->sensor->mutex);

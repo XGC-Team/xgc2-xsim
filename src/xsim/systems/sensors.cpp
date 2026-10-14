@@ -124,7 +124,6 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
   s->with_bodies=requested_bodies;s->publish_beams=j.value("publish_beams",false);
   if (s->publish_beams && automatic) s->gpu = false;
   if (s->gpu && s->publish_beams) throw std::invalid_argument("GPU point observations do not publish rays");
-  if (s->gpu) s->with_bodies = false;
   xgc2_math::scene::SensorConfig c;
   c.range = j.value("range", 20.0);
   c.min_range = j.value("min_range", 0.0);
@@ -157,6 +156,7 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
     c.cy = j.value("cy", 0.0);
   } else throw std::invalid_argument("unknown sensor model");
   if(s->publish_beams && c.mode==xgc2_math::scene::SensorConfig::kPenetrating)throw std::invalid_argument("penetrating model has no beams");
+  s->body_config = c;
   auto prepare_cpu = [&] {
     s->with_bodies = requested_bodies;
     s->cpu = std::make_unique<xgc2_math::scene::WorldLidar>(c);
@@ -247,41 +247,43 @@ void Sensors::submit_frame(const std::shared_ptr<const Frame> &frame) {
   if (last_frame_stamp_ && frame->stamp > last_frame_stamp_)
     source_period_ns_ = frame->stamp - last_frame_stamp_;
   last_frame_stamp_ = frame->stamp;
-  for (const auto &v : frame->states) submit_sample(v, frame);
+  const auto body_revision = fixture_geometry_revision(*frame);
+  for (const auto &v : frame->states) submit_sample(v, frame, body_revision);
 }
 uint64_t Sensors::fixture_geometry_revision(const Frame &frame) {
-  bool changed = !fixture_geometry_revision_ || fixture_geometry_.size() != frame.states.size();
-  if (!changed)
-    for (size_t i = 0; i < fixture_geometry_.size(); ++i) {
-      const auto &previous = fixture_geometry_[i];
-      const auto &current = frame.states[i];
-      if (previous.key.id != current.key.id ||
-          previous.key.generation != current.key.generation ||
-          previous.enabled != current.enabled ||
-          !(previous.position.array() == current.position.array()).all()) {
-        changed = true;
-        break;
-      }
+  // Only eligible target geometry invalidates observations. The default-off
+  // roster never makes scanner caches depend on invisible neighbour motion.
+  bool changed = !fixture_geometry_revision_;
+  size_t count = 0;
+  for (const auto& current : frame.states) {
+    if (!current.body_returns) continue;
+    if (count >= fixture_geometry_.size()) changed = true;
+    else {
+      const auto& previous = fixture_geometry_[count];
+      if (previous.key.id != current.key.id || previous.key.generation != current.key.generation ||
+          !(previous.position.array() == current.position.array()).all()) changed = true;
     }
+    ++count;
+  }
+  changed |= count != fixture_geometry_.size();
   if (changed) {
     ++fixture_geometry_revision_;
-    fixture_geometry_.resize(frame.states.size());
-    for (size_t i = 0; i < fixture_geometry_.size(); ++i) {
-      const auto &current = frame.states[i];
-      fixture_geometry_[i] = {current.key, current.enabled, current.position};
-    }
+    fixture_geometry_.resize(count);
+    size_t i = 0;
+    for (const auto& current : frame.states)
+      if (current.body_returns) fixture_geometry_[i++] = {current.key, current.enabled, current.position};
   }
   return fixture_geometry_revision_;
 }
 void Sensors::submit_frame(const Frame &frame) {
   auto fixture = std::make_shared<Frame>(frame);
-  fixture->geometry_revision = fixture_geometry_revision(frame);
   submit_frame(std::shared_ptr<const Frame>(std::move(fixture)));
 }
 void Sensors::submit(const State &v, std::shared_ptr<const Frame> bodies) {
-  submit_sample(v, bodies);
+  const auto revision = bodies ? fixture_geometry_revision(*bodies) : 0;
+  submit_sample(v, bodies, revision);
 }
-void Sensors::submit_sample(const State &v, const std::shared_ptr<const Frame> &bodies) {
+void Sensors::submit_sample(const State &v, const std::shared_ptr<const Frame> &bodies, uint64_t body_revision) {
   auto owner = v.entity.lock();
   auto s = owner ? owner->sensor : nullptr;
   if (!s)
@@ -342,20 +344,19 @@ void Sensors::submit_sample(const State &v, const std::shared_ptr<const Frame> &
   }
   if (s->has_pending)
     ++s->misses;
-  if (s->with_bodies && !bodies) {
-    ++s->misses;
-    return;
-  }
   s->pending = {};
   s->pending.key = v.key;
   s->pending.stamp = v.stamp;
   s->pending.position = v.position + v.orientation * s->translation;
   s->pending.orientation = v.orientation * s->rotation;
   s->pending.submitted = Clock::now();
-  s->pending.body_observation = s->with_bodies;
-  if (s->with_bodies) {
+  bool observe_bodies = false;
+  if (bodies) for (const auto& body : bodies->states)
+    observe_bodies |= body.body_returns && body.key.id != v.key.id;
+  s->pending.body_observation = observe_bodies;
+  if (observe_bodies) {
     s->pending.bodies = bodies;
-    s->pending.geometry_revision = bodies->geometry_revision;
+    s->pending.geometry_revision = body_revision;
   }
   s->has_pending = true;
   s->last_submitted_stamp = v.stamp;
@@ -467,9 +468,11 @@ void Sensors::work(bool gpu) {
           auto &data = writable->data;
           auto &beam_data = writable->beam_data;
           beam_data.clear();
+          s.others.clear();
+          if (sample.bodies) for (const auto& body : sample.bodies->states)
+            if (body.body_returns && body.key.id != sample.key.id)
+              s.others.push_back({int(body.key.id), body.position, 0.3});
           if (!gpu) {
-            s.others.clear();
-            if(sample.bodies)for(const auto& b:sample.bodies->states)if(b.key.id!=sample.key.id)s.others.push_back({int(b.key.id),b.position,0.3});
             if(!s.publish_beams)s.cpu->scanInto(sample.position,sample.orientation,s.others,s.with_bodies,&data);
             else {
               s.cpu->scanBeamsInto(sample.position,sample.orientation,s.others,&s.beams);
@@ -499,6 +502,29 @@ void Sensors::work(bool gpu) {
               throw std::runtime_error(std::string("GPU module scan failed: ") + error + "; no CPU fallback");
             if (data.size() % 16)
               throw std::runtime_error("GPU module payload is not XYZ/intensity records; no CPU fallback");
+            if (!s.others.empty()) {
+              s.gpu_static_points.clear();
+              s.gpu_static_points.reserve(data.size() / 16);
+              for (size_t at = 0; at < data.size(); at += 16) {
+                float xyz[3]; std::memcpy(xyz, data.data() + at, 12);
+                s.gpu_static_points.push_back({{xyz[0], xyz[1], xyz[2]}, -1});
+              }
+              xgc2_math::scene::mergeGpuBodyCloud(s.body_config, sample.position, sample.orientation,
+                  s.others, s.gpu_static_points, &s.gpu_body_points, &s.body_scratch);
+              data.resize(s.gpu_body_points.size() * 16);
+              for (size_t i = 0; i < s.gpu_body_points.size(); ++i) {
+                const auto& point = s.gpu_body_points[i];
+                const float xyz[4] = {float(point.point.x()), float(point.point.y()), float(point.point.z()), 0};
+                std::memcpy(data.data() + i * 16, xyz, 16);
+                if (s.with_bodies) {
+                  const int32_t id = point.vehicle_id;
+                  std::memcpy(data.data() + i * 16 + 12, &id, 4);
+                }
+              }
+            } else if (s.with_bodies) {
+              const int32_t id = -1;
+              for (size_t at = 12; at < data.size(); at += 16) std::memcpy(data.data() + at, &id, 4);
+            }
           }
           if (s.cacheable) {
             s.cached_sample = sample;

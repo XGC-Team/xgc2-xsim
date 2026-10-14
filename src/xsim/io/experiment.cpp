@@ -64,13 +64,14 @@ Json sensor(const Json &authored, const std::string &ns, const std::string &defa
   Json lidar = raw;
   if (raw.is_boolean()) lidar = Json{{"enabled", raw.get<bool>()}};
   require(lidar.is_object(), "authored simpleLidar must be boolean or object");
-  const std::set<std::string> allowed{"enabled", "mode", "preset", "acceleration", "rateHz", "rangeMeters", "hFovDeg", "vFovDeg", "hRes", "vRes", "publishBeams"};
+  const std::set<std::string> allowed{"enabled", "mode", "preset", "acceleration", "rateHz", "rangeMeters", "hFovDeg", "vFovDeg", "hRes", "vRes", "publishBeams", "bodyReturns"};
   for (auto i = lidar.begin(); i != lidar.end(); ++i) require(allowed.count(i.key()) != 0, "unknown authored lidar field: " + i.key());
   const auto acceleration = lidar.value("acceleration", std::string{});
   require(acceleration.empty() || acceleration == "auto" || acceleration == "cpu" || acceleration == "gpu", "unsupported authored acceleration");
   const auto backend = acceleration.empty() ? default_backend : acceleration;
   const auto enabled = lidar.value("enabled", false);
   (void)lidar.value("publishBeams", false);
+  (void)lidar.value("bodyReturns", false);
   for (const auto &bound : {std::pair<const char *, double>{"rateHz", 100}, {"rangeMeters", 200}, {"hFovDeg", 360}, {"vFovDeg", 180}})
     if (lidar.contains(bound.first)) {
       const auto value = number(lidar.at(bound.first));
@@ -115,7 +116,7 @@ Json sensor(const Json &authored, const std::string &ns, const std::string &defa
   Json result{{"backend", backend}, {"mode", mode}, {"topic", ns + "/simple_lidar/points"}, {"frame", "world"},
     {"rate_hz", rate}, {"range", range}, {"h_fov_deg", hfov}, {"v_fov_deg", vfov}, {"h_res", hres}, {"v_res", vres},
     {"surface_spacing", 0.1}, {"keep_buried", buried}, {"heading_crop", crop}, {"heading_cos_min", heading_cos},
-    {"vertical_slab_tan", slab}, {"publish_beams", beams}, {"world_bodies", (mode == "raycast" || mode == "depth")}};
+    {"vertical_slab_tan", slab}, {"publish_beams", beams}, {"world_bodies", false}};
   if (backend != "cpu") { result["min_range"] = 0.1; result["point_cover_spacing"] = 0.1; }
   return result;
 }
@@ -197,7 +198,10 @@ Json experiment_config(const Json &input, int64_t epoch_ns) {
       {"mocap_noise", Json::array({1e-7, 1e-7, 1e-7})}, {"mocap_seed", seed & 0x7fffffffu},
       {"localization_pose_topic", resolved_pose}, {"localization_twist_topic", resolved_twist}}}};
     if (model == "fs150" && !fcu.empty()) entity["fcu_parameters"] = fcu;
-    const auto desired_sensor = sensor(binding.value("simulationSensors", Json::object()), ns, backend);
+    const auto authored_sensors = binding.value("simulationSensors", Json::object());
+    const auto authored_lidar = authored_sensors.value("simpleLidar", Json(false));
+    entity["body_returns"] = authored_lidar.is_object() ? authored_lidar.value("bodyReturns", false) : false;
+    const auto desired_sensor = sensor(authored_sensors, ns, backend);
     if (!desired_sensor.is_null()) entity["sensor"] = desired_sensor;
     (void)parse_entity(entity);
     config["entities"].push_back(std::move(entity));

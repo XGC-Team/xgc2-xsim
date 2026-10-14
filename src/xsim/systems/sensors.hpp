@@ -3,6 +3,7 @@
 #include "io/config.hpp"
 #include "sensors/cadence.hpp"
 #include <xgc2_math/scene.hpp>
+#include <xgc2_math/scene/body_returns.hpp>
 #include "sensors/gpu_module.hpp"
 namespace xsim {
 struct Sample {
@@ -57,6 +58,9 @@ struct Sensor {
   Sample cached_sample;
   std::shared_ptr<const SensorPayload> cached_payload;
   std::vector<xgc2_math::scene::VehicleBody> others;
+  xgc2_math::scene::SensorConfig body_config;
+  xgc2_math::scene::GpuBodyMergeScratch body_scratch;
+  std::vector<xgc2_math::scene::TaggedPoint> gpu_static_points, gpu_body_points;
   std::atomic<uint64_t> misses{0}, scans{0}, errors{0};
   std::atomic<uint64_t> throttled{0}, cache_hits{0}, computed_scans{0}, published{0};
   std::atomic<uint64_t> rate_degradations{0}, rate_recoveries{0};
@@ -109,7 +113,7 @@ private:
   std::map<std::pair<double, bool>, std::shared_ptr<GpuScene>> gpu_scenes_;
   const xgc2_sensing_gpu_api *gpu_api_ = nullptr;
   void work(bool gpu);
-  void submit_sample(const State &, const std::shared_ptr<const Frame> &);
+  void submit_sample(const State &, const std::shared_ptr<const Frame> &, uint64_t body_revision = 0);
   uint64_t fixture_geometry_revision(const Frame &);
 };
 } // namespace xsim
