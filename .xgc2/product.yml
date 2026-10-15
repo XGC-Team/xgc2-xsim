@@ -45,7 +45,7 @@ release:
   requires: [libxgc2-math-dev, libxgc2-chassis-hold-dev, xgc2-xrpc]
   dependency_policy:
     xgc2-xrpc: rebuild
-    libxgc2-math-dev: verify
+    libxgc2-math-dev: rebuild
     libxgc2-chassis-hold-dev: rebuild
   apt_versions:
     focal: 1.4.0-3

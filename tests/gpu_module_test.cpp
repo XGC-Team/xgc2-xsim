@@ -1,3 +1,4 @@
+#include "scene_fixture.hpp"
 #include "systems/sensors.hpp"
 #include <cassert>
 #include <cstdlib>
@@ -36,7 +37,7 @@ int main(int argc, char **argv) {
   // CPU preparation never loads the optional module, even with a missing path.
   assert(!dlopen(path.c_str(), RTLD_NOW | RTLD_NOLOAD));
   {
-    Sensors sensors(scene);
+    Sensors sensors(sceneFixture(scene));
     auto cpu = entity(100);
     cpu->sensor = sensors.prepare(cpu, {{"backend", "cpu"}, {"h_res", 8}, {"v_res", 2}});
     assert(!dlopen(path.c_str(), RTLD_NOW | RTLD_NOLOAD));
@@ -46,7 +47,7 @@ int main(int argc, char **argv) {
     catch (const std::invalid_argument &) { refused = true; }
     assert(refused && !dlopen(path.c_str(), RTLD_NOW | RTLD_NOLOAD));
   }
-  Sensors sensors(scene, 2, std::chrono::milliseconds((mode == "hang" || mode == "hang-stop") ? 100 : 10000));
+  Sensors sensors(sceneFixture(scene), 2, std::chrono::milliseconds((mode == "hang" || mode == "hang-stop") ? 100 : 10000));
   auto a = entity(1), b = entity(2);
   if (mode == "hang-stop") {
     std::thread preparation([&] {

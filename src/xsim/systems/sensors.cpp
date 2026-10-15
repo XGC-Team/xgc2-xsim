@@ -75,36 +75,8 @@ Sensors::Sensors(const Json &j, unsigned workers, std::chrono::milliseconds init
   if(j.contains("document")) {
     obstacles_ = sceneDocumentObstacles(j.at("document"));
   }
-  for (const auto &o : j.value("obstacles", Json::array())) {
-    const auto type = o.at("type").get<std::string>();
-    auto pos = v3(o.at("position"));
-    auto q = o.contains("orientation") ? quat(o.at("orientation"))
-                                       : Eigen::Quaterniond::Identity();
-    using O = xgc2_math::scene::Obstacle;
-    if (type == "box")
-      obstacles_.push_back(O::box(pos, v3(o.at("size")), q));
-    else if (type == "sphere")
-      obstacles_.push_back(O::sphere(pos, o.at("radius")));
-    else if (type == "cylinder")
-      obstacles_.push_back(O::cylinder(pos, o.at("radius"), o.at("height"), q));
-    else if (type == "capsule")
-      obstacles_.push_back(O::capsule(pos, o.at("radius"), o.at("height"), q));
-    else if (type == "ring") {
-      const auto& radii = o.at("radii");
-      if (!radii.is_array() || radii.size() != 2 || !radii[0].is_number() ||
-          !radii[1].is_number() || !o.at("tubeRadius").is_number())
-        throw std::invalid_argument("ring needs two numeric radii and numeric tubeRadius");
-      obstacles_.push_back(O::ring(pos, {radii[0].get<double>(), radii[1].get<double>()},
-                                    o.at("tubeRadius").get<double>(), q));
-    }
-    else if (type == "convex") {
-      std::vector<Eigen::Vector3d> v;
-      for (auto &x : o.at("vertices"))
-        v.push_back(v3(x));
-      obstacles_.push_back(O::convexHull(v, pos, q));
-    } else
-      throw std::invalid_argument("unknown obstacle type");
-  }
+  if (j.contains("obstacles"))
+    throw std::invalid_argument("scene.obstacles is retired; supply scene.document with named parts");
   // One immutable compiled geometry/index for this world, never one map per
   // robot.
   scene_ = std::make_shared<xgc2_math::scene::LidarScene>(obstacles_, spacing_,

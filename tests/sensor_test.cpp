@@ -1,3 +1,4 @@
+#include "scene_fixture.hpp"
 #include "systems/sensors.hpp"
 #include <cassert>
 #include <cstring>
@@ -79,8 +80,8 @@ void cadence_checks() {
 
 int main() {
   cadence_checks();
-  Sensors sensors({{"obstacles", Json::array({{{"type", "box"},
-      {"position", {4, 0, 0}}, {"size", {1, 2, 2}}}})}}, 2);
+  Sensors sensors(sceneFixture({{"obstacles", Json::array({{{"type", "box"},
+      {"position", {4, 0, 0}}, {"size", {1, 2, 2}}}})}}), 2);
   auto source = entity(1, "source"), body = entity(2, "body", true);
   Json config = {{"backend", "cpu"}, {"h_fov_deg", 60}, {"v_fov_deg", 30},
       {"h_res", 32}, {"v_res", 16}, {"rate_hz", 10},

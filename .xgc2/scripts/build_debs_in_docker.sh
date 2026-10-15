@@ -56,7 +56,7 @@ apt-get install -y --no-install-recommends libxgc2-math-dev libxgc2-chassis-hold
 python3 /source/.xgc2/scripts/check_build_inputs.py
 python3 /source/.xgc2/scripts/check_gpu_module_sources.py
 math_version="$(dpkg-query -W -f='${Version}' libxgc2-math-dev)"
-dpkg --compare-versions "$math_version" ge '0.6.0-3~focal'
+dpkg --compare-versions "$math_version" ge '0.6.0-4~focal'
 test -f /usr/include/xgc2_math/scene.hpp
 test -f /usr/include/xgc2_math/scene/ellipse_ring.hpp
 if [[ "$XSIM_NATIVE_CONTRACTS" == true ]]; then

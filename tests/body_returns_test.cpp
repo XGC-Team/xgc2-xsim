@@ -1,3 +1,4 @@
+#include "scene_fixture.hpp"
 #include "systems/sensors.hpp"
 #include <cstring>
 #include <iostream>
@@ -70,8 +71,8 @@ Eigen::Vector3d position(World& world, uint64_t id) { return position(world.capt
 int main(int argc, char** argv) {
   require(argc == 2, "pass cpu, gpu or auto");
   const std::string backend = argv[1];
-  Sensors sensors(Json{{"obstacles", Json::array({{{"type", "box"}, {"position", {6, 0, .5}},
-      {"size", {1, 20, 20}}}})}});
+  Sensors sensors(sceneFixture(Json{{"obstacles", Json::array({{{"type", "box"}, {"position", {6, 0, .5}},
+      {"size", {1, 20, 20}}}})}}));
   for (const char* mode : {"raycast", "penetrating"}) {
     for (int selection = 0; selection < 4; ++selection) {
       World world(1700000000000000000LL);

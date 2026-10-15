@@ -1,3 +1,4 @@
+#include "scene_fixture.hpp"
 // The sensing pipeline against the xgc2_math::scene geometry it consumes: every payload the worker threads
 // produce must equal what the scene API returns for the same scene, sensor model, pose and scan index, in the
 // wire layout the ROS boundary publishes.
@@ -101,7 +102,7 @@ int32_t integer(const Bytes &data, size_t at) {
 // A mounted raycast sensor on a moving robot returns the scene API's cloud for the mounted pose, and a noisy sensor
 // follows its own noise stream over its scans.
 void raycast_and_noise() {
-  Sensors sensors(world(), 2);
+  Sensors sensors(sceneFixture(world()), 2);
   auto robot = entity(1, "robot");
   const Eigen::Vector3d translation(.2, -.1, .3);
   const auto rotation = mounted(yaw(-.4));
@@ -170,7 +171,7 @@ void raycast_and_noise() {
 // The beam records and the point cloud of a sensor that observes the other robots: the layout of the ROS messages
 // (x y z dx dy dz range hit vehicle_id, 36 bytes; points x y z vehicle_id, 16 bytes).
 void beams_and_bodies() {
-  Sensors sensors(world(), 2);
+  Sensors sensors(sceneFixture(world()), 2);
   auto source = entity(1, "source"), body = entity(2, "body", true);
   source->sensor = sensors.prepare(source, {{"h_res", 48}, {"v_res", 6}, {"h_fov_deg", 90}, {"v_fov_deg", 20},
       {"range", 14}, {"world_bodies", true}, {"publish_beams", true}, {"rate_hz", 10}});
@@ -216,7 +217,7 @@ void beams_and_bodies() {
 
 // Penetrating sensors sample the scene at their own spacing and buried policy; depth sensors are pinhole cameras.
 void penetrating_and_depth() {
-  Sensors sensors(world({{"surface_spacing", .1}, {"keep_buried", false}}), 2);
+  Sensors sensors(sceneFixture(world({{"surface_spacing", .1}, {"keep_buried", false}})), 2);
   struct Case {
     std::string name;
     Json config;
@@ -303,7 +304,10 @@ void scene_forms() {
       {{"type", "sphere"}, {"position", {-5, 2, 1}}, {"radius", 1.5}},
       {{"type", "capsule"}, {"position", {-5, -4, 1}}, {"radius", .6}, {"height", 2}},
       {{"type", "convex"}, {"position", {0, -1, 1}}, {"vertices", vertices()}}})}};
-  Sensors from_document(document, 1), from_list(plain, 1);
+  bool retired = false;
+  try { Sensors rejected(plain, 1); } catch (const std::invalid_argument&) { retired = true; }
+  assert(retired);
+  Sensors from_document(sceneFixture(document), 1), from_list(sceneFixture(plain), 1);
   assert(!from_list.reference_cloud().empty());
   assert(from_document.reference_cloud() == from_list.reference_cloud());
   auto a = entity(1, "a"), b = entity(2, "b");
@@ -324,7 +328,7 @@ void scene_forms() {
                                                            {"size", {1, 0, 1}}}})}}}) {
     bool refused = false;
     try {
-      Sensors rejected(bad, 1);
+      Sensors rejected(sceneFixture(bad), 1);
     } catch (const std::invalid_argument &) { refused = true; }
     assert(refused);
   }
@@ -333,7 +337,7 @@ void scene_forms() {
 // The latched reference cloud is the sampled surface of the scene at the world's spacing and buried policy.
 void reference_cloud() {
   for (const auto &policy : {std::make_pair(.1, false), std::make_pair(.25, true)}) {
-    Sensors sensors(world({{"surface_spacing", policy.first}, {"keep_buried", policy.second}}), 1);
+    Sensors sensors(sceneFixture(world({{"surface_spacing", policy.first}, {"keep_buried", policy.second}})), 1);
     const scene::LidarScene expected(obstacles(), policy.first, policy.second);
     const auto cloud = sensors.reference_cloud();
     assert(!expected.samples().empty() && cloud.size() == expected.samples().size() * 12);
@@ -347,7 +351,7 @@ void reference_cloud() {
 // sensor of the scene API returns for the same poses, so the worker threads share the scene and nothing else.
 void fleet_on_workers() {
   constexpr int members = 9;
-  Sensors sensors(world(), 3);
+  Sensors sensors(sceneFixture(world()), 3);
   struct Member {
     std::shared_ptr<Entity> robot;
     std::unique_ptr<scene::WorldLidar> lidar;

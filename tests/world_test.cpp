@@ -1,3 +1,4 @@
+#include "scene_fixture.hpp"
 #include "systems/sensors.hpp"
 #include "io/runtime_io.hpp"
 #include <cassert>
@@ -272,9 +273,9 @@ int main() {
   paused_world.stop();
   // Real immutable-scene CPU scans, mount transform, generation and bounded
   // pending.
-  Sensors sensors({{"obstacles", Json::array({{{"type", "box"},
+  Sensors sensors(sceneFixture({{"obstacles", Json::array({{{"type", "box"},
                                                {"position", {4, 0, 0}},
-                                               {"size", {1, 2, 2}}}})}},
+                                               {"size", {1, 2, 2}}}})}}),
                   2);
   const Json sensor_fixture = {{"name", "sensor"},
                                              {"kind", "scout"},

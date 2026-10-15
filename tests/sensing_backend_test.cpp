@@ -1,3 +1,4 @@
+#include "scene_fixture.hpp"
 #include "systems/sensors.hpp"
 #include <cassert>
 #include <cstring>
@@ -48,7 +49,7 @@ int benchmark(int argc, char** argv) {
     if (!scene.is_object() || !sensor.is_object()) throw std::invalid_argument("scene and sensor must be objects");
     sensor["backend"] = backend;
   }
-  Sensors sensors(scene, unsigned(workers));
+  Sensors sensors(sceneFixture(scene), unsigned(workers));
   World world(1700000000000000000LL);
   std::vector<std::shared_ptr<Entity>> entities;
   for (int i = 0; i < count; ++i) {
@@ -130,9 +131,9 @@ int main(int argc, char** argv) {
   if (argc > 1 && std::string(argv[1]) == "--benchmark") return benchmark(argc, argv);
   for (const auto backend : {"cpu", "gpu", "auto"}) for (const bool through : {false, true}) {
     if(argc==2 && std::string(backend)!=argv[1]) continue;
-    Sensors sensors(Json{{"obstacles", Json::array({
+    Sensors sensors(sceneFixture(Json{{"obstacles", Json::array({
       {{"type","box"},{"position",{5,0,0}},{"size",{1,8,8}}},
-      {{"type","box"},{"position",{9,0,0}},{"size",{1,2,2}}}})}});
+      {{"type","box"},{"position",{9,0,0}},{"size",{1,2,2}}}})}}));
     std::vector<std::shared_ptr<Entity>> robots;
     for (int id=1; id<=20; ++id) {
       auto e=std::make_shared<Entity>(parse_entity({{"name","uav"+std::to_string(id)},{"kind","scout"}}));

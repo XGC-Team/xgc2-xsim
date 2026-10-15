@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 #include <xgc2_math/scene/scene_conversion.hpp>
+#include <xgc2_math/geometry/geometry_json.hpp>
 
 namespace xsim {
 // Authored scene document -> named Math parameters. Pose quaternions in the
@@ -21,34 +22,22 @@ inline std::vector<xgc2_math::scene::Obstacle> sceneDocumentObstacles(const nloh
                                                 q[1].get<double>(), q[2].get<double>());
         return result;
     };
-    std::vector<xgc2_math::scene::SceneObstacleDescription> descriptions;
+    std::vector<xgc2_math::scene::Obstacle> shapes;
     for (const auto& obstacle : document.at("obstacles")) {
-        xgc2_math::scene::SceneObstacleDescription description;
-        description.id = obstacle.at("id");
-        description.pose = pose(obstacle.value("pose", Json::object()));
+        const auto parent = pose(obstacle.value("pose", Json::object()));
         for (const auto& part : obstacle.at("parts")) {
-            const auto& geometry = part.at("geometry");
-            xgc2_math::scene::ScenePartDescription converted;
-            converted.type = geometry.at("type");
-            converted.pose = pose(part.value("pose", Json::object()));
-            if (geometry.contains("size")) converted.size = v3(geometry.at("size"));
-            converted.radius = geometry.value("radius", 0.0);
-            converted.height = geometry.value("height", 0.0);
-            if (converted.type == "ring") {
-                const auto& radii = geometry.at("radii");
-                const auto& tube = geometry.at("tubeRadius");
-                if (!radii.is_array() || radii.size() != 2 || !radii[0].is_number() ||
-                    !radii[1].is_number() || !tube.is_number())
-                    throw std::invalid_argument("ring needs two numeric radii and numeric tubeRadius");
-                converted.radii = {radii[0].get<double>(), radii[1].get<double>()};
-                converted.tubeRadius = tube.get<double>();
+            try {
+                const auto local = pose(part.value("pose", Json::object()));
+                const auto orientation = xgc2_math::normalizedQuaternion(parent.orientation);
+                shapes.push_back(xgc2_math::scene::obstacleFromGeometry(
+                    xgc2_math::geometry::geometryFromJson(part.at("geometry")),
+                    parent.position + orientation * local.position,
+                    orientation * xgc2_math::normalizedQuaternion(local.orientation)));
+            } catch (const std::exception& error) {
+                throw std::invalid_argument("obstacle '" + obstacle.value("id", std::string{}) + "': " + error.what());
             }
-            if (geometry.contains("vertices"))
-                for (const auto& vertex : geometry.at("vertices")) converted.vertices.push_back(v3(vertex));
-            description.parts.push_back(std::move(converted));
         }
-        descriptions.push_back(std::move(description));
     }
-    return xgc2_math::scene::toObstacles(descriptions);
+    return shapes;
 }
 } // namespace xsim

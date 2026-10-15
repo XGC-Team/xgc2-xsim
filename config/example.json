@@ -20,7 +20,9 @@
   },
   "scene": {
     "surface_spacing": 0.1,
-    "obstacles": [{"type": "box", "position": [5, 0, 1], "size": [1, 4, 2]}]
+    "document": {"schema": "xgc2.scene.v1", "id": "example", "frame": "world",
+      "obstacles": [{"id": "wall", "pose": {"position": [5, 0, 1]},
+        "parts": [{"id": "body", "geometry": {"type": "box", "size": [1, 4, 2]}}]}]}
   },
   "entities": [
     {"name": "uav1", "kind": "fs150", "position": [2, -1, 0], "yaw": 0.35,
