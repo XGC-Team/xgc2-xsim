@@ -11,6 +11,7 @@
 namespace xsim {
 struct RpcOptions {
   std::string target_id;
+  std::string run_id;
   xgc2::xrpc::HttpLimits limits;
   int retained_parent_fd = -1;
   Json robot_bindings = Json::object();
@@ -59,7 +60,7 @@ private:
   };
   std::string instance_; // the incarnation of the world, shared by the HTTP binding and its HOLD domain
   std::string socket_path_;
-  std::string target_id_;
+  std::string target_id_, run_id_;
   xgc2::xrpc::HttpLimits limits_;
   std::unordered_map<std::string, PublicEntity> entities_;
   uint64_t next_generation_ = 1;

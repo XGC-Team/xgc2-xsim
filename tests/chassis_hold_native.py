@@ -13,17 +13,18 @@ import time
 from pathlib import Path
 
 from world_client import HOLD, Xsim, until, write_private
+from frozen_session import robot, session
 
 HEX32 = "0123456789abcdef" * 2
 UNIT = "application/vnd.xgc2.xsim.entity+json"
 
 
 def world_config():
-    scout = lambda name, public_id, y: {"name": name, "public_id": public_id, "kind": "scout", "position": [0, y, 0]}
-    return {"epoch_ns": 1000000000, "model_step_ns": 1000000, "output_period_ns": 4000000, "paused": False,
-            "entities": [scout("scout_a", "ugv-a", 0), scout("scout_b", "ugv-b", 2),
-                         {"name": "mec", "kind": "mecanum", "position": [0, 4, 0]},
-                         {"name": "uav", "kind": "fs150", "position": [0, 6, 1]}]}
+    return session([robot("ugv-a", "scout_a", "scout_mini", [0, 0, 0]),
+                    robot("ugv-b", "scout_b", "scout_mini", [0, 2, 0]),
+                    robot("mec", "mec", "mecanum_ugv", [0, 4, 0]),
+                    robot("uav", "uav", "px4_multirotor", [0, 6, 1])],
+                   model_step_ms=1, output_period_ms=4)
 
 
 def main():
@@ -210,8 +211,7 @@ def run(x):
     x.stop()
 
     # ---- a world that starts paused is ready as well: its first frame is delivered without a step
-    x.config["paused"] = True
-    write_private(x.world, x.config)
+    x.paused = True
     x.start()
     status, ready = x.call("GET", "/v1/describe?wait_ready_ms=5000", bound=False)
     assert status == 200 and ready["ready"] is True and ready["facts"]["frames_flowing"] is True, ready

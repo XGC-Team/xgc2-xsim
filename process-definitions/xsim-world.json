@@ -5,7 +5,7 @@
       "id": "xsim-world",
       "version": "2.0.0",
       "label": "xsim world",
-      "description": "One native xsim world. The workflow supplies frozen Experiment input, scene, target identity and a private Unix endpoint; the generic Process owns its OS lifecycle.",
+      "description": "One native xsim world from the verbatim frozen session and explicit World Run, target identity and private Unix endpoint.",
       "parameters": {
         "properties": {
           "installRoot": {
@@ -32,23 +32,30 @@
           "rosIp": {
             "type": "string",
             "description": "ROS_IP advertised by xsim",
-            "default": "127.0.0.1",
-            "output": true
+            "output": true,
+            "fixedOnly": true
           },
           "rosMasterUri": {
             "type": "string",
             "description": "Pre-allocated session ROS_MASTER_URI; the master may start after xsim.",
             "fixedOnly": true
           },
-          "sceneFile": {
-            "type": "string",
-            "default": "",
-            "description": "Prepared scene file consumed and validated by xsim."
-          },
           "targetId": {
             "type": "string",
             "description": "Explicit workflow-owned world target identity, independent of the native process incarnation.",
             "fixedOnly": true
+          },
+          "runId": {
+            "type": "string",
+            "description": "World Run identity supplied by the workflow.",
+            "fixedOnly": true
+          },
+          "sensorInitTimeoutMs": {
+            "type": "integer",
+            "default": 10000,
+            "minimum": 1,
+            "maximum": 600000,
+            "description": "Budget for native GPU initialization; a hung driver terminates the process."
           }
         },
         "groups": [
@@ -67,7 +74,9 @@
           "socketPath",
           "targetId",
           "rosMasterUri",
-          "configJson"
+          "configJson",
+          "runId",
+          "rosIp"
         ]
       },
       "command": {
@@ -78,8 +87,10 @@
           "${socketPath}",
           "--target-id",
           "${targetId}",
-          "--scene-file",
-          "${sceneFile}"
+          "--run-id",
+          "${runId}",
+          "--sensor-init-timeout-ms",
+          "${sensorInitTimeoutMs}"
         ],
         "env": {
           "ROS_HOSTNAME": "",

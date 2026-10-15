@@ -155,7 +155,10 @@ if(XSIM_TESTS)
   target_compile_options(xsim_gpu_module_test PRIVATE -O2 -Wall -Wextra -Werror -UNDEBUG)
   target_link_libraries(xsim_gpu_module_test PRIVATE xsim_sensors xsim_config)
   set_target_properties(xsim_gpu_module_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/gpu-fixture/bin")
-  foreach(mode valid missing abi size create scan)
+  add_test(NAME xsim_gpu_initialization_timeout
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/gpu_initialization_timeout.py"
+      $<TARGET_FILE:xsim_gpu_module_test> $<TARGET_FILE:xsim_gpu_test_module>)
+  foreach(mode valid missing abi size create throw scan)
     add_test(NAME xsim_gpu_module_${mode} COMMAND xsim_gpu_module_test ${mode} $<TARGET_FILE:xsim_gpu_test_module>)
   endforeach()
   add_executable(xsim_world_test ../../tests/world_test.cpp)

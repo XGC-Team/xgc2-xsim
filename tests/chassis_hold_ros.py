@@ -41,14 +41,14 @@ def free_port():
             return port
 
 
-def world_config():
-    scout = lambda public_id, y: {"name": ROBOTS[public_id], "public_id": public_id, "kind": "scout", "position": [0, y, 0]}
-    first = scout("ugv-a", 0)
-    first["sensor"] = {"backend": "cpu", "rate_hz": 20, "h_res": 72, "v_res": 16, "h_fov_deg": 90, "v_fov_deg": 30}
-    return {"epoch_ns": 1700000000000000000, "model_step_ns": 2000000, "output_period_ns": 8000000, "paused": False,
-            "publish_clock": True, "scene": {"obstacles": [{"type": "box", "position": [6, 0, 0], "size": [1, 8, 4]}]},
-            "entities": [first, scout("ugv-b", 3),
-                         {"name": "mec_m", "public_id": "ugv-m", "kind": "mecanum", "position": [0, -3, 0]}]}
+from frozen_session import robot, session, scene_file
+
+def world_config(root):
+    first = robot('ugv-a', ROBOTS['ugv-a'], 'scout_mini', [0, 0, 0], sensor={
+        'enabled': True, 'acceleration': 'cpu', 'rateHz': 20, 'hRes': 72, 'vRes': 16, 'hFovDeg': 90, 'vFovDeg': 30})
+    return session([first, robot('ugv-b', ROBOTS['ugv-b'], 'scout_mini', [0, 3, 0]),
+                    robot('ugv-m', 'mec_m', 'mecanum_ugv', [0, -3, 0])],
+                   scene_file=scene_file(root, [([6, 0, 0], [1, 8, 4])]))
 
 
 class Feed:
@@ -114,7 +114,7 @@ def main():
                           ROS_HOME=str(root / "test-ros-home"), ROS_LOG_DIR=str(root / "test-ros-log"))
         for name in ("test-ros-home", "test-ros-log"):
             (root / name).mkdir(mode=0o700)
-        xsim = Xsim(args.xsim, root / "xsim", world_config(), ros=True)
+        xsim = Xsim(args.xsim, root / "xsim", world_config(root), ros=True)
         driver = None
         with (root / "roscore.log").open("w") as log:
             master = subprocess.Popen(["roscore", "-p", str(port)], stdout=log, stderr=subprocess.STDOUT,
@@ -165,7 +165,7 @@ def scenario(x, driver):
 
     pose = {name: Feed("/%s/pose" % name, PoseStamped) for name in ROBOTS.values()}
     imu = Feed("/scout_a/imu/data_raw", Imu)
-    cloud = Feed("/scout_a/cloud", PointCloud2)
+    cloud = Feed("/scout_a/simple_lidar/points", PointCloud2)
     for public_id in ROBOTS:
         x.enable(public_id)
     until(lambda: all(feed.snapshot()[1] for feed in pose.values()), "localization of every robot")
@@ -283,7 +283,7 @@ def scenario(x, driver):
     # robot is still held: a callback that ran after it would stamp the command as received after the release.
     for name in ROBOTS.values():
         driver.drive(name, False)
-    x.config["input_poll_ns"] = 3000000000
+    x.config["scene"]["parameters"]["commandPollMs"] = 3000
     write_private(x.world, x.config)
     for attempt in range(5):
         x.start()

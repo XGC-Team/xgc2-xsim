@@ -23,11 +23,11 @@ def write_private(path, value):
 
 
 class Xsim:
-    def __init__(self, binary, root, config, ros=False):
+    def __init__(self, binary, root, config, ros=False, paused=False):
         self.binary = str(Path(binary).resolve())
         self.root = Path(root)
         self.root.mkdir(mode=0o700, exist_ok=True)
-        self.config, self.ros = config, ros
+        self.config, self.ros, self.paused = config, ros, paused
         self.endpoint = str(self.root / "world.sock")
         self.instance = None
         self.process = None
@@ -38,15 +38,17 @@ class Xsim:
             for name in ("ros-home", "ros-log"):
                 (self.root / name).mkdir(mode=0o700, exist_ok=True)
             self.env.update(ROS_HOME=str(self.root / "ros-home"), ROS_LOG_DIR=str(self.root / "ros-log"))
-        self.world = self.root / "world.json"
+        self.world = self.root / "session.json"
         write_private(self.world, config)
 
     def start(self, timeout=15):
         """Start the process and return its first unbound describe (the discovery call)."""
         assert self.process is None or self.process.poll() is not None
         self.log = self.log_path.open("ab")
-        self.process = subprocess.Popen([self.binary, "--socket", self.endpoint, "--target-id", "test:world", "--config", str(self.world)],
-                                        stdout=self.log, stderr=subprocess.STDOUT, env=self.env)
+        self.process = subprocess.Popen([self.binary, "--experiment-stdin", "--run-id", "test:world-run", "--socket", self.endpoint, "--target-id", "test:world"],
+                                        stdin=subprocess.PIPE, stdout=self.log, stderr=subprocess.STDOUT, env=self.env)
+        self.process.stdin.write(self.world.read_bytes())
+        self.process.stdin.close()
         self.instance = None
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -55,6 +57,8 @@ class Xsim:
                 status, described = self.call("GET", "/v1/describe", bound=False)
                 if status == 200:
                     self.instance = described["instance_id"]
+                    if self.paused:
+                        self.operation("POST", "/v1/world/pause", {})
                     return described
             except (OSError, http.client.HTTPException):
                 pass

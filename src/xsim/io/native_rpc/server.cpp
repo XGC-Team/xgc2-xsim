@@ -23,7 +23,7 @@ bool safe_request_id(const std::string &text) {
 Server::Server(const Json &config, const std::string &path, RpcOptions options,
                World &world, Sensors &sensors, RuntimeIO io)
     : instance_(world.hold().instance_id()), socket_path_(path),
-      target_id_(std::move(options.target_id)), limits_(options.limits),
+      target_id_(std::move(options.target_id)), run_id_(std::move(options.run_id)), limits_(options.limits),
       io_(std::move(io)), world_(world), sensors_(sensors), hold_http_(world.hold().service()) {
   if (!safe_request_id(target_id_))
     throw std::invalid_argument("explicit target_id required");

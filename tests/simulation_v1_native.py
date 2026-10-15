@@ -47,8 +47,9 @@ def main():
         root.chmod(0o700)
         endpoint = str(root / "world.sock")
         configuration = root / "world.json"
-        write_private(configuration, {"epoch_ns": 1000000000, "model_step_ns": 1000000,
-            "output_period_ns": 4000000, "paused": True, "entities": []})
+        frozen = json.loads((Path(__file__).parent / "experiment-fixtures" / "empty-world.input.json").read_text())
+        frozen['scene']['parameters'] = {'modelStepMs': 1, 'outputPeriodMs': 4, 'commandPollMs': 1}
+        write_private(configuration, frozen)
         process = None
         instance = None
         log_path = root / "server.log"
@@ -72,9 +73,11 @@ def main():
 
         def start():
             nonlocal process, instance
-            command = [binary, "--config", str(configuration), "--socket", endpoint, "--target-id", "native-fixture:world"]
-            process = subprocess.Popen(command,
+            command = [binary, "--experiment-stdin", "--run-id", "native-fixture:run", "--socket", endpoint, "--target-id", "native-fixture:world"]
+            process = subprocess.Popen(command, stdin=subprocess.PIPE,
                                        stdout=log, stderr=subprocess.STDOUT)
+            process.stdin.write(configuration.read_bytes())
+            process.stdin.close()
             deadline = time.monotonic() + 8
             while time.monotonic() < deadline:
                 if process.poll() is not None:
@@ -85,6 +88,7 @@ def main():
                         instance = description["instance_id"]
                         code, health = call("GET", "/v1/health")
                         if code == 200 and health["state"] == "ready":
+                            mutation("POST", "/v1/world/pause", {})
                             return description, health
                 except (OSError, http.client.HTTPException):
                     pass
@@ -270,6 +274,7 @@ def main():
 
             # A claimed Step cannot be reported as an effect-free cancellation
             # when shutdown interrupts actual integration.
+            before_stop_step = call("GET", "/v1/world")[1]
             requested_steps = 10000000
             code, step = call("POST", "/v1/world/step", {
                 "steps": requested_steps, "operation_timeout_ms": 5000}, "stop-active-step")
@@ -300,7 +305,7 @@ def main():
             completed = interrupted["result"]["steps_completed"]
             assert observed["steps"] <= completed < requested_steps
             assert interrupted["effects"]["applied"] is True
-            assert int(interrupted["result"]["time"]["nanoseconds"]) == 1000000000 + completed * 1000000
+            assert int(interrupted["result"]["time"]["nanoseconds"]) == int(before_stop_step["time"]["nanoseconds"]) + completed * 1000000
             assert process.wait(timeout=5) == 0
             assert not os.path.exists(endpoint)
             evidence["checks"].append("shutdown of claimed Step reports exact partial integration and applied effects")

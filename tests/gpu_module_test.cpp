@@ -46,18 +46,38 @@ int main(int argc, char **argv) {
     catch (const std::invalid_argument &) { refused = true; }
     assert(refused && !dlopen(path.c_str(), RTLD_NOW | RTLD_NOLOAD));
   }
-  Sensors sensors(scene);
+  Sensors sensors(scene, 2, std::chrono::milliseconds((mode == "hang" || mode == "hang-stop") ? 100 : 10000));
   auto a = entity(1), b = entity(2);
-  if (mode == "missing" || mode == "abi" || mode == "size" || mode == "create") {
+  if (mode == "hang-stop") {
+    std::thread preparation([&] {
+      try { sensors.prepare(a, config()); } catch (const std::runtime_error&) { /* Stop cancels this waiter. */ }
+    });
+    void* handle = nullptr;
+    const auto deadline = Clock::now() + std::chrono::seconds(1);
+    while (!(handle = dlopen(path.c_str(), RTLD_NOW | RTLD_NOLOAD))) {
+      assert(Clock::now() < deadline);
+      std::this_thread::yield();
+    }
+    const auto creates = symbol<unsigned (*)()>(handle, "xsim_gpu_test_creates");
+    while (!creates()) { assert(Clock::now() < deadline); std::this_thread::yield(); }
+    sensors.stop(); // Must terminate within the original create budget, never detach or hang in join.
+    preparation.join();
+    assert(false);
+  }
+  if (mode == "missing" || mode == "abi" || mode == "size" || mode == "create" || mode == "throw") {
     bool refused = false;
     try { sensors.prepare(a, config()); }
     catch (const std::runtime_error &e) {
       const std::string error = e.what();
-      const char *expected = mode == "missing" ? "unavailable" : mode == "create" ? "test initialization failure" : "ABI mismatch";
+      const char *expected = mode == "missing" ? "unavailable" : mode == "create" ? "test initialization failure" : mode == "throw" ? "test initialization exception" : "ABI mismatch";
       assert(error.find(expected) != std::string::npos);
       refused = true;
     }
-    assert(refused); sensors.stop();
+    assert(refused);
+    auto automatic = config(); automatic["backend"] = "auto";
+    auto fallback = sensors.prepare(b, automatic);
+    assert(!fallback->gpu && fallback->cpu);
+    sensors.stop();
   } else {
     a->sensor = sensors.prepare(a, config());
     b->sensor = sensors.prepare(b, config(120, 30));

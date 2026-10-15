@@ -159,6 +159,14 @@ Json experiment_config(const Json &input, int64_t epoch_ns) {
     require(number(fcu.at("MPC_THR_MIN")) <= number(fcu.at("MPC_THR_MAX")), "FCU MPC_THR_MIN exceeds MPC_THR_MAX");
   Json config{{"epoch_ns", epoch_ns}, {"model_step_ns", step}, {"output_period_ns", output},
     {"input_poll_ns", poll}, {"publish_clock", true}, {"scene", Json::object()}, {"entities", Json::array()}};
+  if (input.contains("sceneAsset") && !input.at("sceneAsset").is_null()) {
+    const auto& scene_asset = input.at("sceneAsset");
+    require(scene_asset.is_object(), "sceneAsset must be an object");
+    if (scene_asset.contains("sceneFile")) {
+      require(scene_asset.at("sceneFile").is_string(), "sceneAsset.sceneFile must be a string");
+      config["scene_file"] = scene_asset.at("sceneFile");
+    }
+  }
   std::set<std::string> names;
   for (const auto &robot : robots) {
     if (!simulated_robot(robot, run_mode)) continue;

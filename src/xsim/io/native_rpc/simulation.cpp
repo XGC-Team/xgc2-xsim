@@ -82,7 +82,7 @@ bool Server::ready() const { return health_state_ == "ready" && frames_flowing_;
 Json Server::facts() {
   // xsim loads its one world when the process starts: world_generation is fixed, and a different world is a
   // different process with another instance_id.
-  Json result{{"world_generation", 1}, {"frames_flowing", frames_flowing_.load()}, {"health", health_state_}};
+  Json result{{"run_id", run_id_}, {"world_generation", 1}, {"frames_flowing", frames_flowing_.load()}, {"health", health_state_}};
   result["capabilities"] = Json::array({Json::parse(hold_http_.capability_json())});
   if (io_.facts) {
     const auto io = io_.facts();

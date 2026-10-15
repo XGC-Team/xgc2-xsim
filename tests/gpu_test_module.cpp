@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <pthread.h>
+#include <thread>
+#include <stdexcept>
 
 namespace {
 struct Renderer { pthread_t owner; };
@@ -29,6 +31,8 @@ void *create(const float *xyz, size_t count, const xgc2_sensing_gpu_projection *
   const auto *bytes = reinterpret_cast<const unsigned char *>(xyz);
   for (size_t n = 0; n < count * 12; ++n) { hash ^= bytes[n]; hash *= 1099511628211ULL; }
   map_count = count; map_hash = hash;
+  if (mode("hang") || mode("hang-stop")) std::this_thread::sleep_for(std::chrono::hours(1));
+  if (mode("throw")) throw std::runtime_error("test initialization exception");
   if (mode("create")) {
     std::snprintf(error, size, "%s", "test initialization failure"); return nullptr;
   }

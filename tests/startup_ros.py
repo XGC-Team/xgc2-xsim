@@ -54,12 +54,12 @@ def describe(x):
     return result["facts"]["ros"]
 
 
-def config():
-    return {"epoch_ns": 1700000000000000000, "paused": True, "publish_clock": True,
-            "reference_cloud_topic": "/startup_reference",
-            "scene": {"obstacles": [{"type": "box", "position": [4, 0, 0], "size": [1, 4, 2]}]},
-            "entities": [{"name": "late_robot", "public_id": "late-ugv", "kind": "scout",
-                          "sensor": {"backend": "cpu", "h_res": 16, "v_res": 4}}]}
+from frozen_session import robot, session, scene_file
+
+def config(root):
+    return session([robot('late-ugv', 'late_robot', 'scout_mini', [0, 0, 0],
+                          sensor={'enabled': True, 'acceleration': 'cpu', 'hRes': 16, 'vRes': 4})],
+                   scene_file=scene_file(root, [([4, 0, 0], [1, 4, 2])]), reference=True)
 
 
 def stalled_master(binary, root):
@@ -82,14 +82,16 @@ def stalled_master(binary, root):
 
     thread = threading.Thread(target=serve)
     thread.start()
-    x = Xsim(binary, root, config(), ros=True)
+    x = Xsim(binary, root, config(root), ros=True, paused=True)
     x.env["ROS_MASTER_URI"] = "http://127.0.0.1:%d" % listener.getsockname()[1]
-    unused = Xsim(binary, root / "unused", {"epoch_ns": 1700000000000000000, "paused": True}, ros=True)
+    unused = Xsim(binary, root / "unused", session(), ros=True, paused=True)
     unused.env["ROS_MASTER_URI"] = x.env["ROS_MASTER_URI"]
     try:
         unused.start(timeout=3)
-        time.sleep(.2)
-        assert describe(unused)["connect_attempts"] == 0 and not accepted.is_set(), "unused ROS IO connected eagerly"
+        # Frozen sessions own /clock even with an empty roster, so their ROS
+        # transport discovers the master while native readiness stays independent.
+        until(lambda: describe(unused)["connect_attempts"] > 0, "clock-only master discovery", 2)
+        assert not describe(unused)["ready"]
         unused.stop()
         started = time.monotonic()
         x.start(timeout=3)
@@ -111,7 +113,7 @@ def stalled_master(binary, root):
 
 
 def late_master(binary, root, port, long_test):
-    x = Xsim(binary, root / "xsim", config(), ros=True)
+    x = Xsim(binary, root / "xsim", config(root), ros=True, paused=True)
     masters, logs = [], []
     paused_master_pid = None
 
@@ -207,8 +209,8 @@ def late_master(binary, root, port, long_test):
 
         subscriptions = [rospy.Subscriber(topic, message_type, record(name), queue_size=1)
                          for name, topic, message_type in
-                         [("reference", "/startup_reference", PointCloud2), ("pose", "/late_robot/pose", PoseStamped),
-                          ("cloud", "/late_robot/cloud", PointCloud2), ("clock", "/clock", Clock)]]
+                         [("reference", "/xgc/scene/reference_cloud", PointCloud2), ("pose", "/late_robot/pose", PoseStamped),
+                          ("cloud", "/late_robot/simple_lidar/points", PointCloud2), ("clock", "/clock", Clock)]]
         driver = rospy.Publisher("/late_robot/cmd_vel", Twist, queue_size=1)
         until(lambda: received["reference"], "one latched frozen-scene replay")
         until(lambda: driver.get_num_connections() == 1, "late command publisher")
@@ -255,7 +257,7 @@ def late_master(binary, root, port, long_test):
         x.log.close()
 
         # Run-id replacement on the same PID must also end a newly bound xsim.
-        second = Xsim(binary, root / "same-pid", config(), ros=True)
+        second = Xsim(binary, root / "same-pid", config(root), ros=True, paused=True)
         try:
             second.start()
             until(lambda: describe(second)["ready"], "second master binding", 35, .1)
@@ -283,9 +285,9 @@ def supervisor_directory_contract(binary, root):
     """Reject absent or unsafe ROS directory inputs without starting a ROS graph."""
     root.mkdir(mode=0o700)
     world = root / "world.json"
-    world.write_text(json.dumps(config()))
+    world.write_text(json.dumps(config(root)))
     endpoint = root / "world.sock"
-    command = [binary, "--config", str(world), "--socket", str(endpoint), "--target-id", "startup:directories"]
+    command = [binary, "--experiment-stdin", "--run-id", "startup:run", "--socket", str(endpoint), "--target-id", "startup:directories"]
     alias = root / "alias"
     alias.symlink_to(root, target_is_directory=True)
     regular = root / "regular"
@@ -297,7 +299,7 @@ def supervisor_directory_contract(binary, root):
                 env.pop(name, None)
             else:
                 env[name] = value
-            result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=5)
+            result = subprocess.run(command, input=world.read_text(), env=env, capture_output=True, text=True, timeout=5)
             assert result.returncode == 1, (name, value, result)
             assert "explicit absolute directory" in result.stderr or "directory allocation" in result.stderr, result.stderr
             assert not endpoint.exists(), "invalid ROS environment exposed a native service"

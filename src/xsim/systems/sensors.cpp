@@ -1,6 +1,8 @@
 #include "sensors.hpp"
 #include <xgc2_math/scene/scene_conversion.hpp>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <cassert>
 #include <limits>
 #include <pthread.h>
@@ -12,6 +14,11 @@
 #endif
 namespace xsim {
 namespace {
+[[noreturn]] void initialization_expired(std::chrono::milliseconds timeout) {
+  std::fprintf(stderr, "xsim: GPU initialization deadline exceeded after %lld ms; terminating process\n",
+               static_cast<long long>(timeout.count()));
+  std::_Exit(EXIT_FAILURE);
+}
 Eigen::Vector3d v3(const Json &j) {
   if (j.size() != 3)
     throw std::invalid_argument("sensor vector needs 3 values");
@@ -56,7 +63,10 @@ std::shared_ptr<Sensor> Sensors::Ready::pop() {
   --count;
   return sensor;
 }
-Sensors::Sensors(const Json &j, unsigned workers) : workers_(workers) {
+Sensors::Sensors(const Json &j, unsigned workers, std::chrono::milliseconds initialization_timeout)
+    : workers_(workers), initialization_timeout_(initialization_timeout) {
+  if (initialization_timeout.count() <= 0 || initialization_timeout > std::chrono::minutes(10))
+    throw std::invalid_argument("sensor initialization timeout must be 1 through 600000 ms");
   if (!workers)
     throw std::invalid_argument("sensor_workers must be positive");
   spacing_ = j.value("surface_spacing", 0.1);
@@ -215,6 +225,7 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
     } catch (...) { if (!automatic) throw; s->gpu=false;prepare_cpu(); }
   }
   std::unique_lock<std::mutex> lock(mutex_);
+  if (stopping_) throw std::runtime_error("sensor owner stopped during preparation");
   if (s->gpu && !gpu_thread_.joinable()) {
     try { gpu_api_ = &load_gpu_module(); } catch (...) {
       if (!automatic) throw;
@@ -255,7 +266,12 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
       gpu_thread_ = std::thread([this] { work(true); });
     }
     wake_.notify_all();
-    wake_.wait(lock, [&] { return s->gpu_scene->initialized || stopping_; });
+    if (!wake_.wait_for(lock, initialization_timeout_, [&] { return s->gpu_scene->initialized || stopping_; })) {
+      // A foreign graphics call cannot be unwound or joined safely. Ending this
+      // process lets the OS reclaim its context; never detach the owner thread.
+      initialization_expired(initialization_timeout_);
+    }
+    if (stopping_) throw std::runtime_error("sensor owner stopped during initialization");
     if (!s->gpu_scene->renderer) {
       if (!automatic) throw std::runtime_error(s->gpu_scene->error.empty() ? "sensor owner stopped" : s->gpu_scene->error);
       s->gpu = false;lock.unlock();prepare_cpu();lock.lock();
@@ -424,14 +440,27 @@ void Sensors::work(bool gpu) {
         // Geometry policies share one index/context each; robots do not own maps.
         for (const auto &entry : gpu_scenes_) {
           auto &group = *entry.second;
+          if (stopping_) break;
           if (group.initialized) continue;
+          gpu_creation_running_ = true;
+          gpu_initialization_deadline_ = Clock::now() + initialization_timeout_;
           lock.unlock();
           char error[512] = {};
-          auto *renderer = gpu_api_->create(group.points.data(), group.points.size() / 3,
-                                            &group.initial, error, sizeof(error));
+          void *renderer = nullptr;
+          std::string failure;
+          try {
+            renderer = gpu_api_->create(group.points.data(), group.points.size() / 3,
+                                        &group.initial, error, sizeof(error));
+            if (!renderer) failure = std::string("GPU module create failed: ") + error;
+          } catch (const std::exception& exception) {
+            failure = std::string("GPU module create failed: ") + exception.what();
+          } catch (...) {
+            failure = "GPU module create failed: unknown exception";
+          }
           lock.lock();
+          gpu_creation_running_ = false;
           group.renderer = renderer;
-          group.error = renderer ? "" : std::string("GPU module create failed: ") + error;
+          group.error = std::move(failure);
           group.initialized = true;
           --gpu_initializations_;
           std::vector<float>().swap(group.points);
@@ -715,8 +744,12 @@ Json Sensors::status() const {
 }
 void Sensors::stop() {
   {
-    std::lock_guard<std::mutex> l(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     stopping_ = true;
+    wake_.notify_all();
+    if (gpu_creation_running_ &&
+        !wake_.wait_until(lock, gpu_initialization_deadline_, [&] { return !gpu_creation_running_; }))
+      initialization_expired(initialization_timeout_);
   }
   wake_.notify_all();
   cpu_wake_.notify_all();

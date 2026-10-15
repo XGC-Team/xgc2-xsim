@@ -72,7 +72,8 @@ struct Sensor {
 };
 class Sensors {
 public:
-  explicit Sensors(const Json &scene, unsigned workers = 2);
+  explicit Sensors(const Json &scene, unsigned workers = 2,
+                   std::chrono::milliseconds initialization_timeout = std::chrono::seconds(10));
   ~Sensors();
   std::shared_ptr<Sensor> prepare(const std::shared_ptr<Entity> &, const Json &config);
   // Single output-thread producer. A whole frame keeps sensor/body observations
@@ -109,6 +110,7 @@ private:
   double spacing_ = 0.1;
   bool buried_ = false;
   unsigned workers_;
+  std::chrono::milliseconds initialization_timeout_;
   int64_t last_frame_stamp_ = 0;
   std::atomic<int64_t> source_period_ns_{0};
   std::vector<FixtureGeometry> fixture_geometry_;
@@ -122,7 +124,8 @@ private:
   std::vector<std::weak_ptr<Sensor>> sensors_;
   std::vector<std::thread> cpu_threads_;
   std::thread gpu_thread_;
-  bool stopping_ = false;
+  bool stopping_ = false, gpu_creation_running_ = false;
+  Clock::time_point gpu_initialization_deadline_;
   std::map<std::pair<double, bool>, std::shared_ptr<GpuScene>> gpu_scenes_;
   const xgc2_sensing_gpu_api *gpu_api_ = nullptr;
   void work(bool gpu);
