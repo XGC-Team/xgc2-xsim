@@ -1,3 +1,4 @@
+#include "sensors/scene_document.hpp"
 #include "sensors.hpp"
 #include <xgc2_math/scene/scene_conversion.hpp>
 #include <cstring>
@@ -72,19 +73,7 @@ Sensors::Sensors(const Json &j, unsigned workers, std::chrono::milliseconds init
   spacing_ = j.value("surface_spacing", 0.1);
   buried_ = j.value("keep_buried", false);
   if(j.contains("document")) {
-    std::vector<xgc2_math::scene::SceneObstacleDescription> descriptions;
-    const auto pose=[](const Json& p){xgc2_math::Pose3 r;
-      r.position=v3(p.value("position",Json::array({0,0,0})));
-      auto q=p.value("orientation",Json::array({0,0,0,1}));
-      r.orientation=Eigen::Quaterniond(q[3].get<double>(),q[0].get<double>(),q[1].get<double>(),q[2].get<double>()).normalized();return r;};
-    for(const auto& o:j.at("document").at("obstacles")) {
-      xgc2_math::scene::SceneObstacleDescription d;d.id=o.at("id");d.pose=pose(o.value("pose",Json::object()));
-      for(const auto& part:o.at("parts")) {
-        const auto& g=part.at("geometry");xgc2_math::scene::ScenePartDescription p;p.type=g.at("type");p.pose=pose(part.value("pose",Json::object()));
-        if(g.contains("size"))p.size=v3(g.at("size"));p.radius=g.value("radius",0.0);p.height=g.value("height",0.0);
-        if(g.contains("vertices"))for(const auto& v:g.at("vertices"))p.vertices.push_back(v3(v));d.parts.push_back(p);
-      }descriptions.push_back(std::move(d));
-    }obstacles_=xgc2_math::scene::toObstacles(descriptions);
+    obstacles_ = sceneDocumentObstacles(j.at("document"));
   }
   for (const auto &o : j.value("obstacles", Json::array())) {
     const auto type = o.at("type").get<std::string>();
@@ -100,6 +89,14 @@ Sensors::Sensors(const Json &j, unsigned workers, std::chrono::milliseconds init
       obstacles_.push_back(O::cylinder(pos, o.at("radius"), o.at("height"), q));
     else if (type == "capsule")
       obstacles_.push_back(O::capsule(pos, o.at("radius"), o.at("height"), q));
+    else if (type == "ring") {
+      const auto& radii = o.at("radii");
+      if (!radii.is_array() || radii.size() != 2 || !radii[0].is_number() ||
+          !radii[1].is_number() || !o.at("tubeRadius").is_number())
+        throw std::invalid_argument("ring needs two numeric radii and numeric tubeRadius");
+      obstacles_.push_back(O::ring(pos, {radii[0].get<double>(), radii[1].get<double>()},
+                                    o.at("tubeRadius").get<double>(), q));
+    }
     else if (type == "convex") {
       std::vector<Eigen::Vector3d> v;
       for (auto &x : o.at("vertices"))
