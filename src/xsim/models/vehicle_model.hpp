@@ -102,7 +102,10 @@ public:
   }
   bool armed() const { return armed_; }
   FlightMode mode() const { return mode_; }
-  bool landed() const { return body_.base_position().z() <= ground_z_ + kLandedHeight; }
+  // 1 cm is the gap from the support face to the world plane. A level body
+  // rests with its base 0.033 m above ground_z, so base-versus-plane is not
+  // this test.
+  bool landed() const { return fs150SupportClearance(body_, ground_z_) <= kLandedHeight; }
   xgc2_math::TranslationalState state() const { return {body_.base_position(), body_.base_velocity()}; }
   const Eigen::Vector3d &acceleration() const { return acceleration_; }
   Eigen::Quaterniond orientation() const { return body_.state().orientation; }

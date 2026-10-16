@@ -56,15 +56,18 @@ int main() {
   models.emplace_back(Eigen::Vector3d(0, 0, 0.15), 0.25, FlightControllerParameters{}, 0.15);
   models.emplace_back(Eigen::Vector3d(0, 0, 0));
   auto &model = models[0];
+  const double ground_rest = 0.15 + Fs150SupportFace::kLevelBaseHeight;
   auto hover = position_setpoint({0.6, -0.4, 2.15});
   assert(model.setpoint(hover));
   advance_ms(model, 100);
-  assert((model.state().position - Eigen::Vector3d(0, 0, 0.15)).norm() == 0.0);
-  assert(model.angular_velocity_body().norm() == 0.0);
+  assert(model.landed());
+  assert(model.state().position.z() > 0.15 + FlightModel::kLandedHeight);
+  assert((model.state().position - Eigen::Vector3d(0, 0, ground_rest)).norm() < 1e-9);
+  assert(model.angular_velocity_body().norm() < 1e-9);
   assert((model.specific_force_body() - Eigen::Vector3d(0, 0, 9.8066)).norm() < 1e-6);
   assert(model.request_arm(true));
   advance_ms(model, 300); // armed hold on initial ground is idle, not a takeoff command
-  assert(std::abs(model.state().position.z() - 0.15) < 1e-12);
+  assert(std::abs(model.state().position.z() - ground_rest) < 1e-9);
   assert(model.control_output().normalized_thrust == 0.0);
   assert(model.setpoint(hover));
   assert(model.request_mode(FlightMode::Offboard)); // no one-second warmup
@@ -123,10 +126,12 @@ int main() {
     }
   assert(landed_at >= 0 && !model.armed() && model.landed());
   assert(impact > 100.0);
-  assert(std::abs(model.state().position.z() - 0.15) < 1e-12);
-  assert(model.state().velocity.z() >= -1e-12);
+  // Closed-loop attitude at touchdown can rest inside the 1 mm solver band,
+  // so the base is not bitwise equal to ground_z + 0.033.
+  assert(std::abs(model.state().position.z() - ground_rest) <= Fs150SupportFace::kMinDepth);
+  assert(model.state().velocity.z() >= -1e-8);
   advance_ms(model, 100);
-  assert(std::abs(model.state().position.z() - 0.15) < 1e-12);
+  assert(std::abs(model.state().position.z() - ground_rest) <= Fs150SupportFace::kMinDepth);
 
   // Decoder reception and PositionControl admissibility are independent.
   PositionTarget wire{};
@@ -300,14 +305,16 @@ int main() {
   assert((stopped_slot.state().position - pose_before_stop).norm() > 0.05);
   stopped_slot.resetToInitial();
   assert(!stopped_slot.armed() && stopped_slot.mode() == FlightMode::Hold);
-  assert(stopped_slot.state().position.norm() == 0.0);
+  assert(std::abs(stopped_slot.state().position.z() - Fs150SupportFace::kLevelBaseHeight) < 1e-9);
+  assert(stopped_slot.state().position.head<2>().norm() < 1e-12);
+  assert(stopped_slot.landed());
   assert(stopped_slot.control_output().allocation.target_rotor_speed.norm() == 0.0);
   assert((airborne.state().position - Eigen::Vector3d(0.4, 0.5, 1.0)).norm() < 1e-12);
   assert(airborne.state().velocity.norm() == 0.0);
   assert(airborne.angular_velocity_body().norm() == 0.0);
   assert(airborne.control_output().allocation.target_rotor_speed.norm() == 0.0);
   advance_ms(airborne, 600);
-  assert(std::abs(airborne.state().position.z()) < 1e-12);
+  assert(std::abs(airborne.state().position.z() - Fs150SupportFace::kLevelBaseHeight) < 1e-8);
   assert(airborne.landed() && airborne.acceleration().norm() < 1e-8);
   const auto new_target = position_setpoint({0.4, 0.5, 1.0});
   take_off(airborne, new_target);

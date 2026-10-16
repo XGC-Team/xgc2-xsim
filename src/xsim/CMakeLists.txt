@@ -106,6 +106,8 @@ if(XSIM_TESTS)
     target_link_libraries(${test_name}_test PRIVATE xsim_world)
     add_test(NAME xsim_${test_name} COMMAND ${test_name}_test)
   endforeach()
+  target_compile_definitions(ground_contact_test PRIVATE
+    FS150_IRIS_SDF="${FS150_ASSET_SOURCE_ROOT}/models/fs150/iris.sdf")
 endif()
 install(TARGETS xsim RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES ../../process-definitions/xsim-world.json DESTINATION /usr/share/xgc2/process-definitions)
