@@ -2,11 +2,29 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 
 namespace xsim {
-inline int64_t observation_deadline(int64_t previous, int64_t stamp, int64_t period) {
-  if (!previous) previous = stamp;
-  const auto remaining = period - (stamp - previous) % period;
+// Absent phase keeps the process epoch. A present phase is the sampling origin
+// and is not a replacement for that epoch.
+inline int64_t sampling_phase_ns(const int64_t *phase_t0_ns, int64_t epoch_ns) {
+  if (!phase_t0_ns) return epoch_ns;
+  if (*phase_t0_ns < 0) throw std::invalid_argument("phase T0 must be nonnegative");
+  return *phase_t0_ns;
+}
+// Without phase_origin, the next deadline stays on the previous sample's grid.
+// With it, the next deadline is the following T0+kP and does not fill the gap.
+inline int64_t observation_deadline(int64_t previous, int64_t stamp, int64_t period,
+                                    const int64_t *phase_origin = nullptr) {
+  int64_t remaining;
+  if (phase_origin) {
+    auto phase = (stamp - *phase_origin) % period;
+    if (phase < 0) phase += period;
+    remaining = period - phase;
+  } else {
+    if (!previous) previous = stamp;
+    remaining = period - (stamp - previous) % period;
+  }
   const auto limit = std::numeric_limits<int64_t>::max();
   return stamp > limit - remaining ? limit : stamp + remaining;
 }

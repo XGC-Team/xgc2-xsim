@@ -64,14 +64,22 @@ std::shared_ptr<Sensor> Sensors::Ready::pop() {
   --count;
   return sensor;
 }
-Sensors::Sensors(const Json &j, unsigned workers, std::chrono::milliseconds initialization_timeout)
+Sensors::Sensors(const Json &j, unsigned workers, std::chrono::milliseconds initialization_timeout,
+                 const int64_t *phase_t0_ns)
     : workers_(workers), initialization_timeout_(initialization_timeout) {
+  if (phase_t0_ns) {
+    if (*phase_t0_ns < 0) throw std::invalid_argument("phase T0 must be nonnegative");
+    phased_ = true;
+    phase_t0_ns_ = *phase_t0_ns;
+  }
   if (initialization_timeout.count() <= 0 || initialization_timeout > std::chrono::minutes(10))
     throw std::invalid_argument("sensor initialization timeout must be 1 through 600000 ms");
   if (!workers)
     throw std::invalid_argument("sensor_workers must be positive");
   spacing_ = j.value("surface_spacing", 0.1);
   buried_ = j.value("keep_buried", false);
+  // Compiled.v1 is read once here. The reader decodes each geometry once and
+  // shares mesh handles; this constructor does not insert a ground solid.
   if(j.contains("document")) {
     obstacles_ = sceneDocumentObstacles(j.at("document"));
   }
@@ -326,18 +334,31 @@ void Sensors::submit_sample(const State &v, const std::shared_ptr<const Frame> &
         ++s->rate_recoveries;
         if (s->last_submitted_stamp) {
           const auto interval = std::max(recovered, source_period_ns_.load());
-          const auto limit = std::numeric_limits<int64_t>::max();
-          const auto candidate = s->last_submitted_stamp > limit - interval
-              ? limit : s->last_submitted_stamp + interval;
-          s->next = std::min(s->next, candidate);
+          if (phased_) {
+            s->next = observation_deadline(s->next, s->last_submitted_stamp, interval, &phase_t0_ns_);
+          } else {
+            const auto limit = std::numeric_limits<int64_t>::max();
+            const auto candidate = s->last_submitted_stamp > limit - interval
+                ? limit : s->last_submitted_stamp + interval;
+            s->next = std::min(s->next, candidate);
+          }
         }
       }
     }
   }
+  // The worker publishes a new effective period only. Rebase this producer's
+  // deadline from the latest submission before eligibility. Absent T0 keeps
+  // the previous-sample grid above.
+  if (phased_ && s->last_submitted_stamp) {
+    const auto interval = std::max(s->effective_period_ns.load(), source_period_ns_.load());
+    if (interval > 0)
+      s->next = observation_deadline(s->next, s->last_submitted_stamp, interval, &phase_t0_ns_);
+  }
+  const int64_t *phase = phased_ ? &phase_t0_ns_ : nullptr;
   if (v.stamp < s->next_requested) return;
   if (!s->next_requested) s->next_requested = v.stamp;
   const auto due = uint64_t((v.stamp - s->next_requested) / s->period) + 1;
-  s->next_requested = observation_deadline(s->next_requested, v.stamp, s->period);
+  s->next_requested = observation_deadline(s->next_requested, v.stamp, s->period, phase);
   if (v.stamp < s->next) {
     s->throttled += due;
     return;
@@ -346,7 +367,7 @@ void Sensors::submit_sample(const State &v, const std::shared_ptr<const Frame> &
   // frame cadence is an upper bound, even while the configured Hz stays intact.
   if (due > 1) s->throttled += due - 1;
   const auto period = std::max(s->effective_period_ns.load(), source_period_ns_.load());
-  s->next = observation_deadline(s->next, v.stamp, period);
+  s->next = observation_deadline(s->next, v.stamp, period, phase);
   std::unique_lock<std::mutex> lock(s->mutex, std::try_to_lock);
   if (!lock.owns_lock()) {
     ++s->misses;

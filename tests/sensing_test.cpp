@@ -284,20 +284,27 @@ void penetrating_and_depth() {
   sensors.stop();
 }
 
-// The scene document form (obstacles made of placed parts) and the plain obstacle list describe one world.
+// The compiled document (placed model parts) and the plain obstacle list describe one world.
 void scene_forms() {
-  const auto part = [](const Json &position, const Json &geometry) {
-    return Json{{"pose", {{"position", position}}}, {"geometry", geometry}};
+  const auto part = [](const char *id, int geometry_index, const Json &position) {
+    return Json{{"id", id}, {"pose", {{"position", position}, {"orientation", {0, 0, 0, 1}}}},
+                {"geometryIndex", geometry_index}};
   };
-  const Json document = {{"document", {{"obstacles", Json::array({
-      {{"id", "wall"}, {"pose", {{"position", {5, 0, 0}}}},
-       {"parts", Json::array({part({1, 0, .5}, {{"type", "box"}, {"size", {1, 6, 3}}})})}},
-      {{"id", "pillar"}, {"pose", {{"position", {-5, -1, 0}}}},
-       {"parts", Json::array({
-           part({0, 0, 1}, {{"type", "cylinder"}, {"radius", .8}, {"height", 3}}),
-           part({0, 3, 1}, {{"type", "sphere"}, {"radius", 1.5}}),
-           part({0, -3, 1}, {{"type", "capsule"}, {"radius", .6}, {"height", 2}}),
-           part({5, 0, 1}, {{"type", "convex"}, {"vertices", vertices()}})})}}})}}}};
+  const Json document = {{"document", {{"schema", "xgc2.scene.compiled.v1"}, {"id", "forms"}, {"frame", "world"},
+      {"ground", {{"mode", "default_plane"}, {"z", 0}}},
+      {"geometries", Json::array({
+          {{"type", "box"}, {"size", {1, 6, 3}}}, {{"type", "cylinder"}, {"radius", .8}, {"height", 3}},
+          {{"type", "sphere"}, {"radius", 1.5}}, {{"type", "capsule"}, {"radius", .6}, {"height", 2}},
+          {{"type", "convex"}, {"vertices", vertices()}}})},
+      {"models", {{"wall", {{"parts", Json::array({part("slab", 0, {1, 0, .5})})}}},
+                  {"pillar", {{"parts", Json::array({
+                      part("shaft", 1, {0, 0, 1}), part("cap", 2, {0, 3, 1}),
+                      part("arm", 3, {0, -3, 1}), part("hull", 4, {5, 0, 1})})}}}}},
+      {"obstacles", Json::array({
+          {{"id", "wall"}, {"name", "Wall"}, {"model", "wall"}, {"pose", {{"position", {5, 0, 0}}}},
+           {"motion", {{"type", "hold"}}}},
+          {{"id", "pillar"}, {"name", "Pillar"}, {"model", "pillar"}, {"pose", {{"position", {-5, -1, 0}}}},
+           {"motion", {{"type", "hold"}}}}})}}}};
   const Json plain = {{"obstacles", Json::array({
       {{"type", "box"}, {"position", {6, 0, .5}}, {"size", {1, 6, 3}}},
       {{"type", "cylinder"}, {"position", {-5, -1, 1}}, {"radius", .8}, {"height", 3}},

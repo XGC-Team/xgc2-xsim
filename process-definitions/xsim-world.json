@@ -56,6 +56,21 @@
             "minimum": 1,
             "maximum": 600000,
             "description": "Budget for native GPU initialization; a hung driver terminates the process."
+          },
+          "slotId": {
+            "type": "string",
+            "default": "",
+            "description": "Empty keeps the station fleet. A non-empty value selects that one simulated slot. It is not the world target id."
+          },
+          "phaseT0": {
+            "type": "string",
+            "default": "",
+            "description": "Optional integer nanosecond phase. Empty leaves it unset. It does not replace the process UTC epoch."
+          },
+          "sceneFile": {
+            "type": "string",
+            "default": "",
+            "description": "Optional host-local scene path. Empty keeps the frozen session scene path. A non-empty value overrides that path and is not written back into the session."
           }
         },
         "groups": [
@@ -89,6 +104,12 @@
           "${targetId}",
           "--run-id",
           "${runId}",
+          "--slot",
+          "${slotId}",
+          "--phase-t0",
+          "${phaseT0}",
+          "--scene-file",
+          "${sceneFile}",
           "--sensor-init-timeout-ms",
           "${sensorInitTimeoutMs}"
         ],

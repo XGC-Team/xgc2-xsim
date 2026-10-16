@@ -75,11 +75,142 @@ void cadence_checks() {
   AdaptiveCadence extreme(limit / 2 + 1);
   for (int k = 0; k < 8; ++k) extreme.observe(1, true, k);
   assert(extreme.effective == limit);
+
+  const int64_t origin = epoch + 123;
+  const int64_t scan_period = 33333333;
+  const auto aligned = observation_deadline(0, epoch, scan_period, &origin);
+  assert(aligned > epoch && (aligned - origin) % scan_period == 0);
+  const auto late = aligned + 5 * scan_period + 10;
+  const auto after = observation_deadline(aligned, late, scan_period, &origin);
+  assert(after > late && after - late <= scan_period);
+  assert((after - origin) % scan_period == 0);
+  const auto widened = observation_deadline(after, late, scan_period * 2, &origin);
+  assert((widened - origin) % (scan_period * 2) == 0);
+  const int64_t other_epoch = epoch + 999999;
+  const auto same_phase = observation_deadline(0, epoch, scan_period, &origin);
+  const auto other_start = observation_deadline(0, epoch, scan_period, &origin);
+  assert(same_phase == other_start);
+  assert(observation_deadline(0, other_epoch, scan_period, &origin) !=
+         observation_deadline(0, other_epoch, scan_period));
+  const int64_t near = limit - 5;
+  const int64_t near_origin = near - 3;
+  assert(observation_deadline(0, near, 20, &near_origin) == limit);
+  assert(observation_deadline(0, epoch + 10000000, 33333333, nullptr) ==
+         observation_deadline(0, epoch + 10000000, 33333333));
+}
+
+// Cross-thread boundary only: the worker publishes cadence.observe through
+// effective_period_ns while the sensor mutex is held. It does not write the
+// producer's next. No product hook and no slowed scan.
+int64_t inject_observed_period(const std::shared_ptr<Sensor> &sensor, bool overloaded) {
+  std::lock_guard<std::mutex> lock(sensor->mutex);
+  const auto wall = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      Clock::now().time_since_epoch()).count();
+  if (!overloaded) sensor->cadence.recovery_at = 0;
+  const auto updated = sensor->cadence.observe(1000, overloaded, wall);
+  sensor->effective_period_ns = updated;
+  return updated;
+}
+
+void phased_worker_period_boundary() {
+  const Json scene = sceneFixture({{"obstacles", Json::array({{{"type", "box"},
+      {"position", {4, 0, 0}}, {"size", {1, 2, 2}}}})}});
+  const Json config = {{"backend", "cpu"}, {"h_fov_deg", 20}, {"v_fov_deg", 10},
+      {"h_res", 8}, {"v_res", 4}, {"rate_hz", 10}};
+  std::vector<uint8_t> cloud, beams;
+  const int64_t phase = epoch;
+
+  {
+    Sensors phased(scene, 1, std::chrono::seconds(10), &phase);
+    auto robot = entity(11, "phased_backoff");
+    robot->sensor = phased.prepare(robot, config);
+    State sample_state = state(robot, epoch + 1000);
+    phased.submit(sample_state);
+    auto sample = receive(robot->sensor, cloud, beams);
+    assert(sample.stamp == sample_state.stamp && robot->sensor->scans == 1);
+    assert(robot->sensor->next > sample_state.stamp);
+    assert((robot->sensor->next - phase) % robot->sensor->period == 0);
+    const auto previous_deadline = robot->sensor->next;
+    const auto backed = inject_observed_period(robot->sensor, true);
+    assert(backed > robot->sensor->period && robot->sensor->next == previous_deadline);
+    const auto backed_deadline = observation_deadline(
+        robot->sensor->next, robot->sensor->last_submitted_stamp, backed, &phase);
+    assert(backed_deadline > previous_deadline);
+    const auto scans = robot->sensor->scans.load();
+    const auto throttled = robot->sensor->throttled.load();
+    sample_state.stamp = previous_deadline;
+    phased.submit(sample_state);
+    assert(robot->sensor->scans == scans && robot->sensor->throttled > throttled);
+  }
+
+  {
+    Sensors phased(scene, 1, std::chrono::seconds(10), &phase);
+    auto robot = entity(14, "phased_backoff_stamp");
+    robot->sensor = phased.prepare(robot, config);
+    State sample_state = state(robot, epoch + 1000);
+    phased.submit(sample_state);
+    auto sample = receive(robot->sensor, cloud, beams);
+    const auto backed = inject_observed_period(robot->sensor, true);
+    const auto backed_deadline = observation_deadline(
+        robot->sensor->next, robot->sensor->last_submitted_stamp, backed, &phase);
+    const auto scans = robot->sensor->scans.load();
+    sample_state.stamp = backed_deadline;
+    phased.submit(sample_state);
+    sample = receive(robot->sensor, cloud, beams);
+    assert(sample.stamp == backed_deadline && robot->sensor->scans == scans + 1);
+  }
+
+  {
+    Sensors phased(scene, 1, std::chrono::seconds(10), &phase);
+    auto robot = entity(12, "phased_recovery");
+    robot->sensor = phased.prepare(robot, config);
+    State sample_state = state(robot, epoch + 1000);
+    phased.submit(sample_state);
+    auto sample = receive(robot->sensor, cloud, beams);
+    assert(sample.stamp == sample_state.stamp);
+    const auto backed = inject_observed_period(robot->sensor, true);
+    const auto longer_deadline = observation_deadline(
+        robot->sensor->next, robot->sensor->last_submitted_stamp, backed, &phase);
+    {
+      // The producer had already stored this longer deadline. Recovery below
+      // only publishes the shorter effective period.
+      std::lock_guard<std::mutex> lock(robot->sensor->mutex);
+      robot->sensor->next = longer_deadline;
+    }
+    const auto recovered = inject_observed_period(robot->sensor, false);
+    assert(recovered < backed && robot->sensor->next == longer_deadline);
+    const auto recovered_deadline = observation_deadline(
+        robot->sensor->next, robot->sensor->last_submitted_stamp, recovered, &phase);
+    assert(recovered_deadline < longer_deadline);
+    const auto scans = robot->sensor->scans.load();
+    sample_state.stamp = recovered_deadline;
+    phased.submit(sample_state);
+    sample = receive(robot->sensor, cloud, beams);
+    assert(sample.stamp == recovered_deadline && robot->sensor->scans == scans + 1);
+  }
+
+  {
+    Sensors plain(scene, 1);
+    auto robot = entity(13, "unphased_period");
+    robot->sensor = plain.prepare(robot, config);
+    State sample_state = state(robot, epoch + 1000);
+    plain.submit(sample_state);
+    auto sample = receive(robot->sensor, cloud, beams);
+    assert(sample.stamp == sample_state.stamp);
+    const auto previous_deadline = robot->sensor->next;
+    const auto backed = inject_observed_period(robot->sensor, true);
+    assert(backed > robot->sensor->period && robot->sensor->next == previous_deadline);
+    sample_state.stamp = previous_deadline;
+    plain.submit(sample_state);
+    sample = receive(robot->sensor, cloud, beams);
+    assert(sample.stamp == previous_deadline && robot->sensor->scans == 2);
+  }
 }
 } // namespace
 
 int main() {
   cadence_checks();
+  phased_worker_period_boundary();
   Sensors sensors(sceneFixture({{"obstacles", Json::array({{{"type", "box"},
       {"position", {4, 0, 0}}, {"size", {1, 2, 2}}}})}}), 2);
   auto source = entity(1, "source"), body = entity(2, "body", true);
@@ -306,5 +437,6 @@ int main() {
       "motion_invalidates_cache", "generation_invalidates_cache", "nonblocking_producer",
       "shared_frame_release", "geometry_revision_cache",
       "shared_cached_payload", "bounded_payload_pool_recovery",
-      "fresh_noise", "rate_boundary"}}, {"sensors", status}}).dump() << '\n';
+      "fresh_noise", "rate_boundary", "phased_worker_backoff", "phased_worker_recovery",
+      "unphased_period_unchanged"}}, {"sensors", status}}).dump() << '\n';
 }

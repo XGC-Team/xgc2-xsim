@@ -1,10 +1,13 @@
 #pragma once
 #include <nlohmann/json.hpp>
 
-// Test builder only. Every sensor is constructed through the production document entry.
+// Test stand-in for the Core cold compiler. Legacy obstacle lists become one
+// compiled.v1 document: each shape is one geometry, one model, one rigid instance.
 inline nlohmann::json sceneFixture(nlohmann::json configuration) {
   using Json = nlohmann::json;
   if (!configuration.contains("obstacles")) return configuration;
+  Json geometries = Json::array();
+  Json models = Json::object();
   Json obstacles = Json::array();
   for (auto geometry : configuration.at("obstacles")) {
     Json pose{{"position", geometry.at("position")}};
@@ -14,11 +17,18 @@ inline nlohmann::json sceneFixture(nlohmann::json configuration) {
       pose["orientation"] = {q[1], q[2], q[3], q[0]};
       geometry.erase("orientation");
     }
-    obstacles.push_back({{"id", "fixture-" + std::to_string(obstacles.size())}, {"pose", pose},
-      {"parts", Json::array({{{"id", "body"}, {"geometry", geometry}}})}});
+    const auto index = geometries.size();
+    const auto name = "fixture-" + std::to_string(index);
+    geometries.push_back(std::move(geometry));
+    models[name] = {{"parts", Json::array({{{"id", "body"},
+        {"pose", {{"position", {0, 0, 0}}, {"orientation", {0, 0, 0, 1}}}},
+        {"geometryIndex", index}, {"color", {1.0, 0.75, 0.0, 1.0}}}})}};
+    obstacles.push_back({{"id", name}, {"name", name}, {"model", name}, {"pose", pose},
+        {"motion", {{"type", "hold"}}}});
   }
   configuration.erase("obstacles");
-  configuration["document"] = {{"schema", "xgc2.scene.v1"}, {"id", "fixture"},
-      {"frame", "world"}, {"obstacles", obstacles}};
+  configuration["document"] = {{"schema", "xgc2.scene.compiled.v1"}, {"id", "fixture"}, {"frame", "world"},
+      {"ground", {{"mode", "default_plane"}, {"z", 0}}}, {"geometries", std::move(geometries)},
+      {"models", std::move(models)}, {"obstacles", std::move(obstacles)}};
   return configuration;
 }

@@ -121,7 +121,8 @@ Json sensor(const Json &authored, const std::string &ns, const std::string &defa
   return result;
 }
 } // namespace
-Json experiment_config(const Json &input, int64_t epoch_ns) {
+Json experiment_config(const Json &input, int64_t epoch_ns, const std::string &slot_id,
+                       const int64_t *phase_t0_ns) {
   require(input.is_object(), "frozen Session must be one object");
   for (const char *key : {"context", "settings", "instanceId", "epochNs"})
     require(!input.contains(key), std::string("retired Session envelope field: ") + key);
@@ -130,7 +131,6 @@ Json experiment_config(const Json &input, int64_t epoch_ns) {
   const auto run_mode = text(input, "runMode");
   require(run_mode == "simulation" || run_mode == "hybrid", "unsupported runMode");
   require(text(input.at("scene"), "simulator") == "xsim", "scene simulator must be xsim");
-  require(text(input.at("simulation"), "placement") == "core", "xsim must be centralized on Core");
   const auto &robots = input.at("robots");
   require(robots.is_array() && robots.size() <= 256, "robots must be the frozen roster");
   auto parameters = input.at("scene").value("parameters", Json::object());
@@ -157,8 +157,11 @@ Json experiment_config(const Json &input, int64_t epoch_ns) {
   for (auto i = fcu.begin(); i != fcu.end(); ++i) require(fcu_validator.set(i.key(), number(i.value())), "invalid FCU parameter: " + i.key());
   if (fcu.contains("MPC_THR_MIN") && fcu.contains("MPC_THR_MAX"))
     require(number(fcu.at("MPC_THR_MIN")) <= number(fcu.at("MPC_THR_MAX")), "FCU MPC_THR_MIN exceeds MPC_THR_MAX");
+  const bool self_slot = !slot_id.empty();
   Json config{{"epoch_ns", epoch_ns}, {"model_step_ns", step}, {"output_period_ns", output},
-    {"input_poll_ns", poll}, {"publish_clock", true}, {"scene", Json::object()}, {"entities", Json::array()}};
+    {"input_poll_ns", poll}, {"publish_clock", !self_slot}, {"scene", Json::object()}, {"entities", Json::array()}};
+  if (self_slot) config["use_sim_time"] = false;
+  if (phase_t0_ns) config["phase_t0_ns"] = *phase_t0_ns;
   if (input.contains("sceneAsset") && !input.at("sceneAsset").is_null()) {
     const auto& scene_asset = input.at("sceneAsset");
     require(scene_asset.is_object(), "sceneAsset must be an object");
@@ -168,35 +171,58 @@ Json experiment_config(const Json &input, int64_t epoch_ns) {
     }
   }
   std::set<std::string> names;
+  int matches = 0;
   for (const auto &robot : robots) {
-    if (!simulated_robot(robot, run_mode)) continue;
+    if (self_slot) {
+      if (!robot.contains("slotId") || !robot.at("slotId").is_string() ||
+          robot.at("slotId").get<std::string>() != slot_id)
+        continue;
+      ++matches;
+    }
+    if (!simulated_robot(robot, run_mode)) {
+      if (self_slot) require(false, "slot is not a simulated robot");
+      continue;
+    }
     const auto ns = text(robot, "namespace");
     const auto &binding = robot.at("binding");
     require(text(binding, "namespace") == ns, "binding namespace differs from frozen robot namespace");
-    require(text(binding.at("executionHost"), "kind") == "station", "xsim robot must execute on the station");
+    if (!self_slot)
+      require(text(binding.at("executionHost"), "kind") == "station", "xsim robot must execute on the station");
     require(ros_name(ns, false), "namespace must be one absolute ROS segment");
     const auto body = ns.substr(1);
     require(names.insert(body).second, "duplicate entity namespace");
     const auto kind = text(robot, "kind");
+    const auto model_id = text(robot.at("derived"), "modelId");
     std::string model;
     if (kind == "px4_multirotor") {
-      const auto &px4 = robot.at("asset").at("px4");
-      require(text(px4, "modelId") == "fs150", "xsim models FS150 only");
+      require(model_id == "fs150", "xsim selected model is fs150");
       require(!binding.value("px4", Json::object()).value("imageSimulationEnabled", false), "xsim has no camera producer");
       model = "fs150";
     } else if (kind == "scout_mini") {
+      require(model_id == "scout-mini", "xsim selected model is scout-mini");
       const auto scout = binding.value("scout", Json::object());
       require(!scout.value("lidarSimulationEnabled", false), "xsim has no 2D scan producer");
       require(!scout.value("imageSimulationEnabled", false), "xsim has no camera/depth producer");
       model = "scout";
-    } else if (kind == "mecanum_ugv") model = "mecanum";
-    else throw std::invalid_argument("experiment: unsupported robot kind: " + kind);
+    } else if (kind == "mecanum_ugv") {
+      require(model_id == "mecanum-ugv", "xsim selected model is mecanum-ugv");
+      model = "mecanum";
+    } else throw std::invalid_argument("experiment: unsupported robot kind: " + kind);
+    require(binding.contains("applyModelDynamics") && binding.at("applyModelDynamics").is_boolean(),
+      "applyModelDynamics must be a boolean");
+    const auto plant = binding.at("applyModelDynamics").get<bool>();
     const auto &pose = binding.at("initialPose");
     Json position = Json::array({number(pose.at("x")), number(pose.at("y")), number(pose.at("z"))});
     const auto yaw = number(pose.at("yaw"));
     uint32_t seed = 2166136261u;
     for (unsigned char byte : body) { seed ^= byte; seed *= 16777619u; }
     const auto &profile = robot.at("profile").at("parameters");
+    if (!plant) {
+      for (const char *key : {"physical_fcu_url", "simulation_fcu_url", "management_ip"})
+        require(!profile.contains(key), std::string("perfect-tracker cannot select the FS150 controller loop via ") + key);
+      if (self_slot) require(false, "slot does not select a simulated body");
+      continue;
+    }
     const auto pose_topic = profile.value("localization_pose_topic", std::string{});
     const auto twist_topic = profile.value("localization_twist_topic", std::string{});
     const auto resolved_pose = pose_topic.empty() ? ns + "/pose" : pose_topic;
@@ -205,19 +231,22 @@ Json experiment_config(const Json &input, int64_t epoch_ns) {
     Json entity{{"name", body}, {"kind", model}, {"position", position}, {"yaw", yaw}, {"ros", Json{
       {"mocap_noise", Json::array({1e-7, 1e-7, 1e-7})}, {"mocap_seed", seed & 0x7fffffffu},
       {"localization_pose_topic", resolved_pose}, {"localization_twist_topic", resolved_twist}}}};
-    if (model == "fs150" && !fcu.empty()) entity["fcu_parameters"] = fcu;
+    if (model == "fs150" && plant && !fcu.empty()) entity["fcu_parameters"] = fcu;
     const auto authored_sensors = binding.value("simulationSensors", Json::object());
     const auto authored_lidar = authored_sensors.value("simpleLidar", Json(false));
     entity["body_returns"] = authored_lidar.is_object() ? authored_lidar.value("bodyReturns", false) : false;
     const auto desired_sensor = sensor(authored_sensors, ns, backend);
     if (!desired_sensor.is_null()) entity["sensor"] = desired_sensor;
     (void)parse_entity(entity);
+    if (self_slot) config["ros_node_name"] = body;
     config["entities"].push_back(std::move(entity));
   }
+  if (self_slot && matches != 1)
+    require(false, matches == 0 ? "slot is not in the frozen roster" : "slot is not unique");
   if (reference_requested(input.at("visualizationTopics"))) config["reference_cloud_topic"] = "/xgc/scene/reference_cloud";
   return config;
 }
-Json experiment_robot_bindings(const Json &input) {
+Json experiment_robot_bindings(const Json &input, const std::string &slot_id) {
   require(input.is_object(), "frozen Session must be one object");
   const auto run_mode = text(input, "runMode");
   require(run_mode == "simulation" || run_mode == "hybrid", "unsupported runMode");
@@ -225,8 +254,19 @@ Json experiment_robot_bindings(const Json &input) {
   require(robots.is_array() && robots.size() <= 256, "robots must be the frozen roster");
   Json bindings = Json::object();
   std::set<std::string> ids;
+  int matches = 0;
+  const bool self_slot = !slot_id.empty();
   for (const auto &robot : robots) {
-    if (!simulated_robot(robot, run_mode)) continue;
+    if (self_slot) {
+      if (!robot.contains("slotId") || !robot.at("slotId").is_string() ||
+          robot.at("slotId").get<std::string>() != slot_id)
+        continue;
+      ++matches;
+    }
+    if (!simulated_robot(robot, run_mode)) {
+      if (self_slot) require(false, "slot is not a simulated robot");
+      continue;
+    }
     const auto ns = text(robot, "namespace");
     require(ros_name(ns, false), "namespace must be one absolute ROS segment");
     const auto id = text(robot, "slotId");
@@ -235,8 +275,17 @@ Json experiment_robot_bindings(const Json &input) {
       id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-") == std::string::npos,
       "robot ID requires 1..128 ASCII letters, digits or . _ : -");
     require(ids.insert(id).second, "duplicate robot ID");
+    const auto &binding = robot.at("binding");
+    require(binding.contains("applyModelDynamics") && binding.at("applyModelDynamics").is_boolean(),
+      "applyModelDynamics must be a boolean");
+    if (!binding.at("applyModelDynamics").get<bool>()) {
+      if (self_slot) require(false, "slot does not select a simulated body");
+      continue;
+    }
     require(bindings.emplace(ns.substr(1), id).second, "duplicate entity namespace");
   }
+  if (self_slot && matches != 1)
+    require(false, matches == 0 ? "slot is not in the frozen roster" : "slot is not unique");
   return bindings;
 }
 } // namespace xsim

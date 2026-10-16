@@ -2,7 +2,9 @@
 #include "entity.hpp"
 #include <rosgraph_msgs/Clock.h>
 #include <algorithm>
+#include <cstdint>
 #include <condition_variable>
+#include <limits>
 #include <cerrno>
 #include <iostream>
 #include <poll.h>
@@ -59,8 +61,19 @@ struct RosRuntime {
   std::atomic<uint64_t> frames{0}, coalesced{0}, prepare_ns{0}, prepare_ns_max{0}, errors{0};
   std::mutex error_mutex;
   std::string error;
+  bool has_phase_t0 = false;
+  int64_t phase_t0_ns = 0;
 
   RosRuntime(const Json &settings, Sensors &sensors) : config(settings) {
+    if (config.contains("phase_t0_ns")) {
+      const auto &value = config.at("phase_t0_ns");
+      if (!value.is_number_integer() ||
+          (value.is_number_unsigned() && value.get<uint64_t>() > uint64_t(INT64_MAX)))
+        throw std::invalid_argument("phase T0 must be a nonnegative int64 nanosecond count");
+      phase_t0_ns = value.get<int64_t>();
+      if (phase_t0_ns < 0) throw std::invalid_argument("phase T0 must be nonnegative");
+      has_phase_t0 = true;
+    }
     const auto workers = config.value("publish_workers", Json(2));
     if (!workers.is_number_integer() || workers < 1 || workers > 8)
       throw std::invalid_argument("publish_workers must be an integer in 1..8");
@@ -242,7 +255,8 @@ struct RosRuntime {
             return;
           }
           if (!node) {
-            ros::param::set("/use_sim_time", true);
+            if (config.value("use_sim_time", true))
+              ros::param::set("/use_sim_time", true);
             node = std::make_unique<ros::NodeHandle>();
             const auto topic = config.value("reference_cloud_topic", std::string{});
             if (!topic.empty()) reference = node->advertise<sensor_msgs::PointCloud2>(topic, 1, true);
@@ -362,8 +376,9 @@ RuntimeIO make_ros_io(const Json &config, World &world, Sensors &sensors) {
   auto runtime = std::make_shared<RosRuntime>(config, sensors);
   RuntimeIO io;
   io.attach_entity = [runtime, &world](const std::shared_ptr<Entity> &entity, const Json &settings) {
+    const int64_t *phase = runtime->has_phase_t0 ? &runtime->phase_t0_ns : nullptr;
     auto ros = std::make_shared<RosEntity>(entity, world, runtime->inputs, runtime->services, settings, runtime,
-                                         runtime->telemetry_metrics, runtime->cloud_metrics);
+                                         runtime->telemetry_metrics, runtime->cloud_metrics, phase);
     entity->io = std::make_shared<EntityIO>(EntityIO{
       [ros, runtime] { if (ros->request_reconcile()) runtime->wake_connection(); },
       [ros, runtime](const State &state, const TelemetryRates &rates) { if (runtime->peer_ready) ros->publish(state, rates); },

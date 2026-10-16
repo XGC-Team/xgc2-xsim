@@ -31,8 +31,8 @@ def main(binary):
             assert not endpoint.exists(), 'invalid session bound the endpoint'
 
         help_text = subprocess.check_output([binary, '--help'], text=True)
-        assert all(flag in help_text for flag in ('--experiment-stdin', '--run-id', '--socket', '--target-id'))
-        for retired in ('--config', '--manifest', '--scene-file', '--experiment-file', '--bootstrap-input'):
+        assert all(flag in help_text for flag in ('--experiment-stdin', '--run-id', '--socket', '--target-id', '--slot', '--phase-t0', '--scene-file'))
+        for retired in ('--config', '--manifest', '--experiment-file', '--bootstrap-input'):
             assert retired not in help_text
             rejected(command + [retired, 'retired'], 'unknown argument')
         for flag in ('--run-id', '--target-id', '--socket'):
@@ -72,7 +72,7 @@ def main(binary):
         rejected(command, 'end of', json.dumps(selected))
         scene.write_text('obstacles: []\n')
 
-        def start(arguments, document):
+        def start(arguments, document, expected_ids=None):
             before = time.time_ns()
             process = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
@@ -105,7 +105,8 @@ def main(binary):
                     response = connection.getresponse()
                     assert response.status == 200
                     entities = json.loads(response.read())['entities']
-                    assert {e['ref']['id'] for e in entities} == {r['slotId'] for r in document['robots']}
+                    wanted = {r['slotId'] for r in document['robots']} if expected_ids is None else expected_ids
+                    assert {e['ref']['id'] for e in entities} == wanted
                     assert all(e['state']['enabled'] for e in entities)
                 finally:
                     connection.close()
@@ -121,10 +122,22 @@ def main(binary):
             _, error = process.communicate(timeout=5)
             assert process.returncode==0, error
 
-        for document in (frozen, selected, json.loads((fixture/'default-mixed.input.json').read_text())):
+        mixed = json.loads((fixture/'default-mixed.input.json').read_text())
+        for document in (frozen, selected, mixed):
             process = start(command, document)
             stop(process)
             assert not endpoint.exists() and endpoint.parent.exists()
+        onboard = copy.deepcopy(mixed)
+        for robot in onboard['robots']:
+            if robot['slotId'] == 'scout-1':
+                robot['binding']['executionHost'] = {'kind': 'agent', 'agentId': 'agent-1'}
+        rejected(command, 'station', json.dumps(onboard))
+        rejected(command + ['--slot', 'missing-slot'], 'roster', json.dumps(mixed))
+        rejected(command + ['--slot', 'slot id'], 'bounded identifier', json.dumps(mixed))
+        rejected(command + ['--phase-t0', '1.5'], 'phase T0', json.dumps(mixed))
+        process = start(command + ['--slot', 'scout-1', '--phase-t0', '1'], onboard, {'scout-1'})
+        stop(process)
+        assert not endpoint.exists() and endpoint.parent.exists()
         with socket.socket(socket.AF_UNIX) as foreign:
             foreign.bind(str(endpoint))
             identity=endpoint.lstat().st_ino
@@ -148,15 +161,30 @@ def main(binary):
         required=set(definition['parameters']['required'])
         assert {'targetId','runId','rosIp','configJson'} <= required
         assert 'default' not in definition['parameters']['properties']['rosIp']
-        assert 'sceneFile' not in definition['parameters']['properties']
-        values={'targetId':'native-fixture:cli','runId':'world-run:cli','socketPath':str(endpoint),'sensorInitTimeoutMs':'10000'}
+        assert definition['parameters']['properties']['sceneFile']['default'] == ''
+        values={'targetId':'native-fixture:cli','runId':'world-run:cli','socketPath':str(endpoint),
+                'slotId':'','phaseT0':'','sceneFile':'','sensorInitTimeoutMs':'10000'}
         arguments=[binary]+[re.sub(r'\$\{(\w+)\}',lambda m:values[m.group(1)],a) for a in definition['command']['args']]
         process=start(arguments,selected)
         stop(process)
         assert not endpoint.exists()
+        missing = root/'core-scene.yaml'
+        host = root/'host-scene.yaml'
+        host.write_text('obstacles: []\n')
+        remote = copy.deepcopy(selected)
+        remote['sceneAsset']['sceneFile'] = str(missing)
+        payload = json.dumps(remote)
+        assert str(missing) in payload and str(host) not in payload
+        rejected(command + ['--scene-file', ''], 'bad file', payload)
+        rejected(command + ['--scene-file', str(host), '--scene-file', str(host)], 'more than once', payload)
+        process = start(command + ['--scene-file', str(host)], remote)
+        stop(process)
+        rejected(command + ['--scene-file', str(missing)], 'bad file', json.dumps(selected))
+        assert not endpoint.exists()
         print(json.dumps({'frozenSessionStdin':True,'explicitRunAndTarget':True,'sessionSceneAsset':True,
                           'retiredInputsRejected':True,'shippedDefinitionArgv':True,'nativeEpoch':True,
-                          'rosterEnabled':True,'privateEndpointOwnership':True}))
+                          'rosterEnabled':True,'privateEndpointOwnership':True,
+                          'emptySceneFileKeepsFrozen':True,'sceneFileOverride':True}))
 
 
 if __name__=='__main__':

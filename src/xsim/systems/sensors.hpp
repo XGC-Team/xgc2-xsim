@@ -73,7 +73,8 @@ struct Sensor {
 class Sensors {
 public:
   explicit Sensors(const Json &scene, unsigned workers = 2,
-                   std::chrono::milliseconds initialization_timeout = std::chrono::seconds(10));
+                   std::chrono::milliseconds initialization_timeout = std::chrono::seconds(10),
+                   const int64_t *phase_t0_ns = nullptr);
   ~Sensors();
   std::shared_ptr<Sensor> prepare(const std::shared_ptr<Entity> &, const Json &config);
   // Single output-thread producer. A whole frame keeps sensor/body observations
@@ -105,6 +106,8 @@ private:
     bool enabled = false;
     Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   };
+  bool phased_ = false;
+  int64_t phase_t0_ns_ = 0;
   std::shared_ptr<const xgc2_math::scene::LidarScene> scene_;
   std::vector<xgc2_math::scene::Obstacle> obstacles_;
   double spacing_ = 0.1;

@@ -31,6 +31,7 @@ World::World(int64_t e, int64_t d, int64_t o, unsigned c, int64_t maximum,
 }
 World::~World() { stop(); }
 void World::submit(const Ticket &t) {
+  t->queued_at = Clock::now();
   // Arrival is a not-before guard, not a separate world integration event.
   if (continuous(t->op) && running_ && !metrics.paused) {
     const auto wall = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -81,6 +82,7 @@ bool World::wait(const Ticket &t) {
     }
     t->done.wait_for(l, std::chrono::milliseconds(1));
   }
+  t->feedback_at = Clock::now();
   return t->phase.load(std::memory_order_acquire) == 2;
 }
 void World::finish(const Ticket &t, Result r) {
@@ -450,6 +452,7 @@ void World::apply_commands() {
     }
     if (!t->phase.compare_exchange_strong(expected, 1))
       continue;
+    t->applied_at = Clock::now();
     Result r;
     try {
       r = apply(*t);

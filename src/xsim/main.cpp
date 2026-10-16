@@ -53,13 +53,14 @@ struct RosShutdown {
 } // namespace
 int main(int argc, char **argv) {
   try {
-    std::string socket, target_id, run_id;
+    std::string socket, target_id, run_id, slot_id, phase_text, scene_file;
     unsigned sensor_initialization_timeout_ms = 10000;
     bool has_experiment_stdin = false, has_socket = false, has_target = false, has_run = false, has_sensor_timeout = false;
+    bool has_slot = false, has_phase = false, has_scene = false;
     for (int i = 1; i < argc; ++i) {
       const std::string arg = argv[i];
       if (arg == "--help") {
-        std::cout << "xsim --experiment-stdin --run-id RUN --socket SOCKET --target-id TARGET [--sensor-init-timeout-ms MS]\n";
+        std::cout << "xsim --experiment-stdin --run-id RUN --socket SOCKET --target-id TARGET [--slot SLOT] [--phase-t0 NS] [--scene-file PATH] [--sensor-init-timeout-ms MS]\n";
         return 0;
       }
       if (arg == "--experiment-stdin") {
@@ -73,6 +74,9 @@ int main(int argc, char **argv) {
       if (arg == "--socket") { value = &socket; present = &has_socket; }
       else if (arg == "--target-id") { value = &target_id; present = &has_target; }
       else if (arg == "--run-id") { value = &run_id; present = &has_run; }
+      else if (arg == "--slot") { value = &slot_id; present = &has_slot; }
+      else if (arg == "--phase-t0") { value = &phase_text; present = &has_phase; }
+      else if (arg == "--scene-file") { value = &scene_file; present = &has_scene; }
       else if (arg == "--sensor-init-timeout-ms") { value = &timeout; present = &has_sensor_timeout; }
       else throw std::invalid_argument("unknown argument: " + arg);
       if (*present) throw std::invalid_argument("argument occurs more than once: " + arg);
@@ -98,6 +102,20 @@ int main(int argc, char **argv) {
     };
     if (!valid_identity(target_id) || !valid_identity(run_id))
       throw std::invalid_argument("target and run identifiers must be explicit bounded identifiers");
+    if (has_slot && !slot_id.empty() && !valid_identity(slot_id))
+      throw std::invalid_argument("slot must be an explicit bounded identifier");
+    int64_t phase_t0_ns = 0;
+    const int64_t *phase_t0 = nullptr;
+    if (has_phase && !phase_text.empty()) {
+      try {
+        std::size_t consumed = 0;
+        phase_t0_ns = std::stoll(phase_text, &consumed, 10);
+        if (consumed != phase_text.size()) throw std::invalid_argument("phase");
+      } catch (const std::exception &) {
+        throw std::invalid_argument("phase T0 must be an integer nanosecond count");
+      }
+      phase_t0 = &phase_t0_ns;
+    }
     if (socket.front() != '/' || socket.back() == '/' || socket.find('\0') != std::string::npos)
       throw std::invalid_argument("Unix socket requires an absolute filesystem path and filename");
     const auto runtime = allocated_directory(socket.substr(0, socket.rfind('/')), xgc2::xrpc::GrantPurpose::Runtime);
@@ -112,9 +130,9 @@ int main(int argc, char **argv) {
     const auto frozen = experiment_stdin();
     const auto epoch_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
-    auto config = xsim::resolve_scene_file(xsim::experiment_config(frozen, epoch_ns), "");
+    auto config = xsim::resolve_scene_file(xsim::experiment_config(frozen, epoch_ns, slot_id, phase_t0), scene_file);
     config["run_id"] = run_id;
-    rpc.robot_bindings = xsim::experiment_robot_bindings(frozen);
+    rpc.robot_bindings = xsim::experiment_robot_bindings(frozen, slot_id);
     rpc.frozen_experiment = true;
     const auto &epoch = config.at("epoch_ns");
     if (!epoch.is_number_integer() ||
@@ -123,7 +141,8 @@ int main(int argc, char **argv) {
 #ifdef XSIM_ROS
     const std::array<xgc2::xrpc::DirectoryGrant, 2> ros_directories = {
       ros_directory("ROS_HOME"), ros_directory("ROS_LOG_DIR")};
-    ros::init(argc, argv, "xsim", ros::init_options::NoSigintHandler);
+    const auto node_name = config.value("ros_node_name", std::string("xsim"));
+    ros::init(argc, argv, node_name, ros::init_options::NoSigintHandler);
     RosShutdown ros_shutdown;
 #endif
     signal(SIGINT, signal_stop);
@@ -135,7 +154,8 @@ int main(int argc, char **argv) {
                      config.value("max_model_step_ns", int64_t(10000000)));
     xsim::Sensors sensors(config.value("scene", xsim::Json::object()),
                           config.value("sensor_workers", 2u),
-                          std::chrono::milliseconds(sensor_initialization_timeout_ms));
+                          std::chrono::milliseconds(sensor_initialization_timeout_ms),
+                          phase_t0);
     xsim::RuntimeIO io;
 #ifdef XSIM_ROS
     io = xsim::make_ros_io(config, world, sensors);

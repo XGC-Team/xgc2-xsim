@@ -1,4 +1,5 @@
 #include "io/telemetry_rates.hpp"
+#include "sensors/cadence.hpp"
 #include <cassert>
 #include <iostream>
 #include <vector>
@@ -100,6 +101,53 @@ int main() {
   ending.reset();
   assert(ending.due(TelemetryGroup::Localization, maximum, defaults));
   assert(!ending.due(TelemetryGroup::Localization, maximum, defaults));
+
+  const int64_t period = defaults.periods[size_t(TelemetryGroup::Localization)];
+  const int64_t t0 = 1000000000000LL;
+  TelemetrySchedule future(t0);
+  const auto before = t0 - 3000000;
+  assert(future.due(TelemetryGroup::Localization, before, defaults));
+  assert(!future.due(TelemetryGroup::Localization, before + 1, defaults));
+  assert(future.due(TelemetryGroup::Localization, t0, defaults));
+  assert(!future.due(TelemetryGroup::Localization, t0 + period - 1, defaults));
+  assert(future.due(TelemetryGroup::Localization, t0 + period, defaults));
+
+  TelemetrySchedule late(t0);
+  assert(late.due(TelemetryGroup::Localization, t0, defaults));
+  assert(late.due(TelemetryGroup::Localization, t0 + 5 * period + 10, defaults));
+  assert(!late.due(TelemetryGroup::Localization, t0 + 5 * period + 11, defaults));
+  assert(!late.due(TelemetryGroup::Localization, t0 + 6 * period - 1, defaults));
+  assert(late.due(TelemetryGroup::Localization, t0 + 6 * period, defaults));
+
+  const int64_t epoch_a = 1700000000000000000LL;
+  const int64_t epoch_b = epoch_a + 123456789LL;
+  const int64_t shared = 1699999999990000000LL;
+  TelemetrySchedule phase_a(shared), phase_b(shared), raw_a(epoch_a), raw_b(epoch_b);
+  bool raw_differs = false;
+  for (int n = 0; n < 40; ++n) {
+    const auto stamp = epoch_a + n * (period / 2) + 1000;
+    assert(phase_a.due(TelemetryGroup::Localization, stamp, defaults) ==
+           phase_b.due(TelemetryGroup::Localization, stamp, defaults));
+    raw_differs = raw_differs ||
+        (raw_a.due(TelemetryGroup::Localization, stamp, defaults) !=
+         raw_b.due(TelemetryGroup::Localization, stamp, defaults));
+  }
+  assert(raw_differs);
+  assert(sampling_phase_ns(nullptr, epoch_a) == epoch_a);
+  assert(sampling_phase_ns(&shared, epoch_b) == shared);
+  bool negative = false;
+  try { TelemetrySchedule rejected(-1); }
+  catch (const std::invalid_argument &) { negative = true; }
+  assert(negative);
+  const int64_t minus = -1;
+  negative = false;
+  try { (void)sampling_phase_ns(&minus, epoch_a); }
+  catch (const std::invalid_argument &) { negative = true; }
+  assert(negative);
+  TelemetrySchedule phased_end(maximum - period);
+  assert(phased_end.due(TelemetryGroup::Localization, maximum - period / 2, defaults));
+  assert(phased_end.due(TelemetryGroup::Localization, maximum, defaults));
+  assert(!phased_end.due(TelemetryGroup::Localization, maximum, defaults));
 
   std::cout << "PASS: telemetry rates, absolute cadence, source cap, pause, reset, and overflow\n";
 }

@@ -66,6 +66,10 @@ struct Command {
   std::shared_ptr<Entity> retired;
   std::vector<std::pair<Key, Model>> resets;
   Clock::time_point deadline = Clock::now() + std::chrono::milliseconds(1500);
+  // Separated by the producer, the world thread, and the waiting caller.
+  Clock::time_point queued_at{};
+  Clock::time_point applied_at{};
+  Clock::time_point feedback_at{};
   // 0 queued; 1 claimed; 2 completed; 3 cancelled before application;
   // 4 failed (including an interrupted Step with explicit partial effects).
   // Cancellation wins before claim, or waits for the actual boundary result.

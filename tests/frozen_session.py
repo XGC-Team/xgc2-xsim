@@ -30,11 +30,14 @@ def scene_file(root, obstacles):
     root = Path(root)
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = root/'scene.yaml'
-    document = {'schema': 'xgc2.scene.v1', 'id': 'test-scene', 'frame': 'world', 'obstacles': []}
+    document = {'schema': 'xgc2.scene.compiled.v1', 'id': 'test-scene', 'frame': 'world',
+                'ground': {'mode': 'default_plane', 'z': 0}, 'geometries': [], 'models': {}, 'obstacles': []}
     for index, (position, size) in enumerate(obstacles):
-        document['obstacles'].append({'id': 'box'+str(index), 'name': 'Fixture box',
-            'pose': {'position': position, 'orientation': [0, 0, 0, 1]}, 'motion': {'type': 'hold'},
-            'parts': [{'id': 'body', 'pose': {'position': [0, 0, 0], 'orientation': [0, 0, 0, 1]},
-                       'color': [1, 1, 1, 1], 'geometry': {'type': 'box', 'size': size}}]})
+        name = 'box' + str(index)
+        document['geometries'].append({'type': 'box', 'size': size})
+        document['models'][name] = {'parts': [{'id': 'body', 'geometryIndex': index,
+            'pose': {'position': [0, 0, 0], 'orientation': [0, 0, 0, 1]}, 'color': [1.0, 0.75, 0.0, 1.0]}]}
+        document['obstacles'].append({'id': name, 'name': 'Fixture box', 'model': name,
+            'pose': {'position': position, 'orientation': [0, 0, 0, 1]}, 'motion': {'type': 'hold'}})
     path.write_text(json.dumps(document))
     return path

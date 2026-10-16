@@ -1,9 +1,13 @@
 #include "scene_fixture.hpp"
 #include "systems/sensors.hpp"
 #include "io/runtime_io.hpp"
+#include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <thread>
 using namespace xsim;
 Ticket request(World &w, Op op, Key k = {}) {
   auto t = std::make_shared<Command>();
@@ -271,6 +275,92 @@ int main() {
   assert(World::wait(step));
   assert(paused_world.metrics.steps == before + 7);
   paused_world.stop();
+  // One flat waiter per Arm/Mode, the same submit-then-wait a service
+  // callback uses. apply_commands drains the inbox on the world thread.
+  uint64_t fleet_applied_step_span = 0;
+  int64_t fleet_queue_spread_ns = 0, fleet_apply_spread_ns = 0,
+          fleet_response_spread_ns = 0, fleet_queue_to_apply_ns = 0,
+          fleet_queue_to_response_ns = 0;
+  {
+    World fleet(1700000000000000000LL);
+    fleet.start();
+    constexpr int count = 100;
+    std::vector<std::shared_ptr<Entity>> entities;
+    entities.reserve(count);
+    for (int i = 0; i < count; ++i) {
+      auto entity = std::make_shared<Entity>(parse_entity(
+          {{"name", "fleet_" + std::to_string(i)}, {"kind", "fs150"}}));
+      auto added = request(fleet, Op::Add);
+      added->prepared =
+          std::make_unique<Prepared>(Prepared{entity, prepare_model(entity->config)});
+      fleet.submit(added);
+      assert(World::wait(added) && added->result.success);
+      auto enabled = request(fleet, Op::Provider, {entity->id, entity->generation});
+      enabled->action = 1;
+      enabled->prepared =
+          std::make_unique<Prepared>(Prepared{entity, prepare_model(entity->config)});
+      fleet.submit(enabled);
+      assert(World::wait(enabled) && enabled->result.success);
+      entities.push_back(std::move(entity));
+    }
+    std::vector<Ticket> calls(count);
+    for (int i = 0; i < count; ++i) {
+      const bool arm = (i % 2) == 0;
+      calls[i] = request(fleet, arm ? Op::Arm : Op::Mode,
+                         {entities[i]->id, entities[i]->generation});
+      if (arm)
+        calls[i]->arm = true;
+      else
+        calls[i]->mode = "POSCTL";
+    }
+    std::atomic<int> armed_clients{0};
+    std::atomic<bool> release{false};
+    std::vector<std::thread> clients;
+    clients.reserve(count);
+    for (int i = 0; i < count; ++i)
+      clients.emplace_back([&, i] {
+        if (armed_clients.fetch_add(1) + 1 == count)
+          release.store(true, std::memory_order_release);
+        while (!release.load(std::memory_order_acquire))
+          std::this_thread::yield();
+        fleet.submit(calls[i]);
+        assert(World::wait(calls[i]));
+      });
+    for (auto &client : clients)
+      client.join();
+    uint64_t min_step = UINT64_MAX, max_step = 0;
+    auto min_queued = Clock::time_point::max();
+    auto max_queued = Clock::time_point::min();
+    auto min_applied = Clock::time_point::max();
+    auto max_applied = Clock::time_point::min();
+    auto min_feedback = Clock::time_point::max();
+    auto max_feedback = Clock::time_point::min();
+    for (const auto &ticket : calls) {
+      assert(ticket->phase == 2 && ticket->result.success);
+      assert(ticket->queued_at <= ticket->applied_at);
+      assert(ticket->applied_at <= ticket->feedback_at);
+      min_step = std::min(min_step, ticket->result.step);
+      max_step = std::max(max_step, ticket->result.step);
+      min_queued = std::min(min_queued, ticket->queued_at);
+      max_queued = std::max(max_queued, ticket->queued_at);
+      min_applied = std::min(min_applied, ticket->applied_at);
+      max_applied = std::max(max_applied, ticket->applied_at);
+      min_feedback = std::min(min_feedback, ticket->feedback_at);
+      max_feedback = std::max(max_feedback, ticket->feedback_at);
+    }
+    const auto elapsed_ns = [](Clock::time_point from, Clock::time_point to) {
+      return std::chrono::duration_cast<std::chrono::nanoseconds>(to - from).count();
+    };
+    fleet_applied_step_span = max_step - min_step;
+    fleet_queue_spread_ns = elapsed_ns(min_queued, max_queued);
+    fleet_apply_spread_ns = elapsed_ns(min_applied, max_applied);
+    fleet_response_spread_ns = elapsed_ns(min_feedback, max_feedback);
+    fleet_queue_to_apply_ns = elapsed_ns(min_queued, max_applied);
+    fleet_queue_to_response_ns = elapsed_ns(min_queued, max_feedback);
+    // A boundary may split the burst. One call per step would span ~100.
+    assert(fleet_applied_step_span + 1 < static_cast<uint64_t>(count) / 2);
+    fleet.stop();
+  }
   // Real immutable-scene CPU scans, mount transform, generation and bounded
   // pending.
   Sensors sensors(sceneFixture({{"obstacles", Json::array({{{"type", "box"},
@@ -320,8 +410,15 @@ int main() {
                      {"checks",
                       {"retired_ros_config", "entity_io_retirement", "three_kinds", "reset_old_generation", "timeout_cancel",
                        "swap_remove", "old_id", "slow_waiter",
-                       "paused_management", "step_exact", "cpu_scan",
+                       "paused_management", "step_exact", "fleet_arm_mode_timing", "cpu_scan",
                        "mount_pose", "pending_replacement", "stale_scan"}},
+                     {"fleet_calls", 100},
+                     {"applied_step_span", fleet_applied_step_span},
+                     {"queue_spread_ns", fleet_queue_spread_ns},
+                     {"apply_spread_ns", fleet_apply_spread_ns},
+                     {"response_spread_ns", fleet_response_spread_ns},
+                     {"queue_to_apply_ns", fleet_queue_to_apply_ns},
+                     {"queue_to_response_ns", fleet_queue_to_response_ns},
                      {"sensors", sensor_status}})
                    .dump()
             << '\n';

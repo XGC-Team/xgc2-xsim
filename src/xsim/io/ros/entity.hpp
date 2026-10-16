@@ -22,7 +22,8 @@ struct RosEntity {
   RosEntity(const std::shared_ptr<Entity> &, World &, ros::CallbackQueue &,
             ros::CallbackQueue &, const Json &config, std::shared_ptr<void> owner = {},
             std::shared_ptr<PublicationMetrics> telemetry_metrics = {},
-            std::shared_ptr<PublicationMetrics> cloud_metrics = {});
+            std::shared_ptr<PublicationMetrics> cloud_metrics = {},
+            const int64_t *phase_t0_ns = nullptr);
   void bind(); // ROS connection worker only; publications become immutable after binding
   bool request_reconcile(); // event thread only; coalesce the desired graph state
   void reconcile(); // ROS connection worker only; bind immutable-generation callbacks

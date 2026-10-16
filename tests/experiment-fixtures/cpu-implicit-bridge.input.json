@@ -15,7 +15,6 @@
   },
   "sessionId": "session-parity",
   "simulation": {
-    "placement": "core",
     "simulatorHostname": "localhost",
     "rosMasterUri": "http://127.0.0.1:11311",
     "rosIp": "127.0.0.1"
@@ -26,8 +25,6 @@
   "robots": [
     {
       "slotId": "scout-1",
-      "assetId": "asset-0",
-      "assetCommitId": "asset-0-commit",
       "kind": "scout_mini",
       "name": "Scout-01",
       "namespace": "/ugv1",
@@ -35,6 +32,7 @@
         "id": "scout-1",
         "namespace": "/ugv1",
         "hybridSource": "simulation",
+        "applyModelDynamics": true,
         "initialPose": {
           "x": 1,
           "y": 2,
@@ -51,12 +49,15 @@
         "scout": {
           "imageSimulationEnabled": false,
           "lidarSimulationEnabled": false
+        },
+        "source": {
+          "kind": "asset",
+          "ref": {
+            "domain": "robot",
+            "resourceId": "asset-0",
+            "branch": "main"
+          }
         }
-      },
-      "asset": {
-        "name": "Scout-01",
-        "kind": "scout_mini",
-        "profileId": "scout-mini.physical.vrpn"
       },
       "profile": {
         "id": "scout-mini.physical.vrpn",
@@ -64,12 +65,22 @@
           "localization_pose_topic": "/ugv1/pose",
           "localization_twist_topic": "/ugv1/twist"
         }
+      },
+      "derived": {
+        "modelId": "scout-mini"
+      },
+      "physicalBinding": {
+        "assetId": "asset-0",
+        "assetCommitId": "asset-0-commit",
+        "asset": {
+          "name": "Scout-01",
+          "kind": "scout_mini",
+          "profileId": "scout-mini.physical.vrpn"
+        }
       }
     },
     {
       "slotId": "px4-1",
-      "assetId": "asset-1",
-      "assetCommitId": "asset-1-commit",
       "kind": "px4_multirotor",
       "name": "FS150-01",
       "namespace": "/uav1",
@@ -77,6 +88,7 @@
         "id": "px4-1",
         "namespace": "/uav1",
         "hybridSource": "simulation",
+        "applyModelDynamics": true,
         "initialPose": {
           "x": -1,
           "y": 0,
@@ -92,14 +104,14 @@
         },
         "px4": {
           "imageSimulationEnabled": false
-        }
-      },
-      "asset": {
-        "name": "FS150-01",
-        "kind": "px4_multirotor",
-        "profileId": "px4-multirotor.physical.vrpn",
-        "px4": {
-          "modelId": "fs150"
+        },
+        "source": {
+          "kind": "asset",
+          "ref": {
+            "domain": "robot",
+            "resourceId": "asset-1",
+            "branch": "main"
+          }
         }
       },
       "profile": {
@@ -108,12 +120,25 @@
           "localization_pose_topic": "/uav1/pose",
           "localization_twist_topic": "/uav1/twist"
         }
+      },
+      "derived": {
+        "modelId": "fs150"
+      },
+      "physicalBinding": {
+        "assetId": "asset-1",
+        "assetCommitId": "asset-1-commit",
+        "asset": {
+          "name": "FS150-01",
+          "kind": "px4_multirotor",
+          "profileId": "px4-multirotor.physical.vrpn",
+          "px4": {
+            "modelId": "fs150"
+          }
+        }
       }
     },
     {
       "slotId": "px4-2",
-      "assetId": "asset-2",
-      "assetCommitId": "asset-2-commit",
       "kind": "px4_multirotor",
       "name": "FS150-02",
       "namespace": "/uav2",
@@ -121,6 +146,7 @@
         "id": "px4-2",
         "namespace": "/uav2",
         "hybridSource": "simulation",
+        "applyModelDynamics": true,
         "initialPose": {
           "x": -2,
           "y": 0,
@@ -136,14 +162,14 @@
         },
         "px4": {
           "imageSimulationEnabled": false
-        }
-      },
-      "asset": {
-        "name": "FS150-02",
-        "kind": "px4_multirotor",
-        "profileId": "px4-multirotor.physical.vrpn",
-        "px4": {
-          "modelId": "fs150"
+        },
+        "source": {
+          "kind": "asset",
+          "ref": {
+            "domain": "robot",
+            "resourceId": "asset-2",
+            "branch": "main"
+          }
         }
       },
       "profile": {
@@ -152,12 +178,25 @@
           "localization_pose_topic": "/uav2/pose",
           "localization_twist_topic": "/uav2/twist"
         }
+      },
+      "derived": {
+        "modelId": "fs150"
+      },
+      "physicalBinding": {
+        "assetId": "asset-2",
+        "assetCommitId": "asset-2-commit",
+        "asset": {
+          "name": "FS150-02",
+          "kind": "px4_multirotor",
+          "profileId": "px4-multirotor.physical.vrpn",
+          "px4": {
+            "modelId": "fs150"
+          }
+        }
       }
     },
     {
       "slotId": "mecanum-1",
-      "assetId": "asset-3",
-      "assetCommitId": "asset-3-commit",
       "kind": "mecanum_ugv",
       "name": "Mecanum-01",
       "namespace": "/mecanum1",
@@ -165,6 +204,7 @@
         "id": "mecanum-1",
         "namespace": "/mecanum1",
         "hybridSource": "simulation",
+        "applyModelDynamics": true,
         "initialPose": {
           "x": 0,
           "y": 0,
@@ -177,18 +217,33 @@
         },
         "simulationSensors": {
           "simpleLidar": true
+        },
+        "source": {
+          "kind": "asset",
+          "ref": {
+            "domain": "robot",
+            "resourceId": "asset-3",
+            "branch": "main"
+          }
         }
-      },
-      "asset": {
-        "name": "Mecanum-01",
-        "kind": "mecanum_ugv",
-        "profileId": "mecanum-ugv.physical.vrpn"
       },
       "profile": {
         "id": "mecanum-ugv.physical.vrpn",
         "parameters": {
           "localization_pose_topic": "/mecanum1/pose",
           "localization_twist_topic": "/mecanum1/twist"
+        }
+      },
+      "derived": {
+        "modelId": "mecanum-ugv"
+      },
+      "physicalBinding": {
+        "assetId": "asset-3",
+        "assetCommitId": "asset-3-commit",
+        "asset": {
+          "name": "Mecanum-01",
+          "kind": "mecanum_ugv",
+          "profileId": "mecanum-ugv.physical.vrpn"
         }
       }
     }

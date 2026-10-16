@@ -50,6 +50,7 @@ int main() {
   assert(from_flag.at("entities") == original.at("entities"));
   assert(from_flag.at("scene").at("keep") == "source-value");
   auto reference = original;
+  reference["scene_file"] = scene;
   reference["reference_cloud_topic"] = "/xgc/scene/reference_cloud";
   assert(xsim::resolve_scene_file(reference, scene).contains("reference_cloud_topic"));
   std::ofstream(root / "manifest.json") << R"({"pointCloud":{"file":"original-volume.xyz.f32"}})";
@@ -67,20 +68,32 @@ int main() {
   assert(document.at("objects").at(0).at("id").get<std::string>() == "1");
   assert(document.at("objects").at(0).at("name").get<std::string>() == "false");
   assert(document.at("objects").at(0).at("label").get<std::string>() == "42");
-  rejects([&] { xsim::load_config(configuration, other); }, "conflicts");
-  // Conflict precedes loading either file; do not silently prefer a new path.
+  const auto overridden = xsim::load_config(configuration, other);
+  assert(overridden.at("scene_file") == other);
+  assert(overridden.at("scene").at("document").at("name") == "other-scene");
+  assert(overridden.at("epoch_ns") == original.at("epoch_ns"));
+  assert(xsim::load_json_object(configuration).at("scene_file") == scene);
   configured["scene_file"] = (root / "missing-from-config.yaml").string();
   write(configured);
-  rejects([&] { xsim::load_config(configuration, other); }, "conflicts");
+  const auto once = xsim::load_config(configuration, other);
+  assert(once.at("scene_file") == other);
+  assert(once.at("scene").at("document").at("name") == "other-scene");
+  rejects([&] { xsim::load_config(configuration, ""); });
   configured["scene_file"] = "";
   write(configured);
   assert(xsim::load_config(configuration, scene) == from_json);
+  const auto kept = xsim::load_config(configuration, "");
+  assert(kept.at("scene_file") == "");
+  assert(!kept.at("scene").contains("document"));
   rejects([&] { xsim::load_config(configuration, (root / "missing.yaml").string()); });
   std::ofstream(other) << "objects: [not-closed\n";
   rejects([&] { xsim::load_config(configuration, other); });
   configured["scene_file"] = 5;
   write(configured);
-  rejects([&] { xsim::load_config(configuration, scene); });
+  rejects([&] { xsim::load_config(configuration); }, "scene_file must be a string");
+  const auto typed = xsim::load_config(configuration, scene);
+  assert(typed.at("scene_file") == scene);
+  assert(typed.at("scene").at("document").at("name") == "original-scene");
   assert(configured.at("epoch_ns") == original.at("epoch_ns"));
   // Native fields retain their original types/values; only the JSON boundary
   // is stricter, not a second limited Core-side product DTO.
@@ -111,5 +124,74 @@ int main() {
   const auto link = (root / "linked.json").string();
   assert(symlink(configuration.c_str(), link.c_str()) == 0);
   rejects([&] { xsim::load_config(link); }, "symbolic links");
-  std::cout << "scene flag/config parity, empty flag, conflict, parser errors and frozen epoch passed\n";
+  const auto write_compiled = [&](const xsim::Json *ground) {
+    xsim::Json document{{"schema", "xgc2.scene.compiled.v1"}, {"id", "ground"}, {"frame", "world"},
+                        {"geometries", xsim::Json::array({{{"type", "not-a-shape"}}})},
+                        {"models", xsim::Json::object()}, {"obstacles", xsim::Json::array()}};
+    if (ground) document["ground"] = *ground;
+    const auto path = (root / "compiled-ground.json").string();
+    std::ofstream(path) << document.dump();
+    return path;
+  };
+  xsim::Json robots = original;
+  robots["entities"] = xsim::Json::array({
+      {{"name", "a"}, {"kind", "scout"}, {"ground_z", 9.0}},
+      {{"name", "b"}, {"kind", "mecanum"}, {"ground_z", 9.0}}});
+  const xsim::Json plane{{"mode", "default_plane"}, {"z", 1.5}};
+  const auto wired = xsim::resolve_scene_file(robots, write_compiled(&plane));
+  assert(wired.at("scene").at("document").at("geometries").at(0).at("type") == "not-a-shape");
+  for (const auto &entity : wired.at("entities")) {
+    assert(entity.at("ground_z") == 1.5);
+    assert(xsim::parse_entity(entity).ground_z == 1.5);
+  }
+  const auto omitted = xsim::resolve_scene_file(robots, write_compiled(nullptr));
+  for (const auto &entity : omitted.at("entities")) assert(entity.at("ground_z") == 0.0);
+  xsim::Json authored = robots;
+  const auto kept_plane = xsim::resolve_scene_file(authored, scene);
+  assert(kept_plane.at("entities").at(0).at("ground_z") == 9.0);
+  const xsim::Json bare_none{{"mode", "none"}};
+  const xsim::Json bare_model{{"mode", "model"}, {"model", "terrain"},
+                              {"pose", {{"position", {0, 0, 4}}}}};
+  rejects([&] { xsim::resolve_scene_file(robots, write_compiled(&bare_none)); },
+          "planar contact does not support ground none");
+  rejects([&] { xsim::resolve_scene_file(robots, write_compiled(&bare_model)); },
+          "planar contact does not support ground model");
+  const auto lidar_only = xsim::resolve_scene_file(original, write_compiled(&bare_model));
+  assert(lidar_only.at("entities").empty());
+  assert(lidar_only.at("scene").at("document").at("ground").at("mode") == "model");
+  const auto asset_dir = root / "frozen-asset";
+  const auto compiled_dir = root / "compiled-scenes" / "session";
+  std::filesystem::create_directories(asset_dir);
+  std::filesystem::create_directories(compiled_dir);
+  const auto frozen_source = (asset_dir / "scene.yaml").string();
+  const auto compiled = (compiled_dir / "scene.compiled.json").string();
+  std::ofstream(frozen_source) << "name: [source-geometry-must-not-load\n";
+  std::ofstream(compiled) << R"({"schema":"xgc2.scene.compiled.v1","name":"compiled-only","geometries":[]})";
+  std::ofstream(compiled_dir / "manifest.json") << R"({"name":"compiled-decoy"})";
+  std::ofstream(asset_dir / "manifest.json") << R"({"pointCloud":{"file":"original-volume.xyz.f32"}})";
+  xsim::Json split = original;
+  split["scene_file"] = frozen_source;
+  split["reference_cloud_topic"] = "/xgc/scene/reference_cloud";
+  split["entities"] = xsim::Json::array({{{"name", "uav1"}, {"sensor", {{"backend", "gpu"}}}}});
+  const auto owned = xsim::resolve_scene_file(split, compiled);
+  assert(owned.at("scene_file") == compiled);
+  assert(owned.at("scene").at("document").at("name") == "compiled-only");
+  assert(!owned.contains("reference_cloud_topic"));
+  assert(!owned.at("entities").at(0).contains("sensor"));
+  std::ofstream(asset_dir / "manifest.json") << R"({"obstacleInput":"fixed"})";
+  std::ofstream(compiled_dir / "manifest.json") << R"({"pointCloud":{"file":"decoy.xyz.f32"}})";
+  const auto geometry_only = xsim::resolve_scene_file(split, compiled);
+  assert(geometry_only.contains("reference_cloud_topic"));
+  assert(geometry_only.at("entities").at(0).contains("sensor"));
+  assert(geometry_only.at("scene").at("document").at("name") == "compiled-only");
+  auto unfrozen = split;
+  unfrozen.erase("scene_file");
+  const auto no_source = xsim::resolve_scene_file(unfrozen, compiled);
+  assert(no_source.contains("reference_cloud_topic"));
+  assert(no_source.at("entities").at(0).contains("sensor"));
+  unfrozen["scene_file"] = "";
+  const auto empty_source = xsim::resolve_scene_file(unfrozen, compiled);
+  assert(empty_source.contains("reference_cloud_topic"));
+  assert(empty_source.at("entities").at(0).contains("sensor"));
+  std::cout << "scene flag/config parity, empty flag, host override, parser errors and frozen epoch passed\n";
 }

@@ -1,7 +1,10 @@
 #include "io/config.hpp"
 #include <cassert>
+#include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <fstream>
+#include <unistd.h>
 
 namespace {
 constexpr int64_t startup_epoch = 1791271800123456789;
@@ -72,12 +75,19 @@ int main(int argc, char **argv) {
   try { (void)config_for(invalid_lock); } catch (const std::exception &) { refused_lock = true; }
   assert(refused_lock);
 
-  for (const char *key : {"sessionId", "runMode", "scene", "simulation", "robots", "visualizationTopics"}) {
+  for (const char *key : {"sessionId", "runMode", "scene", "robots", "visualizationTopics"}) {
     auto modified = original; modified.erase(key);
     bool rejected = false;
     try { (void)config_for(modified); } catch (const std::exception &) { rejected = true; }
     assert(rejected);
   }
+  assert(!original.at("simulation").contains("placement"));
+  auto leftover_placement = original;
+  leftover_placement["simulation"]["placement"] = "agent-world";
+  assert(config_for(leftover_placement) == config_for(original));
+  auto absent_simulation = original;
+  absent_simulation.erase("simulation");
+  assert(config_for(absent_simulation) == config_for(original));
   for (const char *key : {"context", "settings", "instanceId", "epochNs"}) {
     auto modified = original; modified[key] = xsim::Json::object();
     bool refused = false;
@@ -170,8 +180,8 @@ int main(int argc, char **argv) {
   auto empty = original; empty["robots"] = xsim::Json::array();
   assert(xsim::experiment_robot_bindings(empty) == xsim::Json::object());
 
-  // Fig8B has seven authored FS150 slots. Runtime binding owns execution and
-  // ground spawn; asset simulationSetup is metadata, not runtime placement.
+  // Fig8B has seven model slots. Runtime binding owns execution and ground
+  // spawn; the selected model is frozen in kind and derived.modelId.
   auto fig8b = original;
   fig8b["robots"] = xsim::Json::array();
   const xsim::Json spawns = {{-31, -.5, 0}, {-31, .5, 0}, {-32, -1, 0},
@@ -181,13 +191,16 @@ int main(int argc, char **argv) {
     const auto name = "uav" + std::to_string(i + 1);
     const auto ns = "/" + name;
     slot_id(robot, "fig8b-" + name);
-    robot["assetId"] = "fig8b-fs150-" + std::to_string(i + 1);
-    robot["assetCommitId"] = "frozen-" + name;
-    robot["name"] = robot["asset"]["name"] = name;
+    robot.erase("asset");
+    robot.erase("assetId");
+    robot.erase("assetCommitId");
+    robot.erase("derived");
+    robot["kind"] = "px4_multirotor";
+    robot["derived"] = {{"modelId", "fs150"}};
+    robot["name"] = name;
     robot["namespace"] = robot["binding"]["namespace"] = ns;
     robot["binding"]["initialPose"] = {{"x", spawns[i][0]}, {"y", spawns[i][1]}, {"z", spawns[i][2]}, {"yaw", 0}};
     robot["binding"].erase("simulationSensors");
-    robot["asset"]["px4"]["simulationSetup"] = "onboard";
     robot["profile"]["parameters"]["localization_pose_topic"] = "/xgc/act1/" + name + "/pose";
     robot["profile"]["parameters"]["localization_twist_topic"] = "/xgc/act1/" + name + "/twist";
     fig8b["robots"].push_back(robot);
@@ -205,6 +218,203 @@ int main(int argc, char **argv) {
     assert(seven_bindings[name] == "fig8b-" + name);
     assert(!entity.contains("sensor"));
   }
+  auto none = original;
+  none["robots"] = xsim::Json::array();
+  assert(config_for(none).at("entities").empty());
+
+  auto fleet = original;
+  fleet["robots"] = xsim::Json::array();
+  for (int i = 0; i < 100; ++i) {
+    const auto name = "uav" + std::to_string(i);
+    const auto ns = "/" + name;
+    xsim::Json robot{{"slotId", "model-" + name}, {"name", name}, {"namespace", ns},
+      {"kind", "px4_multirotor"}, {"derived", {{"modelId", "fs150"}}},
+      {"profile", {{"parameters", {{"localization_pose_topic", ns + "/pose"}, {"localization_twist_topic", ns + "/twist"}}}}},
+      {"binding", {{"id", "model-" + name}, {"namespace", ns}, {"hybridSource", "simulation"},
+        {"applyModelDynamics", true},
+        {"initialPose", {{"x", 0.0}, {"y", static_cast<double>(i)}, {"z", 0.0}, {"yaw", 0.0}}},
+        {"executionHost", {{"kind", "station"}}}}}};
+    assert(!robot.contains("asset") && !robot.contains("assetId") && !robot.contains("assetCommitId") &&
+      !robot.contains("physicalBinding") && !robot.contains("model"));
+    fleet["robots"].push_back(std::move(robot));
+  }
+  const auto hundred = config_for(fleet);
+  assert(hundred.at("entities").size() == 100);
+  assert(xsim::experiment_robot_bindings(fleet).size() == 100);
+  for (int i = 0; i < 100; ++i) {
+    const auto &entity = hundred.at("entities").at(i);
+    assert(entity.at("kind") == "fs150");
+    assert(entity.at("name") == "uav" + std::to_string(i));
+    assert(entity.at("position").at(1).get<double>() == i);
+  }
+
+  const char *selected_kind[] = {"px4_multirotor", "scout_mini", "mecanum_ugv"};
+  const char *selected_model[] = {"fs150", "scout-mini", "mecanum-ugv"};
+  const char *selected_entity[] = {"fs150", "scout", "mecanum"};
+  auto selected = original;
+  selected["robots"] = xsim::Json::array();
+  for (int i = 0; i < 3; ++i) {
+    const auto name = std::string("slot") + std::to_string(i);
+    const auto ns = "/" + name;
+    xsim::Json robot{{"slotId", name}, {"name", name}, {"namespace", ns},
+      {"kind", selected_kind[i]}, {"derived", {{"modelId", selected_model[i]}}},
+      {"profile", {{"parameters", {{"localization_pose_topic", ns + "/pose"}, {"localization_twist_topic", ns + "/twist"}}}}},
+      {"binding", {{"id", name}, {"namespace", ns}, {"hybridSource", "simulation"},
+        {"applyModelDynamics", true},
+        {"initialPose", {{"x", 0.0}, {"y", 0.0}, {"z", 0.0}, {"yaw", 0.0}}},
+        {"executionHost", {{"kind", "station"}}}}}};
+    if (std::string(selected_kind[i]) == "scout_mini")
+      robot["binding"]["scout"] = {{"lidarSimulationEnabled", false}, {"imageSimulationEnabled", false}};
+    selected["robots"].push_back(std::move(robot));
+  }
+  const auto selected_config = config_for(selected);
+  for (int i = 0; i < 3; ++i) assert(selected_config.at("entities").at(i).at("kind") == selected_entity[i]);
+  auto unknown_model = selected;
+  unknown_model["robots"][0]["derived"]["modelId"] = "mocap_rotor";
+  unknown_model["robots"][0]["physicalBinding"] = {{"asset", {{"px4", {{"modelId", "fs150"}}}}}};
+  bool refused_model = false;
+  try { (void)config_for(unknown_model); } catch (const std::exception &) { refused_model = true; }
+  assert(refused_model);
+  auto asset_fallback = original;
+  asset_fallback["robots"][1].erase("derived");
+  asset_fallback["robots"][1]["physicalBinding"]["asset"]["px4"]["modelId"] = "fs150";
+  bool refused_fallback = false;
+  try { (void)config_for(asset_fallback); } catch (const std::exception &) { refused_fallback = true; }
+  assert(refused_fallback);
+
+  auto tracker = selected;
+  tracker["scene"]["parameters"]["fcuParameters"] = {{"MC_ROLL_P", 6.5}};
+  tracker["robots"][0]["binding"]["applyModelDynamics"] = false;
+  const auto tracked = config_for(tracker);
+  assert(tracked.at("entities").size() == 2);
+  assert(tracked.at("entities").at(0).at("name") == "slot1");
+  assert(tracked.at("entities").at(1).at("name") == "slot2");
+  const auto tracked_bindings = xsim::experiment_robot_bindings(tracker);
+  assert(tracked_bindings.size() == 2);
+  assert(!tracked_bindings.contains("slot0"));
+  assert(!tracker["robots"][0].contains("asset"));
+  tracker["robots"][0]["binding"]["applyModelDynamics"] = true;
+  assert(config_for(tracker).at("entities").at(0).contains("fcu_parameters"));
+  tracker["robots"][0]["binding"]["applyModelDynamics"] = false;
+  for (const char *key : {"physical_fcu_url", "simulation_fcu_url", "management_ip"}) {
+    tracker["robots"][0]["profile"]["parameters"][key] = "dropped";
+    bool refused_address = false;
+    try { (void)config_for(tracker); } catch (const std::exception &) { refused_address = true; }
+    assert(refused_address);
+    tracker["robots"][0]["profile"]["parameters"].erase(key);
+  }
+
+  auto physical = hybrid;
+  for (auto &robot : physical["robots"]) {
+    if (robot.at("binding").at("hybridSource") == "physical") {
+      // A physically sourced robot is filtered before simulation geometry is read.
+      robot["kind"] = "not-a-simulated-kind";
+      robot["derived"] = {{"modelId", "not-a-simulated-model"}};
+    } else {
+      // The optional attachment never overrides the common model selection.
+      robot["physicalBinding"] = {{"assetId", "not-a-model-source"}, {"assetCommitId", "not-a-model-source"},
+        {"asset", {{"px4", {{"modelId", "mocap_rotor"}}}}}};
+    }
+  }
+  assert(config_for(physical) == config_for(hybrid));
+  assert(xsim::experiment_robot_bindings(physical) == hybrid_bindings);
+
+  const auto type1 = config_for(original);
+  assert(type1.at("publish_clock") == true);
+  assert(type1.at("epoch_ns") == startup_epoch);
+  assert(!type1.contains("use_sim_time") && !type1.contains("ros_node_name") &&
+         !type1.contains("phase_t0_ns") && !type1.contains("slotId"));
+  assert(xsim::experiment_config(original, startup_epoch, "") == type1);
+  auto onboard = original;
+  onboard["robots"][0]["binding"]["executionHost"] = {{"kind", "agent"}, {"agentId", "agent-1"}};
+  onboard["robots"][0]["binding"]["simulationSensors"]["simpleLidar"] = {
+    {"enabled", false}, {"bodyReturns", true}};
+  bool station_required = false;
+  try { (void)config_for(onboard); } catch (const std::exception &) { station_required = true; }
+  assert(station_required);
+  auto no_world = onboard;
+  no_world["deployment"] = xsim::Json::object();
+  assert(!no_world.at("deployment").contains("worldHost"));
+  const auto self = xsim::experiment_config(onboard, startup_epoch, "scout-1");
+  const auto without_world = xsim::experiment_config(no_world, startup_epoch, "scout-1");
+  assert(without_world == self);
+  assert(!without_world.contains("worldHost") && !without_world.contains("placement"));
+  no_world.erase("deployment");
+  assert(xsim::experiment_config(no_world, startup_epoch, "scout-1") == self);
+  assert(self.at("entities").size() == 1);
+  assert(self.at("entities").at(0).at("name") == "ugv1");
+  assert(self.at("entities").at(0).at("body_returns") == true);
+  assert(self.at("publish_clock") == false);
+  assert(self.at("use_sim_time") == false);
+  assert(self.at("ros_node_name") == "ugv1");
+  assert(self.at("epoch_ns") == startup_epoch);
+  assert(!self.contains("phase_t0_ns") && !self.contains("slotId"));
+  const auto self_bindings = xsim::experiment_robot_bindings(onboard, "scout-1");
+  assert(self_bindings.size() == 1);
+  assert(self_bindings.at("ugv1") == "scout-1");
+  const int64_t phase = 42;
+  const auto phased = xsim::experiment_config(onboard, startup_epoch, "scout-1", &phase);
+  assert(phased.at("epoch_ns") == startup_epoch && phased.at("phase_t0_ns") == phase);
+  slot_id(onboard["robots"][0], "Robot:Case_01.rev-2");
+  const auto named = xsim::experiment_config(onboard, startup_epoch, "Robot:Case_01.rev-2");
+  assert(named.at("ros_node_name") == "ugv1");
+  assert(named.at("entities").at(0).at("name") == "ugv1");
+  const auto reject_slot = [](const xsim::Json &input, const std::string &id) {
+    bool refused = false;
+    try { (void)xsim::experiment_config(input, startup_epoch, id); }
+    catch (const std::exception &) { refused = true; }
+    assert(refused);
+    refused = false;
+    try { (void)xsim::experiment_robot_bindings(input, id); }
+    catch (const std::exception &) { refused = true; }
+    assert(refused);
+  };
+  reject_slot(original, "missing-slot");
+  const auto hybrid_roster = xsim::load_json_object(root + "/hybrid-filter-physical-sensor.input.json");
+  reject_slot(hybrid_roster, "px4-1");
+  auto tracker_slot = original;
+  tracker_slot["robots"][0]["binding"]["applyModelDynamics"] = false;
+  reject_slot(tracker_slot, "scout-1");
+  auto duplicate_slot = original;
+  slot_id(duplicate_slot["robots"][1], "scout-1");
+  reject_slot(duplicate_slot, "scout-1");
+
+  char pattern[] = "/tmp/xsim-experiment-ground-XXXXXX";
+  assert(mkdtemp(pattern));
+  const std::filesystem::path ground_dir(pattern);
+  struct GroundCleanup { std::filesystem::path root; ~GroundCleanup() { std::filesystem::remove_all(root); } } ground_cleanup{ground_dir};
+  const auto write_ground = [&](const char *name, const char *body) {
+    const auto path = ground_dir / name;
+    std::ofstream(path) << body;
+    return path.string();
+  };
+  const auto plane_path = write_ground("plane.json",
+      R"({"schema":"xgc2.scene.compiled.v1","id":"yard","frame":"world","ground":{"mode":"default_plane","z":1.5},"geometries":[{"type":"not-a-shape"}],"models":{},"obstacles":[]})");
+  auto session = original;
+  session["sceneAsset"] = {{"sceneFile", plane_path}};
+  const auto lowered = config_for(session);
+  assert(!lowered.at("entities").empty());
+  for (const auto &entity : lowered.at("entities")) assert(!entity.contains("ground_z"));
+  const auto applied = xsim::resolve_scene_file(lowered, "");
+  for (const auto &entity : applied.at("entities")) {
+    assert(entity.at("ground_z") == 1.5);
+    assert(xsim::parse_entity(entity).ground_z == 1.5);
+  }
+  assert(applied.at("scene").at("document").at("geometries").at(0).at("type") == "not-a-shape");
+  for (const char *kind : {"none", "model"}) {
+    const auto path = write_ground(kind, kind == std::string("none")
+        ? R"({"schema":"xgc2.scene.compiled.v1","id":"yard","frame":"world","ground":{"mode":"none"},"geometries":[],"models":{},"obstacles":[]})"
+        : R"({"schema":"xgc2.scene.compiled.v1","id":"yard","frame":"world","ground":{"mode":"model","model":"terrain"},"geometries":[],"models":{},"obstacles":[]})");
+    auto moving = original;
+    moving["sceneAsset"] = {{"sceneFile", path}};
+    bool refused = false;
+    try { (void)xsim::resolve_scene_file(config_for(moving), ""); }
+    catch (const std::exception &error) {
+      refused = std::string(error.what()).find(std::string("planar contact does not support ground ") + kind) != std::string::npos;
+    }
+    assert(refused);
+  }
+
   std::cout << cases.size() << " current frozen Session fixtures and strict native-input negative controls passed\n";
   std::cout << "frozen public robot identities, hybrid filtering and unchanged scientific config passed\n";
 }

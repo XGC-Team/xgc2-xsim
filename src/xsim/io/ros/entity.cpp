@@ -33,11 +33,13 @@ RosEntity::RosEntity(const std::shared_ptr<Entity> &e, World &w,
                      ros::CallbackQueue &iq, ros::CallbackQueue &sq,
                      const Json &config, std::shared_ptr<void> owner,
                      std::shared_ptr<PublicationMetrics> telemetry_metrics,
-                     std::shared_ptr<PublicationMetrics> cloud_metrics)
+                     std::shared_ptr<PublicationMetrics> cloud_metrics,
+                     const int64_t *phase_t0_ns)
     : ros_config(config), entity(e), world(w), runtime_owner(std::move(owner)),
       input_queue(iq), service_queue(sq), telemetry_metrics(std::move(telemetry_metrics)),
       cloud_metrics(std::move(cloud_metrics)),
-      rng(ros_config.value("mocap_seed", 1u)), schedule(w.epoch) {
+      rng(ros_config.value("mocap_seed", 1u)),
+      schedule(sampling_phase_ns(phase_t0_ns, w.epoch)) {
   for (const char *key : {"mocap_topic", "mocap_velocity_topic"})
     if (ros_config.contains(key))
       throw std::invalid_argument("unsupported ROS configuration: " + std::string(key));

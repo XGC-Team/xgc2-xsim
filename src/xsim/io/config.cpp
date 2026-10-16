@@ -1,5 +1,6 @@
 #include "config.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cerrno>
 #include <fcntl.h>
 #include <filesystem>
@@ -115,24 +116,66 @@ Json parse_json_object(const std::string &contents) {
   if (!j.is_object()) throw std::invalid_argument("configuration must be one JSON object");
   return j;
 }
-Json resolve_scene_file(Json j, const std::string &scene_file) {
-  if (!scene_file.empty()) {
-    const auto configured = j.value("scene_file", std::string{});
-    if (!configured.empty() && configured != scene_file)
-      throw std::invalid_argument("--scene-file conflicts with configuration scene_file");
-    j["scene_file"] = scene_file;
-  }
-  if(j.contains("scene_file") && !j.at("scene_file").get<std::string>().empty()) {
-    const auto path = j.at("scene_file").get<std::string>();
-    j["scene"]["document"] = yaml_json(YAML::LoadFile(path));
-    const auto manifest = std::filesystem::path(path).parent_path() / "manifest.json";
-    // Saved point-cloud scenes are sampled by the shared scene fleet on both
-    // simulators. Do not publish a second empty geometry cloud on these topics.
-    if (std::filesystem::is_regular_file(manifest) &&
-        load_json_object(manifest.string()).contains("pointCloud")) {
-      j.erase("reference_cloud_topic");
-      for (auto& entity : j["entities"]) entity.erase("sensor");
+// Reads ground.mode and ground.z from the document already in memory. Sensors
+// decodes geometries later. This does not sample a mesh or add a contact model.
+void apply_compiled_ground(Json &config) {
+  if (!config.contains("scene") || !config.at("scene").is_object() || !config.at("scene").contains("document"))
+    return;
+  const auto &document = config.at("scene").at("document");
+  if (!document.is_object() || document.value("schema", std::string{}) != "xgc2.scene.compiled.v1") return;
+  if (config.contains("entities") && !config.at("entities").is_array())
+    throw std::invalid_argument("entities must be an array");
+  const bool robots = config.contains("entities") && !config.at("entities").empty();
+  const auto ground = document.value("ground", Json::object());
+  if (!ground.is_object()) throw std::invalid_argument("compiled ground must be an object");
+  const auto mode = ground.value("mode", std::string("default_plane"));
+  if (mode == "default_plane") {
+    if (ground.contains("model")) throw std::invalid_argument("default_plane ground has no model");
+    const double z = ground.value("z", 0.0);
+    if (!std::isfinite(z)) throw std::invalid_argument("nonfinite ground z");
+    if (!robots) return;
+    for (auto &entity : config["entities"]) {
+      if (!entity.is_object()) throw std::invalid_argument("entity must be an object");
+      entity["ground_z"] = z;
     }
+    return;
+  }
+  if (mode == "none") {
+    if (ground.contains("z") || ground.contains("model"))
+      throw std::invalid_argument("ground none is not a plane");
+  } else if (mode == "model") {
+    if (ground.contains("z")) throw std::invalid_argument("ground model is not a sampled plane");
+  } else {
+    throw std::invalid_argument("unknown compiled ground mode");
+  }
+  if (robots) throw std::invalid_argument("planar contact does not support ground " + mode);
+}
+Json resolve_scene_file(Json j, const std::string &scene_file) {
+  // The frozen source path is the asset directory. Capture it before a compiled
+  // override replaces scene_file. Do not search that override or the working directory.
+  std::string asset_scene;
+  if (j.contains("scene_file") && j.at("scene_file").is_string())
+    asset_scene = j.at("scene_file").get<std::string>();
+  // A non-empty host path replaces the frozen path. Empty leaves it. Load the winner once.
+  if (!scene_file.empty()) j["scene_file"] = scene_file;
+  if (j.contains("scene_file") && !j.at("scene_file").is_null()) {
+    if (!j.at("scene_file").is_string()) throw std::invalid_argument("scene_file must be a string");
+    const auto path = j.at("scene_file").get<std::string>();
+    if (path.empty()) return j;
+    j["scene"]["document"] = yaml_json(YAML::LoadFile(path));
+    const auto asset = std::filesystem::path(asset_scene);
+    if (!asset_scene.empty() && asset.has_parent_path()) {
+      const auto manifest = asset.parent_path() / "manifest.json";
+      // SceneNode's native lidar engine owns a saved point cloud named by the
+      // frozen asset manifest. Drop XSim's reference topic and entity sensors
+      // so they are not a second publisher. The source scene itself is not read.
+      if (std::filesystem::is_regular_file(manifest) &&
+          load_json_object(manifest.string()).contains("pointCloud")) {
+        j.erase("reference_cloud_topic");
+        for (auto& entity : j["entities"]) entity.erase("sensor");
+      }
+    }
+    apply_compiled_ground(j);
   }
   return j;
 }

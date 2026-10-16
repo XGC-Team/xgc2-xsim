@@ -205,7 +205,7 @@
       "runMode": "unsupported"
     },
     {
-      "expectedError": true,
+      "expectedConfig": "default-mixed.expected-config.json",
       "input": "reject-remote-world.input.json",
       "name": "reject-remote-world",
       "runMode": "simulation"
@@ -223,7 +223,7 @@
       "runMode": "simulation"
     },
     {
-      "expectedError": true,
+      "expectedConfig": "empty-world.expected-config.json",
       "input": "reject-remote-world-physical-only-hybrid.input.json",
       "name": "reject-remote-world-physical-only-hybrid",
       "runMode": "hybrid"
