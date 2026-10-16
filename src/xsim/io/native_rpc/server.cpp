@@ -11,11 +11,6 @@
 #include <iomanip>
 namespace xsim {
 namespace {
-// One adapter command thread keeps one ROS service call in flight per robot.
-// Arm and mode callbacks block in World::wait, and apply_commands already
-// drains every queued ticket on the tick. The worker count is that roster
-// cap (adapter kMaximumRobots and native entity_limit), not teleop width.
-constexpr unsigned kControlServiceWorkers = 256;
 bool safe_request_id(const std::string &text) {
   return !text.empty() && text.size() <= 128 &&
       std::all_of(text.begin(), text.end(), [](unsigned char c) {
@@ -92,8 +87,7 @@ void Server::run(const volatile sig_atomic_t &stopping) {
   if (io_.start_outputs) io_.start_outputs();
   world_.start();
   preparing_ = true;
-  service_workers_.reserve(kControlServiceWorkers);
-  for (unsigned i = 0; i < kControlServiceWorkers; ++i)
+  for (unsigned i = 0; i < 2; ++i)
     service_workers_.emplace_back([this] {
       try { service_work(); } catch (...) { worker_failed(); }
     });
@@ -103,9 +97,7 @@ void Server::run(const volatile sig_atomic_t &stopping) {
   });
   {
     std::unique_lock<std::mutex> lock(started_mutex_);
-    started_wake_.wait(lock, [this] {
-      return (service_started_ == kControlServiceWorkers && output_started_) || worker_failed_;
-    });
+    started_wake_.wait(lock, [this] { return (service_started_ == 2 && output_started_) || worker_failed_; });
   }
   if (worker_failed_) { shutdown(); std::rethrow_exception(worker_error_); }
   workers_started_ = true;
@@ -497,8 +489,8 @@ void Server::service_work() {
       }
     }
     if (task) task();
-    // The same workers prepare native entities and poll ROS services.
-    // A blocked Arm/Mode wait occupies one worker; the others keep polling.
+    // These are the original two service workers, not an additional pool.
+    // Native preparation is ordinary C++; only actual ROS services enter its queue.
     if (io_.poll_services) io_.poll_services();
   }
 }
