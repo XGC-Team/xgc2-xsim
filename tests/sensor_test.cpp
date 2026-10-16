@@ -1,8 +1,11 @@
 #include "scene_fixture.hpp"
 #include "systems/sensors.hpp"
+#include <atomic>
 #include <cassert>
 #include <cstring>
+#include <limits>
 #include <iostream>
+#include <string>
 #include <thread>
 
 using namespace xsim;
@@ -30,7 +33,14 @@ Sample receive(const std::shared_ptr<Sensor> &sensor, std::vector<uint8_t> &clou
   const auto deadline = Clock::now() + std::chrono::seconds(3);
   Sample sample;
   while (!Sensors::take(sensor, sample, cloud, &beams)) {
-    assert(Clock::now() < deadline);
+    if (Clock::now() >= deadline) {
+      std::cerr << "receive timeout scans=" << sensor->scans.load()
+                << " misses=" << sensor->misses.load()
+                << " errors=" << sensor->errors.load()
+                << " computed=" << sensor->computed_scans.load()
+                << " error=" << sensor->error << '\n';
+      assert(false);
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
   return sample;
@@ -208,7 +218,444 @@ void phased_worker_period_boundary() {
 }
 } // namespace
 
+Json dynamic_document() {
+  const Json box = {{"type", "box"}, {"size", {1.0, 4.0, 4.0}}};
+  const Json identity = {{"position", {0.0, 0.0, 0.0}}, {"orientation", {0.0, 0.0, 0.0, 1.0}}};
+  const Json local = {{"position", {0.0, 0.5, 0.0}}, {"orientation", {0.0, 0.0, 0.0, 1.0}}};
+  Json document = {{"schema", "xgc2.scene.compiled.v1"}, {"id", "dynamic"}, {"frame", "world"},
+                   {"ground", {{"mode", "none"}}}, {"geometries", Json::array({box})},
+                   {"models", {{"mover", {{"parts", Json::array({{{"id", "body"}, {"pose", local}, {"geometryIndex", 0}}})}}},
+                               {"post", {{"parts", Json::array({{{"id", "body"}, {"pose", identity}, {"geometryIndex", 0}}})}}}}},
+                   {"obstacles", Json::array({
+                       {{"id", "mover"}, {"name", "Mover"}, {"model", "mover"},
+                        {"pose", {{"position", {4.0, 0.0, 0.0}}, {"orientation", {0.0, 0.0, 0.0, 1.0}}}},
+                        {"motion", {{"type", "constant_twist"}}}},
+                       {{"id", "post"}, {"name", "Post"}, {"model", "post"},
+                        {"pose", {{"position", {0.0, 30.0, 0.0}}, {"orientation", {0.0, 0.0, 0.0, 1.0}}}},
+                        {"motion", {{"type", "hold"}}}}})}};
+  return {{"document", std::move(document)}};
+}
+bool bind_mover(Sensors &sensors) {
+  return sensors.bind_dynamic_scene("store-epoch", 1, "world", {"mover"});
+}
+Json heavy_dynamic_document() {
+  auto wrapped = dynamic_document();
+  auto &document = wrapped["document"];
+  for (int i = 0; i < 24; ++i) {
+    const auto name = "hold-" + std::to_string(i);
+    document["models"][name] = document["models"]["post"];
+    document["obstacles"].push_back(
+        {{"id", name}, {"name", name}, {"model", name},
+         {"pose", {{"position", {0.0, 40.0 + i, 0.0}}, {"orientation", {0.0, 0.0, 0.0, 1.0}}}},
+         {"motion", {{"type", "hold"}}}});
+  }
+  wrapped["surface_spacing"] = 0.05;
+  return wrapped;
+}
+SceneObstaclePose pose_at(const char *id, double x) {
+  SceneObstaclePose pose;
+  pose.id = id;
+  pose.pose.position = Eigen::Vector3d(x, 0, 0);
+  pose.pose.orientation = Eigen::Quaterniond::Identity();
+  return pose;
+}
+void wait_scene(Sensors &sensors, uint64_t version) {
+  const auto deadline = Clock::now() + std::chrono::seconds(3);
+  while (Clock::now() < deadline) {
+    if (sensors.scene_ready() && sensors.scene_version() >= version) return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  std::cerr << "scene wait timeout ready=" << sensors.scene_ready()
+            << " version=" << sensors.scene_version() << " want>=" << version << '\n';
+  assert(false);
+}
+float mean_x(const std::vector<uint8_t> &cloud) {
+  assert(!cloud.empty() && cloud.size() % 12 == 0);
+  double sum = 0;
+  int count = 0;
+  for (size_t i = 0; i < cloud.size(); i += 12) {
+    float x = 0;
+    std::memcpy(&x, cloud.data() + i, sizeof x);
+    sum += x;
+    ++count;
+  }
+  return float(sum / count);
+}
+void dynamic_scene_checks() {
+  Sensors still(sceneFixture({{"obstacles", Json::array({{{"type", "box"}, {"position", {4, 0, 0}}, {"size", {1, 1, 1}}}})}}), 2);
+  assert(!still.has_dynamic_obstacles() && still.scene_ready() && still.scene_version() == 1);
+  assert(!still.bind_dynamic_scene("store-epoch", 1, "world", {"mover"}));
+  assert(!still.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 4)}));
+  assert(still.scene_ready() && still.scene_version() == 1);
+
+  Sensors unbound(dynamic_document(), 2);
+  assert(unbound.has_dynamic_scene() && !unbound.scene_ready() && unbound.scene_version() == 0);
+  assert(!unbound.update_scene_state("world", "first-state", 1, {pose_at("mover", 4)}));
+  assert(!unbound.scene_ready() && unbound.scene_version() == 0);
+
+  Sensors sensors(dynamic_document(), 2);
+  auto robot = entity(7, "dyn");
+  Json config = {{"backend", "cpu"}, {"h_fov_deg", 10}, {"v_fov_deg", 10}, {"h_res", 4}, {"v_res", 2},
+                 {"rate_hz", 10}, {"range", 30}};
+  robot->sensor = sensors.prepare(robot, config);
+  assert(robot->sensor && !robot->sensor->gpu && !sensors.scene_ready());
+  auto sample_state = state(robot, epoch);
+  sensors.submit(sample_state);
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  assert(robot->sensor->scans == 0);
+
+  assert(!sensors.update_scene_state("map", "store-epoch", 1, {pose_at("mover", 4)}));
+  assert(!sensors.update_scene_state("world", "other-epoch", 1, {pose_at("mover", 4)}));
+  assert(!sensors.update_scene_state("world", "store-epoch", 0, {pose_at("mover", 4)}));
+  assert(!sensors.update_scene_state("world", "store-epoch", 1, {}));
+  auto degenerate = pose_at("mover", 4);
+  degenerate.pose.orientation = Eigen::Quaterniond(0, 0, 0, 0);
+  assert(!sensors.update_scene_state("world", "store-epoch", 1, {degenerate}));
+  assert(!sensors.scene_ready() && sensors.scene_version() == 0);
+  assert(!sensors.bind_dynamic_scene("store-epoch", 1, "world", {}));
+  assert(!sensors.bind_dynamic_scene("store-epoch", 1, "map", {"mover"}));
+  assert(bind_mover(sensors));
+  assert(bind_mover(sensors));
+  auto duplicated = pose_at("mover", 4);
+  duplicated.pose.position.x() = std::numeric_limits<double>::quiet_NaN();
+  assert(!sensors.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 4), duplicated}));
+  assert(!sensors.scene_ready() && sensors.scene_version() == 0);
+  assert(!sensors.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 4), pose_at("stray", 1)}));
+  assert(!sensors.scene_ready() && sensors.scene_version() == 0);
+
+  assert(sensors.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 4)}));
+  assert(robot->sensor->scans == 0);
+  wait_scene(sensors, 1);
+  assert(robot->sensor->scans == 0 && sensors.scene_version() == 1);
+  assert(sensors.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 4)}));
+  assert(sensors.scene_version() == 1);
+
+  std::vector<uint8_t> cloud, beams;
+  sensors.submit(sample_state);
+  auto first = receive(robot->sensor, cloud, beams);
+  const auto near = mean_x(cloud);
+  assert(first.scene && first.scene_version == 1);
+  assert(near > 2.5f && near < 4.0f);
+  assert(std::abs(first.scene->obstacles()[0].position.x() - 4) < 1e-9);
+  assert(std::abs(first.scene->obstacles()[0].position.y() - 0.5) < 1e-9);
+  assert(std::abs(first.scene->obstacles()[1].position.y() - 30) < 1e-9);
+  const auto held = first.scene;
+  const auto hits = robot->sensor->cache_hits.load();
+  sample_state.stamp += 100000000;
+  sensors.submit(sample_state);
+  auto cached = receive(robot->sensor, cloud, beams);
+  assert(cached.scene.get() == held.get() && cached.scene_version == 1);
+  assert(robot->sensor->cache_hits > hits);
+  assert(sensors.scene_version() == 1);
+
+  assert(sensors.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 8)}));
+  std::this_thread::sleep_for(std::chrono::milliseconds(40));
+  assert(sensors.scene_version() == 1);
+  sample_state.stamp += 100000000;
+  sensors.submit(sample_state);
+  auto second = receive(robot->sensor, cloud, beams);
+  assert(second.scene.get() == held.get() && second.scene_version == 1);
+  assert(std::abs(mean_x(cloud) - near) < 0.2f);
+  assert(sensors.scene_version() == 2);
+  sample_state.stamp += 100000000;
+  sensors.submit(sample_state);
+  auto third = receive(robot->sensor, cloud, beams);
+  const auto farther = mean_x(cloud);
+  assert(third.scene && third.scene.get() != held.get() && third.scene_version == 2);
+  assert(farther > near + 2.0f);
+  assert(std::abs(held->obstacles()[0].position.x() - 4) < 1e-9);
+  assert(std::abs(third.scene->obstacles()[1].position.y() - 30) < 1e-9);
+
+  auto penetrating = entity(8, "pen");
+  Json penetrating_config = config;
+  penetrating_config["mode"] = "penetrating";
+  penetrating_config["surface_spacing"] = 0.4;
+  penetrating->sensor = sensors.prepare(penetrating, penetrating_config);
+  auto penetrating_state = state(penetrating, sample_state.stamp + 100000000);
+  sensors.submit(penetrating_state);
+  auto penetrating_sample = receive(penetrating->sensor, cloud, beams);
+  assert(penetrating_sample.scene && penetrating_sample.scene.get() != third.scene.get());
+  assert(std::abs(penetrating_sample.scene->spacing() - 0.4) < 1e-12);
+  assert(std::abs(penetrating_sample.scene->obstacles()[0].position.x() - 8) < 1e-9);
+  const auto prepared_policy = penetrating->sensor->cpu->scene();
+  assert(sensors.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 5)}));
+  penetrating_state.stamp += 100000000;
+  sensors.submit(penetrating_state);
+  auto claimed = receive(penetrating->sensor, cloud, beams);
+  assert(claimed.scene.get() == penetrating_sample.scene.get());
+  assert(std::abs(claimed.scene->obstacles()[0].position.x() - 8) < 1e-9);
+  assert(sensors.scene_version() == 3);
+  penetrating_state.stamp += 100000000;
+  sensors.submit(penetrating_state);
+  auto moved_penetrating = receive(penetrating->sensor, cloud, beams);
+  assert(moved_penetrating.scene.get() != penetrating_sample.scene.get());
+  assert(std::abs(moved_penetrating.scene->obstacles()[0].position.x() - 5) < 1e-9);
+  assert(std::abs(penetrating_sample.scene->obstacles()[0].position.x() - 8) < 1e-9);
+  assert(prepared_policy.get() == penetrating_sample.scene.get());
+  assert(std::abs(moved_penetrating.scene->obstacles()[1].position.y() - 30) < 1e-9);
+
+  std::atomic<bool> stop{false};
+  std::thread mover([&] {
+    bool far = false;
+    while (!stop.load()) {
+      far = !far;
+      sensors.update_scene_state("world", "store-epoch", 1, {pose_at("mover", far ? 6.0 : 4.0)});
+    }
+  });
+  for (int i = 0; i < 8; ++i) {
+    // A producer try_lock miss consumes no scene, so keep offering a later
+    // stamp until this sensor actually publishes one paired sample.
+    Sample taken;
+    bool got = false;
+    const auto deadline = Clock::now() + std::chrono::seconds(3);
+    while (!got && Clock::now() < deadline) {
+      sample_state.stamp += 2000000000;
+      sensors.submit(sample_state);
+      got = Sensors::take(robot->sensor, taken, cloud, &beams);
+      if (!got) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    assert(got && taken.scene && taken.scene_version > 0);
+    const auto face = float(taken.scene->obstacles()[0].position.x() - 0.5);
+    assert(std::abs(mean_x(cloud) - face) < 0.75f);
+    assert(std::abs(held->obstacles()[0].position.x() - 4) < 1e-9);
+  }
+  stop.store(true);
+  mover.join();
+
+  Sensors gpu(dynamic_document(), 2);
+  auto gpu_robot = entity(9, "gpu");
+  bool rejected = false;
+  try {
+    gpu_robot->sensor = gpu.prepare(gpu_robot, {{"backend", "gpu"}, {"h_res", 4}, {"v_res", 2}});
+  } catch (const std::invalid_argument &error) {
+    rejected = std::string(error.what()).find("does not support dynamic") != std::string::npos;
+  }
+  assert(rejected && !gpu.scene_ready());
+
+  Sensors automatic(dynamic_document(), 2);
+  auto auto_robot = entity(10, "auto");
+  auto_robot->sensor = automatic.prepare(auto_robot, {{"backend", "auto"}, {"h_fov_deg", 10}, {"v_fov_deg", 10},
+                                                      {"h_res", 4}, {"v_res", 2}, {"range", 30}});
+  assert(auto_robot->sensor && !auto_robot->sensor->gpu);
+  assert(bind_mover(automatic));
+  assert(automatic.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 4)}));
+  wait_scene(automatic, 1);
+  auto auto_state = state(auto_robot, epoch);
+  automatic.submit(auto_state);
+  auto auto_sample = receive(auto_robot->sensor, cloud, beams);
+  assert(auto_sample.scene && !cloud.empty() && cloud.size() % 12 == 0);
+
+  {
+    Sensors live(heavy_dynamic_document(), 2);
+    auto watcher = entity(30, "watch");
+    Json tiny = {{"backend", "cpu"}, {"h_fov_deg", 10}, {"v_fov_deg", 10}, {"h_res", 4}, {"v_res", 2}, {"range", 40}};
+    watcher->sensor = live.prepare(watcher, tiny);
+    assert(bind_mover(live));
+    std::atomic<bool> run{true};
+    std::atomic<int> posted{0};
+    std::thread flood([&] {
+      double x = 4;
+      while (run.load()) {
+        x += 0.05;
+        live.update_scene_state("world", "store-epoch", 1, {pose_at("mover", x)});
+        posted.fetch_add(1, std::memory_order_relaxed);
+      }
+    });
+    wait_scene(live, 1);
+    assert(watcher->sensor->scans == 0 && posted.load() > 1);
+    const auto pinned_version = live.scene_version();
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    assert(live.scene_ready() && live.scene_version() == pinned_version && watcher->sensor->scans == 0);
+    run.store(false);
+    flood.join();
+  }
+
+  {
+    Sensors late(dynamic_document(), 2);
+    auto robot = entity(31, "late");
+    Json tiny = {{"backend", "cpu"}, {"h_fov_deg", 10}, {"v_fov_deg", 10}, {"h_res", 4}, {"v_res", 2}, {"range", 40}};
+    robot->sensor = late.prepare(robot, tiny);
+    assert(bind_mover(late));
+    assert(late.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 4)}));
+    wait_scene(late, 1);
+    assert(robot->sensor->scans == 0);
+    Json pen_config = tiny;
+    pen_config["mode"] = "penetrating";
+    pen_config["surface_spacing"] = 0.4;
+    auto pen = entity(32, "late_pen");
+    pen->sensor = late.prepare(pen, pen_config);
+    const auto policy_v1 = pen->sensor->cpu->scene();
+    assert(policy_v1 && std::abs(policy_v1->obstacles()[0].position.x() - 4) < 1e-9);
+    Json other_config = pen_config;
+    other_config["surface_spacing"] = 0.25;
+    auto other = entity(33, "late_other");
+    other->sensor = late.prepare(other, other_config);
+    const auto other_v1 = other->sensor->cpu->scene();
+    assert(other_v1 && other_v1.get() != policy_v1.get());
+    assert(std::abs(other_v1->obstacles()[0].position.x() - 4) < 1e-9);
+    for (int i = 1; i <= 30; ++i)
+      assert(late.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 8.0 + i * 0.05)}));
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    assert(late.scene_version() == 1);
+    assert(std::abs(policy_v1->obstacles()[0].position.x() - 4) < 1e-9);
+    auto sample_state = state(robot, epoch);
+    late.submit(sample_state);
+    auto captured = receive(robot->sensor, cloud, beams);
+    assert(captured.scene_version == 1 && std::abs(captured.scene->obstacles()[0].position.x() - 4) < 1e-9);
+    assert(late.scene_version() == 2);
+    assert(pen->sensor->cpu->scene().get() == policy_v1.get());
+    sample_state.stamp += 100000000;
+    late.submit(sample_state);
+    auto installed = receive(robot->sensor, cloud, beams);
+    assert(installed.scene_version == 2);
+    assert(std::abs(installed.scene->obstacles()[0].position.x() - 9.5) < 1e-6);
+    auto pen_again = entity(34, "late_pen_again");
+    pen_again->sensor = late.prepare(pen_again, pen_config);
+    const auto policy_v2 = pen_again->sensor->cpu->scene();
+    assert(policy_v2.get() != policy_v1.get());
+    assert(std::abs(policy_v2->obstacles()[0].position.x() - 9.5) < 1e-6);
+    auto other_again = entity(35, "late_other_again");
+    other_again->sensor = late.prepare(other_again, other_config);
+    assert(other_again->sensor->cpu->scene().get() != other_v1.get());
+    assert(std::abs(other_again->sensor->cpu->scene()->obstacles()[0].position.x() - 9.5) < 1e-6);
+    assert(pen->sensor->cpu->scene().get() == policy_v1.get());
+    assert(other->sensor->cpu->scene().get() == other_v1.get());
+    const auto scans_before_fence = robot->sensor->scans.load();
+    const auto fenced = late.scene_version();
+    assert(!late.update_scene_state("world", "other-epoch", 1, {pose_at("mover", 1)}));
+    assert(!late.scene_ready());
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    assert(!late.scene_ready() && late.scene_version() == fenced);
+    assert(!late.bind_dynamic_scene("store-epoch", 1, "world", {"mover"}));
+    assert(!late.update_scene_state("world", "store-epoch", 2, {pose_at("mover", 3)}));
+    assert(!late.scene_ready() && late.scene_version() == fenced);
+    assert(robot->sensor->scans == scans_before_fence);
+  }
+
+  {
+    Sensors raced(dynamic_document(), 2);
+    auto seed = entity(40, "seed");
+    Json tiny = {{"backend", "cpu"}, {"h_fov_deg", 10}, {"v_fov_deg", 10}, {"h_res", 4}, {"v_res", 2}, {"range", 40}};
+    seed->sensor = raced.prepare(seed, tiny);
+    assert(bind_mover(raced));
+    std::atomic<bool> run{true};
+    std::thread flood([&] {
+      double x = 1;
+      while (run.load()) {
+        x += 0.2;
+        raced.update_scene_state("world", "store-epoch", 1, {pose_at("mover", x)});
+      }
+    });
+    std::vector<std::shared_ptr<Sensor>> prepared;
+    std::vector<std::shared_ptr<const xgc2_math::scene::LidarScene>> handles;
+    std::vector<Eigen::Vector3d> poses;
+    for (int i = 0; i < 6; ++i) {
+      auto created = entity(50 + i, "prep");
+      created->sensor = raced.prepare(created, tiny);
+      auto scene = created->sensor->cpu->scene();
+      assert(scene && std::abs(scene->obstacles()[0].position.y() - 0.5) < 1e-9);
+      prepared.push_back(created->sensor);
+      handles.push_back(scene);
+      poses.push_back(scene->obstacles()[0].position);
+    }
+    Json pen_config = tiny;
+    pen_config["mode"] = "penetrating";
+    pen_config["surface_spacing"] = 0.4;
+    auto pen = entity(70, "prep_pen");
+    pen->sensor = raced.prepare(pen, pen_config);
+    const auto pen_scene = pen->sensor->cpu->scene();
+    assert(pen_scene && std::abs(pen_scene->spacing() - 0.4) < 1e-12);
+    assert(std::abs(pen_scene->obstacles()[0].position.y() - 0.5) < 1e-9);
+    const auto pen_pose = pen_scene->obstacles()[0].position;
+    run.store(false);
+    flood.join();
+    assert(raced.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 2)}));
+    if (!raced.scene_ready()) wait_scene(raced, 1);
+    for (size_t i = 0; i < handles.size(); ++i) {
+      assert(prepared[i]->cpu->scene().get() == handles[i].get());
+      assert((prepared[i]->cpu->scene()->obstacles()[0].position - poses[i]).norm() < 1e-9);
+    }
+    assert(pen->sensor->cpu->scene().get() == pen_scene.get());
+    assert((pen_scene->obstacles()[0].position - pen_pose).norm() < 1e-9);
+    assert(seed->sensor->scans == 0 && pen->sensor->scans == 0);
+  }
+
+  {
+    Sensors missing(dynamic_document(), 2);
+    auto robot = entity(83, "missing");
+    Json tiny = {{"backend", "cpu"}, {"h_fov_deg", 10}, {"v_fov_deg", 10}, {"h_res", 4}, {"v_res", 2}, {"range", 40}};
+    robot->sensor = missing.prepare(robot, tiny);
+    assert(bind_mover(missing));
+    assert(missing.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 4)}));
+    wait_scene(missing, 1);
+    const auto installed = missing.scene_version();
+    // Equal cardinality does not prove that every cold dynamic ID is present.
+    // Reject before any due sample, then recover through the existing fence.
+    assert(!missing.update_scene_state("world", "store-epoch", 1, {pose_at("stray", 1)}));
+    assert(!missing.scene_ready() && missing.scene_version() == installed);
+    assert(robot->sensor->scans == 0);
+    assert(missing.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 6)}));
+    wait_scene(missing, installed + 1);
+    assert(missing.scene_ready() && missing.scene_version() == installed + 1);
+    assert(robot->sensor->scans == 0);
+  }
+
+  {
+    Sensors again(dynamic_document(), 2);
+    auto robot = entity(81, "again");
+    Json tiny = {{"backend", "cpu"}, {"h_fov_deg", 10}, {"v_fov_deg", 10}, {"h_res", 4}, {"v_res", 2}, {"range", 40}};
+    robot->sensor = again.prepare(robot, tiny);
+    assert(bind_mover(again));
+    assert(again.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 4)}));
+    wait_scene(again, 1);
+    assert(again.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 8)}));
+    assert(again.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 4)}));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    assert(again.scene_ready() && again.scene_version() == 1);
+    auto sample_state = state(robot, epoch);
+    again.submit(sample_state);
+    auto kept = receive(robot->sensor, cloud, beams);
+    assert(kept.scene && kept.scene_version == 1 && kept.stamp == epoch);
+    assert(std::abs(kept.scene->obstacles()[0].position.x() - 4) < 1e-9);
+    assert(again.scene_version() == 1);
+    const auto hits = robot->sensor->cache_hits.load();
+    sample_state.stamp += 100000000;
+    again.submit(sample_state);
+    auto cached = receive(robot->sensor, cloud, beams);
+    assert(cached.scene.get() == kept.scene.get() && cached.scene_version == 1);
+    assert(robot->sensor->cache_hits > hits && again.scene_version() == 1);
+  }
+
+  {
+    // An accepted sample keeps the captured pointer, version, and stamp.
+    // Identity invalidation blocks later submits and installs only.
+    Sensors drain(dynamic_document(), 2);
+    auto robot = entity(82, "drain");
+    Json tiny = {{"backend", "cpu"}, {"h_fov_deg", 10}, {"v_fov_deg", 10}, {"h_res", 4}, {"v_res", 2}, {"range", 40}};
+    robot->sensor = drain.prepare(robot, tiny);
+    assert(bind_mover(drain));
+    assert(drain.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 4)}));
+    wait_scene(drain, 1);
+    auto sample_state = state(robot, epoch);
+    drain.submit(sample_state);
+    assert(!drain.update_scene_state("world", "other-epoch", 1, {pose_at("mover", 1)}));
+    assert(!drain.scene_ready());
+    auto kept = receive(robot->sensor, cloud, beams);
+    assert(kept.scene && kept.scene_version == 1 && kept.stamp == epoch);
+    assert(std::abs(kept.scene->obstacles()[0].position.x() - 4) < 1e-9);
+    const auto scans = robot->sensor->scans.load();
+    sample_state.stamp += 100000000;
+    drain.submit(sample_state);
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    assert(robot->sensor->scans == scans && !drain.scene_ready());
+    assert(!drain.update_scene_state("world", "store-epoch", 1, {pose_at("mover", 3)}));
+    assert(!drain.bind_dynamic_scene("fresh-epoch", 1, "world", {"mover"}));
+    assert(!drain.scene_ready() && drain.scene_version() == 1);
+  }
+}
+
 int main() {
+  dynamic_scene_checks();
   cadence_checks();
   phased_worker_period_boundary();
   Sensors sensors(sceneFixture({{"obstacles", Json::array({{{"type", "box"},

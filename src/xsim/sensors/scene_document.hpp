@@ -8,15 +8,32 @@
 #include <cmath>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace xsim {
+// One rigid part of a moving obstacle. `local_pose` stays in the model frame.
+// The world pose is composed only when an external SceneState arrives.
+struct DynamicPart {
+    std::size_t obstacle_index = 0;
+    xgc2_math::Pose3 local_pose;
+};
+struct DynamicObstacle {
+    std::string id;
+    xgc2_math::Pose3 pose;
+    std::vector<DynamicPart> parts;
+};
+
 // Cold numeric scene. Geometries are decoded once; instances are rigid poses.
 // Mesh instances share one TriangleMeshPtr. No SDF/glTF IO and no runtime scale.
+// Hold obstacles stay in `obstacles` only. twist/ping_pong/circle also keep a
+// part index. There is no motion interpreter here.
 struct CompiledScene {
     enum class GroundMode { DefaultPlane, Model, None };
     std::vector<xgc2_math::scene::Obstacle> obstacles;
+    std::vector<DynamicObstacle> dynamic_obstacles;
     GroundMode ground_mode = GroundMode::DefaultPlane;
     bool planar_ground = true;
     double ground_z = 0;
@@ -131,7 +148,8 @@ inline CompiledScene compiledSceneDocument(const nlohmann::json& document) {
     }
 
     CompiledScene result;
-    const auto append_model = [&](const std::string& name, const xgc2_math::Pose3& parent, const std::string& where) {
+    const auto append_model = [&](const std::string& name, const xgc2_math::Pose3& parent, const std::string& where,
+                                  std::vector<DynamicPart>* dynamic_parts) {
         const auto found = models.find(name);
         if (found == models.end()) throw std::invalid_argument(where + " model '" + name + "' is missing");
         if (found->second.unparsed_invalid)
@@ -145,10 +163,13 @@ inline CompiledScene compiledSceneDocument(const nlohmann::json& document) {
             auto shape = geometry.local;
             shape.position = parent.position + orientation * part.pose.position;
             shape.orientation = orientation * local;
+            if (dynamic_parts)
+                dynamic_parts->push_back(DynamicPart{result.obstacles.size(), part.pose});
             result.obstacles.push_back(std::move(shape));
         }
     };
 
+    std::set<std::string> obstacle_ids;
     for (const auto& obstacle : document.at("obstacles")) {
         if (!obstacle.is_object() || obstacle.contains("parts") || obstacle.contains("geometry") ||
             obstacle.contains("scale"))
@@ -156,14 +177,31 @@ inline CompiledScene compiledSceneDocument(const nlohmann::json& document) {
         const auto id = obstacle.at("id").get<std::string>();
         if (id.empty() || !obstacle.at("name").is_string())
             throw std::invalid_argument("compiled obstacle needs id and name");
+        if (!obstacle_ids.insert(id).second)
+            throw std::invalid_argument("compiled obstacle id is duplicated");
         if (!obstacle.contains("motion") || !obstacle.at("motion").is_object() ||
-            !obstacle.at("motion").contains("type") || !obstacle.at("motion").at("type").is_string() ||
-            obstacle.at("motion").at("type").get<std::string>() != "hold")
-            throw std::invalid_argument("static LidarScene accepts only hold motion");
+            !obstacle.at("motion").contains("type") || !obstacle.at("motion").at("type").is_string())
+            throw std::invalid_argument(
+                "compiled LidarScene accepts only hold, constant_twist, ping_pong or circle motion");
+        const auto motion = obstacle.at("motion").at("type").get<std::string>();
+        if (motion != "hold" && motion != "constant_twist" && motion != "ping_pong" && motion != "circle")
+            throw std::invalid_argument(
+                "compiled LidarScene accepts only hold, constant_twist, ping_pong or circle motion");
+        const auto parent = pose_of(obstacle.at("pose"));
+        std::vector<DynamicPart> parts;
         try {
-            append_model(obstacle.at("model").get<std::string>(), pose_of(obstacle.at("pose")), "obstacle '" + id + "'");
+            append_model(obstacle.at("model").get<std::string>(), parent, "obstacle '" + id + "'",
+                         motion == "hold" ? nullptr : &parts);
         } catch (const std::exception& error) {
             throw std::invalid_argument("obstacle '" + id + "': " + error.what());
+        }
+        if (motion != "hold") {
+            DynamicObstacle moving;
+            moving.id = id;
+            moving.pose = parent;
+            moving.pose.orientation = xgc2_math::normalizedQuaternion(parent.orientation);
+            moving.parts = std::move(parts);
+            result.dynamic_obstacles.push_back(std::move(moving));
         }
     }
 
@@ -187,7 +225,7 @@ inline CompiledScene compiledSceneDocument(const nlohmann::json& document) {
         result.ground_mode = CompiledScene::GroundMode::Model;
         result.planar_ground = false;
         result.ground_z = 0;
-        append_model(ground.at("model").get<std::string>(), pose_of(ground.at("pose")), "ground");
+        append_model(ground.at("model").get<std::string>(), pose_of(ground.at("pose")), "ground", nullptr);
     } else {
         throw std::invalid_argument("unknown compiled ground mode");
     }

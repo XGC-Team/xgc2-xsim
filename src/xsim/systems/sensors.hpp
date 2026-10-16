@@ -2,6 +2,7 @@
 #include "core/world.hpp"
 #include "io/config.hpp"
 #include "sensors/cadence.hpp"
+#include "sensors/scene_document.hpp"
 #include <xgc2_math/scene.hpp>
 #include <xgc2_math/scene/body_returns.hpp>
 #include "sensors/gpu_module.hpp"
@@ -10,12 +11,19 @@ struct Sample {
   Key key;
   int64_t stamp = 0;
   uint64_t scene_version = 1;
+  // Captured with scene_version under the same lock. A scan uses this pointer
+  // and never the scene published by a later update.
+  std::shared_ptr<const xgc2_math::scene::LidarScene> scene;
   uint64_t geometry_revision = 0;
   bool body_observation = false;
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   Eigen::Quaterniond orientation{Eigen::Quaterniond::Identity()};
   Clock::time_point submitted;
   std::shared_ptr<const Frame> bodies;
+};
+struct SceneObstaclePose {
+  std::string id;
+  xgc2_math::Pose3 pose;
 };
 struct SensorPayload {
   std::vector<uint8_t> data, beam_data;
@@ -82,6 +90,24 @@ public:
   void submit_frame(const std::shared_ptr<const Frame> &);
   void submit_frame(const Frame &); // ad-hoc fixture copy, not production
   void submit(const State &, std::shared_ptr<const Frame> bodies = {});
+  bool has_dynamic_scene() const { return dynamic_scene_; }
+  bool has_dynamic_obstacles() const { return dynamic_scene_; }
+  bool scene_ready() const { return scene_ready_.load(std::memory_order_acquire); }
+  uint64_t scene_version() const { return scene_version_.load(std::memory_order_acquire); }
+  // Cold identity comes from the latched /xgc_scene/snapshot once. frame must be
+  // world and dynamic_ids must equal the cold document's dynamic ids in
+  // definition order. A later epoch, document revision, frame, or id set
+  // invalidates until process restart and does not retarget the loaded geometry.
+  // Static scenes return false.
+  bool bind_dynamic_scene(const std::string &epoch, uint64_t document_revision,
+                          const std::string &frame_id, const std::vector<std::string> &dynamic_ids);
+  // Queues the latest poses from the 30 Hz /xgc_scene/state stream. That stream
+  // is not latched. Requires the bound epoch and document revision. A duplicate
+  // or unknown id, or a count other than the cold dynamic set, uses the same
+  // bad-state fence. Does not build a LidarScene and does not replace an
+  // already captured Sample.
+  bool update_scene_state(const std::string &frame_id, const std::string &epoch,
+                          uint64_t revision, const std::vector<SceneObstaclePose> &poses);
   std::vector<uint8_t> reference_cloud() const;
   void stop();
   static bool take_shared(const std::shared_ptr<Sensor> &, Sample &,
@@ -110,6 +136,29 @@ private:
   int64_t phase_t0_ns_ = 0;
   std::shared_ptr<const xgc2_math::scene::LidarScene> scene_;
   std::vector<xgc2_math::scene::Obstacle> obstacles_;
+  std::vector<DynamicObstacle> dynamic_obstacles_;
+  bool dynamic_scene_ = false;
+  std::vector<std::string> dynamic_ids_;
+  bool identity_bound_ = false;
+  bool identity_invalidated_ = false;
+  std::string bound_epoch_;
+  uint64_t bound_revision_ = 0;
+  std::atomic<bool> scene_ready_{true};
+  std::atomic<uint64_t> scene_version_{1};
+  // Serializes cold policy construction and the worker scene build.
+  // update_scene_state never takes this lock.
+  std::mutex update_mu_;
+  struct SceneJob {
+    uint64_t ticket = 0;
+    std::map<std::string, xgc2_math::Pose3> poses;
+  };
+  SceneJob pending_job_;
+  bool has_pending_job_ = false;
+  bool bootstrap_queued_ = false;
+  bool build_inflight_ = false;
+  uint64_t next_ticket_ = 0;
+  uint64_t installed_ticket_ = 0;
+  uint64_t fence_ticket_ = 0;
   double spacing_ = 0.1;
   bool buried_ = false;
   unsigned workers_;
@@ -134,6 +183,12 @@ private:
   void work(bool gpu);
   void enqueue(const std::shared_ptr<Sensor>&);
   void submit_sample(const State &, const std::shared_ptr<const Frame> &, uint64_t body_revision = 0);
+  std::shared_ptr<const xgc2_math::scene::LidarScene> scene_for(const xgc2_math::scene::SensorConfig &) const;
+  bool claim_scene_job(bool bootstrap, SceneJob *job);
+  void publish_scene_job(const SceneJob &job);
+  void release_scene_claim();
+  void invalidate_dynamic_scene();
+  std::shared_ptr<const xgc2_math::scene::LidarScene> cold_policy(double spacing, bool buried);
   uint64_t fixture_geometry_revision(const Frame &);
 };
 } // namespace xsim

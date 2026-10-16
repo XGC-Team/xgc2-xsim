@@ -155,11 +155,36 @@ int main() {
         copies.obstacles[0].vertices.data() == copies.obstacles[1].vertices.data() ||
         (copies.obstacles[1].position - Eigen::Vector3d(4, 0, 0)).norm() > 1e-12)
         throw std::runtime_error("analytic instances must copy one prepared hull");
-    for (const char* kind : {"constant_twist", "ping_pong", "circle", "waypoints"}) {
+    if (!plane.dynamic_obstacles.empty())
+        throw std::runtime_error("hold document must not invent a dynamic index");
+    for (const char* kind : {"constant_twist", "ping_pong", "circle"}) {
+        auto moving = base;
+        moving["obstacles"][0]["motion"] = {{"type", kind}};
+        moving["models"]["body"]["parts"][0]["pose"]["position"] = {0.0, 0.25, 0.0};
+        moving["epoch"] = "doc-epoch";
+        const auto indexed = xsim::compiledSceneDocument(moving);
+        if (indexed.dynamic_obstacles.size() != 1 ||
+            indexed.dynamic_obstacles[0].id != "only" || indexed.dynamic_obstacles[0].parts.size() != 1 ||
+            indexed.dynamic_obstacles[0].parts[0].obstacle_index != 0 ||
+            (indexed.dynamic_obstacles[0].parts[0].local_pose.position - Eigen::Vector3d(0, 0.25, 0)).norm() > 1e-12 ||
+            indexed.obstacles.size() != 1)
+            throw std::runtime_error(std::string(kind) + " did not keep a part-local index");
+    }
+    auto mixed = base;
+    mixed["obstacles"].push_back(instance("still", "Still", "body", {8, 0, 0}, {{"type", "hold"}}));
+    mixed["obstacles"][0]["motion"] = {{"type", "ping_pong"}};
+    const auto mixed_scene = xsim::compiledSceneDocument(mixed);
+    if (mixed_scene.obstacles.size() != 2 || mixed_scene.dynamic_obstacles.size() != 1 ||
+        mixed_scene.dynamic_obstacles[0].id != "only" || mixed_scene.dynamic_obstacles[0].parts[0].obstacle_index != 0)
+        throw std::runtime_error("hold obstacle must stay out of the dynamic index");
+    for (const char* kind : {"waypoints", "orbit"}) {
         auto moving = base;
         moving["obstacles"][0]["motion"] = {{"type", kind}};
         require_throw(moving, kind);
     }
+    auto duplicated = base;
+    duplicated["obstacles"].push_back(instance("only", "Again", "body", {1, 0, 0}, {{"type", "hold"}}));
+    require_throw(duplicated, "duplicate obstacle id");
     auto omitted_type = base;
     omitted_type["obstacles"][0]["motion"] = json::object();
     require_throw(omitted_type, "omitted motion type accepted as hold");

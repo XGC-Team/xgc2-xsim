@@ -36,7 +36,7 @@ Eigen::Quaterniond quat(const Json &j) {
 }
 bool same_observation(const Sample &a, const Sample &b) {
   if (a.key.id != b.key.id || a.key.generation != b.key.generation ||
-      a.scene_version != b.scene_version ||
+      a.scene_version != b.scene_version || a.scene.get() != b.scene.get() ||
       !(a.position.array() == b.position.array()).all() ||
       !(a.orientation.coeffs().array() == b.orientation.coeffs().array()).all())
     return false;
@@ -81,17 +81,266 @@ Sensors::Sensors(const Json &j, unsigned workers, std::chrono::milliseconds init
   // Compiled.v1 is read once here. The reader decodes each geometry once and
   // shares mesh handles; this constructor does not insert a ground solid.
   if(j.contains("document")) {
-    obstacles_ = sceneDocumentObstacles(j.at("document"));
+    const auto compiled = compiledSceneDocument(j.at("document"));
+    obstacles_ = compiled.obstacles;
+    dynamic_obstacles_ = compiled.dynamic_obstacles;
+    dynamic_scene_ = !dynamic_obstacles_.empty();
+    dynamic_ids_.reserve(dynamic_obstacles_.size());
+    for (const auto &item : dynamic_obstacles_) dynamic_ids_.push_back(item.id);
   }
   if (j.contains("obstacles"))
     throw std::invalid_argument("scene.obstacles is retired; supply scene.document with named parts");
   // One immutable compiled geometry/index for this world, never one map per
-  // robot.
+  // robot. A static document publishes it immediately. A dynamic document
+  // keeps the same object but does not scan until an external state arrives.
   scene_ = std::make_shared<xgc2_math::scene::LidarScene>(obstacles_, spacing_,
                                                           buried_);
+  if (dynamic_scene_) {
+    scene_ready_.store(false, std::memory_order_release);
+    scene_version_.store(0, std::memory_order_release);
+  }
+}
+bool quaternion_usable(const Eigen::Quaterniond &q) {
+  if (!q.coeffs().allFinite()) return false;
+  return q.coeffs().cwiseAbs().maxCoeff() > 1e-9;
+}
+std::shared_ptr<const xgc2_math::scene::LidarScene>
+Sensors::scene_for(const xgc2_math::scene::SensorConfig &config) const {
+  if (config.mode == xgc2_math::scene::SensorConfig::kPenetrating &&
+      (config.surface_spacing != spacing_ || config.penetrating_keep_buried != buried_)) {
+    const auto found = sampled_scenes_.find(std::make_pair(config.surface_spacing, config.penetrating_keep_buried));
+    if (found != sampled_scenes_.end() && found->second) return found->second;
+  }
+  return scene_;
+}
+namespace {
+bool same_pose(const xgc2_math::Pose3 &a, const xgc2_math::Pose3 &b) {
+  if (a.position != b.position || a.orientation.coeffs() != b.orientation.coeffs()) return false;
+  return true;
+}
+}
+bool Sensors::claim_scene_job(bool bootstrap, SceneJob *job) {
+  if (!dynamic_scene_ || build_inflight_ || !has_pending_job_ || !job) return false;
+  if (bootstrap) {
+    if (!bootstrap_queued_ || scene_ready_.load(std::memory_order_relaxed)) return false;
+  } else if (!scene_ready_.load(std::memory_order_relaxed)) return false;
+  if (pending_job_.ticket <= fence_ticket_ || pending_job_.ticket <= installed_ticket_) return false;
+  *job = pending_job_;
+  build_inflight_ = true;
+  if (bootstrap) bootstrap_queued_ = false;
+  return true;
+}
+void Sensors::release_scene_claim() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  build_inflight_ = false;
+  if (has_pending_job_ &&
+      (pending_job_.ticket <= installed_ticket_ || pending_job_.ticket <= fence_ticket_)) {
+    has_pending_job_ = false;
+    pending_job_ = {};
+  }
+  if (!scene_ready_.load(std::memory_order_relaxed) && has_pending_job_ &&
+      pending_job_.ticket > fence_ticket_ && pending_job_.ticket > installed_ticket_)
+    bootstrap_queued_ = true;
+}
+void Sensors::invalidate_dynamic_scene() {
+  identity_invalidated_ = true;
+  fence_ticket_ = std::max(fence_ticket_, next_ticket_);
+  has_pending_job_ = false;
+  pending_job_ = {};
+  bootstrap_queued_ = false;
+  scene_ready_.store(false, std::memory_order_release);
+}
+bool Sensors::bind_dynamic_scene(const std::string &epoch, uint64_t document_revision,
+                                 const std::string &frame_id,
+                                 const std::vector<std::string> &dynamic_ids) {
+  if (!dynamic_scene_) return false;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (identity_invalidated_) return false;
+  const bool frame_ok = frame_id == "world";
+  const bool ids_ok = dynamic_ids == dynamic_ids_;
+  if (!identity_bound_) {
+    if (!frame_ok || !ids_ok || epoch.empty() || document_revision == 0) return false;
+    bound_epoch_ = epoch;
+    bound_revision_ = document_revision;
+    identity_bound_ = true;
+    return true;
+  }
+  if (frame_ok && ids_ok && epoch == bound_epoch_ && document_revision == bound_revision_) return true;
+  invalidate_dynamic_scene();
+  return false;
+}
+void Sensors::publish_scene_job(const SceneJob &job) {
+  std::lock_guard<std::mutex> serial(update_mu_);
+  std::shared_ptr<const xgc2_math::scene::LidarScene> previous;
+  std::map<std::pair<double, bool>, std::shared_ptr<const xgc2_math::scene::LidarScene>> previous_policies;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_ || job.ticket <= fence_ticket_ || job.ticket <= installed_ticket_) return;
+    previous = scene_;
+    previous_policies = sampled_scenes_;
+  }
+  if (!previous) return;
+  auto next_obstacles = obstacles_;
+  auto next_dynamic = dynamic_obstacles_;
+  try {
+    for (auto &dyn : next_dynamic) {
+      const auto found = job.poses.find(dyn.id);
+      if (found == job.poses.end()) throw std::invalid_argument("dynamic obstacle missing from scene state");
+      const auto &parent = found->second;
+      dyn.pose = parent;
+      for (const auto &part : dyn.parts) {
+        if (part.obstacle_index >= next_obstacles.size())
+          throw std::invalid_argument("dynamic part index is out of range");
+        const auto local_q = xgc2_math::normalizedQuaternion(part.local_pose.orientation);
+        auto &shape = next_obstacles[part.obstacle_index];
+        shape.position = parent.position + parent.orientation * part.local_pose.position;
+        shape.orientation = parent.orientation * local_q;
+      }
+    }
+    auto next_scene = std::make_shared<const xgc2_math::scene::LidarScene>(
+        next_obstacles, spacing_, buried_, *previous);
+    std::map<std::pair<double, bool>, std::shared_ptr<const xgc2_math::scene::LidarScene>> rebuilt;
+    for (const auto &entry : previous_policies) {
+      if (!entry.second) continue;
+      rebuilt.emplace(entry.first, std::make_shared<const xgc2_math::scene::LidarScene>(
+          next_obstacles, entry.first.first, entry.first.second, *entry.second));
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_ || job.ticket <= fence_ticket_ || job.ticket <= installed_ticket_) return;
+    scene_ = std::move(next_scene);
+    for (auto &entry : rebuilt) {
+      const auto snap = previous_policies.find(entry.first);
+      auto it = sampled_scenes_.find(entry.first);
+      if (it == sampled_scenes_.end())
+        sampled_scenes_.emplace(entry.first, std::move(entry.second));
+      else if (snap != previous_policies.end() && it->second == snap->second)
+        it->second = std::move(entry.second);
+    }
+    obstacles_.swap(next_obstacles);
+    dynamic_obstacles_.swap(next_dynamic);
+    installed_ticket_ = job.ticket;
+    scene_version_.fetch_add(1, std::memory_order_release);
+    scene_ready_.store(true, std::memory_order_release);
+  } catch (...) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (fence_ticket_ < job.ticket) fence_ticket_ = job.ticket;
+    if (has_pending_job_ && pending_job_.ticket <= fence_ticket_) has_pending_job_ = false;
+    scene_ready_.store(false, std::memory_order_release);
+  }
+}
+std::shared_ptr<const xgc2_math::scene::LidarScene> Sensors::cold_policy(double spacing, bool buried) {
+  const auto key = std::make_pair(spacing, buried);
+  std::lock_guard<std::mutex> serial(update_mu_);
+  for (;;) {
+    std::shared_ptr<const xgc2_math::scene::LidarScene> existing;
+    uint64_t version = 0;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (stopping_) throw std::runtime_error("sensor owner stopped during preparation");
+      version = scene_version_.load(std::memory_order_relaxed);
+      const auto found = sampled_scenes_.find(key);
+      if (found != sampled_scenes_.end() && found->second) return found->second;
+    }
+    auto copy = obstacles_;
+    auto built = std::make_shared<const xgc2_math::scene::LidarScene>(copy, spacing, buried);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stopping_) throw std::runtime_error("sensor owner stopped during preparation");
+    if (scene_version_.load(std::memory_order_relaxed) != version) continue;
+    auto &slot = sampled_scenes_[key];
+    if (!slot) slot = std::move(built);
+    existing = slot;
+    return existing;
+  }
+}
+bool Sensors::update_scene_state(const std::string &frame_id, const std::string &epoch, uint64_t revision,
+                                 const std::vector<SceneObstaclePose> &poses) {
+  if (!dynamic_scene_) return false;
+  std::map<std::string, xgc2_math::Pose3> incoming;
+  bool bad_pose = false;
+  for (const auto &item : poses) {
+    if (!item.pose.position.allFinite() || !quaternion_usable(item.pose.orientation)) {
+      bad_pose = true;
+      break;
+    }
+    xgc2_math::Pose3 pose;
+    pose.position = item.pose.position;
+    pose.orientation = xgc2_math::normalizedQuaternion(item.pose.orientation);
+    if (!incoming.emplace(item.id, std::move(pose)).second) {
+      bad_pose = true;
+      break;
+    }
+  }
+  bool wake = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (identity_invalidated_ || !identity_bound_) return false;
+    if (frame_id != "world" || epoch != bound_epoch_ || revision != bound_revision_) {
+      invalidate_dynamic_scene();
+      return false;
+    }
+    const auto fence_poses = [&] {
+      fence_ticket_ = std::max(fence_ticket_, next_ticket_);
+      has_pending_job_ = false;
+      pending_job_ = {};
+      bootstrap_queued_ = false;
+      scene_ready_.store(false, std::memory_order_release);
+    };
+    if (bad_pose || incoming.size() != dynamic_obstacles_.size()) {
+      fence_poses();
+      return false;
+    }
+    for (const auto &dyn : dynamic_obstacles_) {
+      if (incoming.find(dyn.id) == incoming.end()) {
+        fence_poses();
+        return false;
+      }
+    }
+    if (has_pending_job_) {
+      bool same = true;
+      for (const auto &dyn : dynamic_obstacles_) {
+        const auto left = incoming.find(dyn.id);
+        const auto right = pending_job_.poses.find(dyn.id);
+        if (left == incoming.end() || right == pending_job_.poses.end() || !same_pose(left->second, right->second))
+          same = false;
+      }
+      if (same) return true;
+    }
+    // Installed A, then B, then A again, with no build in flight: B is stale.
+    // Drop it instead of minting a ticket that rebuilds A. An in-flight B can
+    // still publish, so that A stays pending below.
+    if (scene_ready_.load(std::memory_order_relaxed) && !build_inflight_) {
+      bool same = true;
+      for (const auto &dyn : dynamic_obstacles_) {
+        const auto found = incoming.find(dyn.id);
+        if (found == incoming.end() || !same_pose(found->second, dyn.pose)) same = false;
+      }
+      if (same) {
+        has_pending_job_ = false;
+        pending_job_ = {};
+        return true;
+      }
+    }
+    SceneJob job;
+    job.ticket = ++next_ticket_;
+    job.poses = std::move(incoming);
+    pending_job_ = std::move(job);
+    has_pending_job_ = true;
+    if (!scene_ready_.load(std::memory_order_relaxed) && !bootstrap_queued_ && !build_inflight_) {
+      bootstrap_queued_ = true;
+      wake = true;
+    }
+  }
+  if (wake) cpu_wake_.notify_one();
+  return true;
 }
 std::vector<uint8_t> Sensors::reference_cloud() const {
-  const auto& points=scene_->samples();
+  std::shared_ptr<const xgc2_math::scene::LidarScene> scene;
+  if (!dynamic_scene_) scene = scene_;
+  else {
+    std::lock_guard<std::mutex> lock(mutex_);
+    scene = scene_;
+  }
+  const auto& points=scene->samples();
   std::vector<uint8_t> data(points.size()*12);size_t at=0;for(const auto& p:points){float xyz[3]={float(p.x()),float(p.y()),float(p.z())};std::memcpy(data.data()+at,xyz,12);at+=12;}return data;
 }
 Sensors::~Sensors() { stop(); }
@@ -127,6 +376,11 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
     throw std::invalid_argument("backend must be auto, cpu or gpu");
   const bool automatic = backend == "auto";
   s->gpu = backend != "cpu";
+  if (dynamic_scene_ && s->gpu) {
+    if (!automatic)
+      throw std::invalid_argument("GPU sensor backend does not support dynamic scene obstacles");
+    s->gpu = false;
+  }
   const bool requested_bodies = j.value("world_bodies",false);
   s->with_bodies=requested_bodies;s->publish_beams=j.value("publish_beams",false);
   if (s->publish_beams && automatic) s->gpu = false;
@@ -167,12 +421,28 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
   auto prepare_cpu = [&] {
     s->with_bodies = requested_bodies;
     s->cpu = std::make_unique<xgc2_math::scene::WorldLidar>(c);
-    if(c.mode==xgc2_math::scene::SensorConfig::kPenetrating && (c.surface_spacing!=spacing_ || c.penetrating_keep_buried!=buried_)) {
-      const auto key=std::make_pair(c.surface_spacing,c.penetrating_keep_buried);
-      std::lock_guard<std::mutex> l(mutex_);auto& scene=sampled_scenes_[key];
-      if(!scene)scene=std::make_shared<xgc2_math::scene::LidarScene>(obstacles_,key.first,key.second);
-      s->cpu->setScene(scene);
-    } else s->cpu->setScene(scene_);
+    const bool custom = c.mode == xgc2_math::scene::SensorConfig::kPenetrating &&
+                        (c.surface_spacing != spacing_ || c.penetrating_keep_buried != buried_);
+    if (!dynamic_scene_) {
+      if (custom) {
+        const auto key = std::make_pair(c.surface_spacing, c.penetrating_keep_buried);
+        std::lock_guard<std::mutex> l(mutex_);
+        auto &scene = sampled_scenes_[key];
+        if (!scene) scene = std::make_shared<xgc2_math::scene::LidarScene>(obstacles_, key.first, key.second);
+        s->cpu->setScene(scene);
+      } else s->cpu->setScene(scene_);
+      return;
+    }
+    if (custom) {
+      s->cpu->setScene(cold_policy(c.surface_spacing, c.penetrating_keep_buried));
+      return;
+    }
+    std::shared_ptr<const xgc2_math::scene::LidarScene> handle;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      handle = scene_;
+    }
+    s->cpu->setScene(std::move(handle));
   };
   if (!s->gpu) prepare_cpu();
   else {
@@ -306,6 +576,8 @@ void Sensors::submit_sample(const State &v, const std::shared_ptr<const Frame> &
   auto s = owner ? owner->sensor : nullptr;
   if (!s)
     return;
+  if (dynamic_scene_ && !scene_ready_.load(std::memory_order_acquire))
+    return;
   if (!owner->alive || !owner->enabled || owner->generation != v.key.generation) {
     std::unique_lock<std::mutex> lock(s->mutex, std::try_to_lock);
     if (lock.owns_lock() && s->has_pending) {
@@ -368,6 +640,15 @@ void Sensors::submit_sample(const State &v, const std::shared_ptr<const Frame> &
   if (due > 1) s->throttled += due - 1;
   const auto period = std::max(s->effective_period_ns.load(), source_period_ns_.load());
   s->next = observation_deadline(s->next, v.stamp, period, phase);
+  std::shared_ptr<const xgc2_math::scene::LidarScene> active_scene;
+  uint64_t active_version = 1;
+  if (dynamic_scene_) {
+    std::lock_guard<std::mutex> scene_lock(mutex_);
+    if (!scene_ready_.load(std::memory_order_relaxed)) return;
+    active_version = scene_version_.load(std::memory_order_relaxed);
+    active_scene = scene_for(s->body_config);
+    if (!active_scene) return;
+  }
   std::unique_lock<std::mutex> lock(s->mutex, std::try_to_lock);
   if (!lock.owns_lock()) {
     ++s->misses;
@@ -381,6 +662,10 @@ void Sensors::submit_sample(const State &v, const std::shared_ptr<const Frame> &
   s->pending.position = v.position + v.orientation * s->translation;
   s->pending.orientation = v.orientation * s->rotation;
   s->pending.submitted = Clock::now();
+  if (dynamic_scene_) {
+    s->pending.scene = std::move(active_scene);
+    s->pending.scene_version = active_version;
+  }
   bool observe_bodies = false;
   if (bodies) for (const auto& body : bodies->states)
     observe_bodies |= body.body_returns && body.key.id != v.key.id;
@@ -422,6 +707,23 @@ void Sensors::work(bool gpu) {
   for (;;) {
     std::shared_ptr<Sensor> selected;
     Sample sample;
+    SceneJob claimed_job;
+    bool have_claim = false;
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      if (stopping_)
+        break;
+      if (!gpu && claim_scene_job(true, &claimed_job)) {
+        have_claim = true;
+        lock.unlock();
+      }
+    }
+    if (have_claim && !selected) {
+      try { publish_scene_job(claimed_job); }
+      catch (...) { release_scene_claim(); throw; }
+      release_scene_claim();
+      continue;
+    }
     {
       std::unique_lock<std::mutex> lock(mutex_);
       if (stopping_)
@@ -488,11 +790,19 @@ void Sensors::work(bool gpu) {
         }
       }
       if (!selected) {
-        const auto available = [&] { return stopping_ || ready.count || (gpu && gpu_initializations_); };
+        const auto available = [&] {
+          return stopping_ || ready.count || (gpu && gpu_initializations_) || (!gpu && bootstrap_queued_);
+        };
         if (gpu) wake_.wait(lock, available);
         else cpu_wake_.wait(lock, available);
         continue;
       }
+      if (!gpu && claim_scene_job(false, &claimed_job)) have_claim = true;
+    }
+    if (have_claim) {
+      try { publish_scene_job(claimed_job); }
+      catch (...) { release_scene_claim(); throw; }
+      release_scene_claim();
     }
     auto &s = *selected;
     bool ok = true, reused = false, payload_pressure = false;
@@ -533,6 +843,7 @@ void Sensors::work(bool gpu) {
             if (body.body_returns && body.key.id != sample.key.id)
               s.others.push_back({int(body.key.id), body.position, 0.3});
           if (!gpu) {
+            if (sample.scene) s.cpu->setScene(sample.scene);
             if(!s.publish_beams)s.cpu->scanInto(sample.position,sample.orientation,s.others,s.with_bodies,&data);
             else {
               s.cpu->scanBeamsInto(sample.position,sample.orientation,s.others,&s.beams);

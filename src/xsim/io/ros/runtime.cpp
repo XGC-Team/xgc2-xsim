@@ -1,6 +1,9 @@
 #include "runtime.hpp"
 #include "entity.hpp"
 #include <rosgraph_msgs/Clock.h>
+#include <xgc2_geometry_msgs/SceneSnapshot.h>
+#include <xgc2_geometry_msgs/SceneState.h>
+#include <boost/bind.hpp>
 #include <algorithm>
 #include <cstdint>
 #include <condition_variable>
@@ -63,8 +66,51 @@ struct RosRuntime {
   std::string error;
   bool has_phase_t0 = false;
   int64_t phase_t0_ns = 0;
+  Sensors *scene_sensors = nullptr;
+  bool scene_inputs = false;
+  ros::Subscriber scene_snapshot, scene_state;
+
+  void on_snapshot(const xgc2_geometry_msgs::SceneSnapshot::ConstPtr &message) {
+    if (!scene_sensors) return;
+    std::vector<std::string> ids;
+    ids.reserve(message->obstacles.size());
+    for (const auto &obstacle : message->obstacles)
+      if (obstacle.dynamic) ids.push_back(obstacle.id);
+    scene_sensors->bind_dynamic_scene(message->epoch, message->revision, message->header.frame_id, ids);
+  }
+  void on_state(const xgc2_geometry_msgs::SceneState::ConstPtr &message) {
+    if (!scene_sensors) return;
+    std::vector<SceneObstaclePose> poses;
+    poses.reserve(message->obstacles.size());
+    for (const auto &obstacle : message->obstacles) {
+      SceneObstaclePose pose;
+      pose.id = obstacle.id;
+      pose.pose.position = {obstacle.pose.position.x, obstacle.pose.position.y, obstacle.pose.position.z};
+      pose.pose.orientation = Eigen::Quaterniond(obstacle.pose.orientation.w, obstacle.pose.orientation.x,
+                                                 obstacle.pose.orientation.y, obstacle.pose.orientation.z);
+      poses.push_back(std::move(pose));
+    }
+    scene_sensors->update_scene_state(message->header.frame_id, message->epoch, message->revision, poses);
+  }
+  void subscribe_scene() {
+    // snapshot is the latched definition. state is SceneNode's existing 30 Hz
+    // stream and is not latched; queue 1 retains the latest pose for this callback.
+    if (!scene_inputs || !node || scene_snapshot) return;
+    ros::SubscribeOptions snapshot;
+    snapshot.template init<xgc2_geometry_msgs::SceneSnapshot>(
+        "/xgc_scene/snapshot", 1, boost::bind(&RosRuntime::on_snapshot, this, boost::placeholders::_1));
+    snapshot.callback_queue = &inputs;
+    scene_snapshot = node->subscribe(snapshot);
+    ros::SubscribeOptions state;
+    state.template init<xgc2_geometry_msgs::SceneState>(
+        "/xgc_scene/state", 1, boost::bind(&RosRuntime::on_state, this, boost::placeholders::_1));
+    state.callback_queue = &inputs;
+    scene_state = node->subscribe(state);
+  }
 
   RosRuntime(const Json &settings, Sensors &sensors) : config(settings) {
+    scene_sensors = &sensors;
+    scene_inputs = sensors.has_dynamic_obstacles();
     if (config.contains("phase_t0_ns")) {
       const auto &value = config.at("phase_t0_ns");
       if (!value.is_number_integer() ||
@@ -197,7 +243,7 @@ struct RosRuntime {
     auto next_log = Clock::time_point::min();
     uint64_t suppressed = 0;
     while (watching) {
-      if (!master_pid && !config.value("publish_clock", false) &&
+      if (!scene_inputs && !master_pid && !config.value("publish_clock", false) &&
           config.value("reference_cloud_topic", std::string{}).empty()) {
         bool needed;
         {
@@ -262,6 +308,7 @@ struct RosRuntime {
             if (!topic.empty()) reference = node->advertise<sensor_msgs::PointCloud2>(topic, 1, true);
             if (config.value("publish_clock", false))
               clock.bind(node->advertise<rosgraph_msgs::Clock>("/clock", 1), clock_metrics);
+            subscribe_scene();
             ++replays;
             reconcile_entities();
             // A paused world may have delivered its only frame before ROS bound.
