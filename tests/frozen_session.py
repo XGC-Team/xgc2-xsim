@@ -3,12 +3,28 @@ import json
 from pathlib import Path
 
 
+# modelId values are the ones experiment.cpp accepts. Profile ids are the xsim.ros
+# rows in the Core robot-profile golden. Parameters match the model projection:
+# namespace plus the two localization topics. These slots are simulated plants.
+_MODELS = {
+    'px4_multirotor': ('fs150', 'px4-multirotor.xsim.ros'),
+    'scout_mini': ('scout-mini', 'scout-mini.xsim.ros'),
+    'mecanum_ugv': ('mecanum-ugv', 'mecanum-ugv.xsim.ros'),
+}
+
+
 def robot(slot, namespace, kind, position, *, sensor=False):
+    model_id, profile_id = _MODELS[kind]
+    body = '/' + namespace
     return {
-        'slotId': slot, 'kind': kind, 'namespace': '/'+namespace,
-        'asset': {'px4': {'modelId': 'fs150'}} if kind == 'px4_multirotor' else {},
-        'profile': {'parameters': {}},
-        'binding': {'id': slot, 'namespace': '/'+namespace, 'executionHost': {'kind': 'station'},
+        'slotId': slot, 'kind': kind, 'namespace': body,
+        'derived': {'modelId': model_id},
+        'profile': {'id': profile_id, 'parameters': {
+            'namespace': body,
+            'localization_pose_topic': body + '/pose',
+            'localization_twist_topic': body + '/twist'}},
+        'binding': {'id': slot, 'namespace': body, 'applyModelDynamics': True,
+                    'executionHost': {'kind': 'station'},
                     'initialPose': dict(zip(('x', 'y', 'z'), position), yaw=0),
                     'simulationSensors': {'simpleLidar': sensor}},
     }

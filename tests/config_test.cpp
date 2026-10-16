@@ -1,5 +1,7 @@
 #include "io/config.hpp"
+#include "sensors/scene_document.hpp"
 #include <cassert>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -29,8 +31,8 @@ int main() {
   const auto configuration = (root / "world.json").string();
   const auto scene = (root / "scene.yaml").string();
   const auto other = (root / "other.yaml").string();
-  std::ofstream(scene) << "name: original-scene\nenabled: true\norigin: [1, 2.5, -3]\nobjects:\n  - id: '1'\n    name: \"false\"\n    label: !!str 42\n    vertices: [[0, 0, 0], [1, 2, 3]]\n";
-  std::ofstream(other) << "name: other-scene\n";
+  std::ofstream(scene) << R"({"name":"original-scene","enabled":true,"origin":[1,2.5,-3],"objects":[{"id":"1","name":"false","label":"42","vertices":[[0,0,0],[1,2,3]]}]})";
+  std::ofstream(other) << R"({"name":"other-scene"})";
   xsim::Json original{{"instance_id", "frozen-instance"}, {"epoch_ns", int64_t(1791250000000000000)},
                       {"entities", xsim::Json::array()}, {"scene", {{"keep", "source-value"}}}};
   auto write = [&](const xsim::Json &value) { std::ofstream(configuration) << value.dump(); };
@@ -86,7 +88,7 @@ int main() {
   assert(kept.at("scene_file") == "");
   assert(!kept.at("scene").contains("document"));
   rejects([&] { xsim::load_config(configuration, (root / "missing.yaml").string()); });
-  std::ofstream(other) << "objects: [not-closed\n";
+  std::ofstream(other) << "{";
   rejects([&] { xsim::load_config(configuration, other); });
   configured["scene_file"] = 5;
   write(configured);
@@ -159,6 +161,23 @@ int main() {
   const auto lidar_only = xsim::resolve_scene_file(original, write_compiled(&bare_model));
   assert(lidar_only.at("entities").empty());
   assert(lidar_only.at("scene").at("document").at("ground").at("mode") == "model");
+  const auto integers = root / "compiled-integers.json";
+  std::ofstream(integers) << R"({"schema":"xgc2.scene.compiled.v1","id":"integers","frame":"world","ground":{"mode":"default_plane","z":0},"geometries":[{"type":"box","size":[1,1,1]},{"type":"mesh","vertices":[[0,0,0],[1,0,0],[0,1,0],[0,0,1]],"triangles":[0,2,1,0,1,3,0,3,2,1,2,3]}],"models":{"crate":{"parts":[{"id":"body","geometryIndex":0,"pose":{"position":[0,0,0],"orientation":[0,0,0,1]}}]},"tet":{"parts":[{"id":"shell","geometryIndex":1,"pose":{"position":[0,0,0],"orientation":[0,0,0,1]}}]}},"obstacles":[{"id":"left","name":"Left","model":"tet","pose":{"position":[0,0,0],"orientation":[0,0,0,1]},"motion":{"type":"hold"}},{"id":"right","name":"Right","model":"tet","pose":{"position":[3,0,0],"orientation":[0,0,0,1]},"motion":{"type":"hold"}},{"id":"box","name":"Box","model":"crate","pose":{"position":[0,2,0],"orientation":[0,0,0,1]},"motion":{"type":"hold"}}]})";
+  const auto loaded = xsim::resolve_scene_file(original, integers.string());
+  const auto &integer_document = loaded.at("scene").at("document");
+  assert(integer_document.at("geometries").size() == 2);
+  assert(integer_document.at("obstacles").size() == 3);
+  const auto &box_index = integer_document.at("models").at("crate").at("parts").at(0).at("geometryIndex");
+  const auto &mesh_index = integer_document.at("models").at("tet").at("parts").at(0).at("geometryIndex");
+  assert(box_index.is_number_integer() && box_index.get<std::uint32_t>() == 0);
+  assert(mesh_index.is_number_integer() && mesh_index.get<std::uint32_t>() == 1);
+  for (const auto &index : integer_document.at("geometries").at(1).at("triangles"))
+    assert(index.is_number_integer());
+  const auto shapes = xsim::sceneDocumentObstacles(integer_document);
+  assert(shapes.size() == 3);
+  assert(shapes[0].meshData && shapes[0].meshData.get() == shapes[1].meshData.get());
+  assert(shapes[0].meshData.use_count() >= 2);
+  assert(shapes[2].type == xgc2_math::scene::Obstacle::kBox);
   const auto asset_dir = root / "frozen-asset";
   const auto compiled_dir = root / "compiled-scenes" / "session";
   std::filesystem::create_directories(asset_dir);

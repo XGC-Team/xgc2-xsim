@@ -42,7 +42,7 @@ docker start -ai "$container_name" <<'XSIM_BUILD'
 set -euo pipefail
 # System development packages belong to the selected XGC2 build image.
 # Fail closed if the image lacks them; product CI does not bootstrap toolchains.
-dpkg-query -W libglfw3-dev libglm-dev libyaml-cpp-dev nlohmann-json3-dev >/dev/null
+dpkg-query -W libglfw3-dev libglm-dev nlohmann-json3-dev >/dev/null
 # Focal ships the chassis HOLD http component and the XRPC 0.2.0 ABI generation.
 install -d -m0755 /etc/apt/keyrings
 curl -fsSL https://xgc2.apt.xiaokang.ink/xgc2-archive-keyring.gpg -o /etc/apt/keyrings/xgc2-archive-keyring.gpg

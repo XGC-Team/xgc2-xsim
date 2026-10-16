@@ -8,7 +8,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
-#include <yaml-cpp/yaml.h>
 namespace xsim {
 namespace {
 Eigen::Vector3d vec3(const Json &v) {
@@ -18,19 +17,6 @@ Eigen::Vector3d vec3(const Json &v) {
   if (!r.allFinite())
     throw std::invalid_argument("nonfinite vector");
   return r;
-}
-Json yaml_json(const YAML::Node &n) {
-  if(n.IsNull())return nullptr;
-  if(n.IsSequence()){Json j=Json::array();for(const auto& x:n)j.push_back(yaml_json(x));return j;}
-  if(n.IsMap()){Json j=Json::object();for(const auto& x:n)j[x.first.as<std::string>()]=yaml_json(x.second);return j;}
-  auto text=n.as<std::string>();
-  // Quoted and explicitly tagged strings keep their YAML type. Scene IDs may
-  // look numeric without being numbers.
-  if(n.Tag()=="!" || n.Tag()=="tag:yaml.org,2002:str")return text;
-  if(text=="true")return true;
-  if(text=="false")return false;
-  try {size_t end=0;double value=std::stod(text,&end);if(end==text.size())return value;}catch(const std::exception&){}
-  return text;
 }
 } // namespace
 Config parse_entity(const Json &j) {
@@ -116,6 +102,30 @@ Json parse_json_object(const std::string &contents) {
   if (!j.is_object()) throw std::invalid_argument("configuration must be one JSON object");
   return j;
 }
+// Compiled scenes are JSON. Same object parser as configuration, without the
+// 1 MiB budget: mesh documents can be larger, and the previous YAML load had
+// no size cap. Integers stay integers.
+Json load_scene_document(const std::string &path) {
+  struct File {
+    int fd;
+    ~File() { if (fd >= 0) close(fd); }
+  } file{open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)};
+  if (file.fd < 0) throw std::runtime_error("cannot read scene document without symbolic links");
+  struct stat metadata{};
+  if (fstat(file.fd, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0)
+    throw std::invalid_argument("scene document must be a nonempty regular file");
+  std::string contents;
+  contents.reserve(static_cast<std::size_t>(metadata.st_size));
+  char buffer[8192];
+  for (;;) {
+    const auto count = read(file.fd, buffer, sizeof(buffer));
+    if (count < 0 && errno == EINTR) continue;
+    if (count < 0) throw std::runtime_error("cannot read scene document");
+    if (count == 0) break;
+    contents.append(buffer, static_cast<std::size_t>(count));
+  }
+  return parse_json_object(contents);
+}
 // Reads ground.mode and ground.z from the document already in memory. Sensors
 // decodes geometries later. This does not sample a mesh or add a contact model.
 void apply_compiled_ground(Json &config) {
@@ -162,7 +172,7 @@ Json resolve_scene_file(Json j, const std::string &scene_file) {
     if (!j.at("scene_file").is_string()) throw std::invalid_argument("scene_file must be a string");
     const auto path = j.at("scene_file").get<std::string>();
     if (path.empty()) return j;
-    j["scene"]["document"] = yaml_json(YAML::LoadFile(path));
+    j["scene"]["document"] = load_scene_document(path);
     const auto asset = std::filesystem::path(asset_scene);
     if (!asset_scene.empty() && asset.has_parent_path()) {
       const auto manifest = asset.parent_path() / "manifest.json";
