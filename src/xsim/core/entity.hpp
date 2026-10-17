@@ -1,5 +1,5 @@
 #pragma once
-#include "components.hpp"
+#include "control_input.hpp"
 #include <utility>
 
 namespace xsim {
@@ -17,6 +17,7 @@ struct Entity {
   std::atomic<uint64_t> generation{0};
   std::atomic<bool> alive{false}, enabled{false};
   std::atomic<int64_t> generation_stamp{0};
+  ControlMailbox controls; // ROS-input producer -> world owner, newest value only
   std::shared_ptr<EntityIO> io;
   std::shared_ptr<Sensor> sensor;
 };

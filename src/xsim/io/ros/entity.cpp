@@ -185,10 +185,12 @@ void RosEntity::reconcile() {
             ++world.metrics.hold_refused;
             return;
           }
-          auto t = ticket(e, Op::Velocity, gen);
-          t->velocity = {m->linear.x, m->linear.y, m->angular.z};
-          t->received_ns = received;
-          world.submit(t);
+          ControlSample control;
+          control.op = Op::Velocity;
+          control.key = {e->id, gen};
+          control.velocity = {m->linear.x, m->linear.y, m->angular.z};
+          control.received_ns = received;
+          world.submit_control(*e, control);
         });
     return;
   }
@@ -204,9 +206,11 @@ void RosEntity::reconcile() {
           if ((stamp && stamp < e->generation_stamp) ||
               stamp > world.metrics.sim_ns + 1000000000)
             return;
-          auto t = ticket(e, Op::Pva, gen);
-          t->at = stamp;
-          auto &p = t->pva;
+          ControlSample control;
+          control.op = Op::Pva;
+          control.key = {e->id, gen};
+          control.at = stamp;
+          auto &p = control.pva;
           p.coordinate_frame = m->coordinate_frame;
           p.type_mask = m->type_mask;
           p.position[0] = m->position.x;
@@ -220,7 +224,7 @@ void RosEntity::reconcile() {
           p.acceleration[2] = m->acceleration_or_force.z;
           p.yaw = m->yaw;
           p.yaw_rate = m->yaw_rate;
-          world.submit(t);
+          world.submit_control(*e, control);
         });
     attitude_sub = input->subscribe<mavros_msgs::AttitudeTarget>(
         topic("attitude_topic", "/mavros/setpoint_raw/attitude"), 1,
@@ -233,15 +237,17 @@ void RosEntity::reconcile() {
           if ((stamp && stamp < e->generation_stamp) ||
               stamp > world.metrics.sim_ns + 1000000000)
             return;
-          auto t = ticket(e, Op::Attitude, gen);
-          t->at = stamp;
-          t->attitude.q = {m->orientation.w, m->orientation.x, m->orientation.y,
+          ControlSample control;
+          control.op = Op::Attitude;
+          control.key = {e->id, gen};
+          control.at = stamp;
+          control.attitude.q = {m->orientation.w, m->orientation.x, m->orientation.y,
                            m->orientation.z};
-          t->attitude.body_rate = {m->body_rate.x, m->body_rate.y,
+          control.attitude.body_rate = {m->body_rate.x, m->body_rate.y,
                                    m->body_rate.z};
-          t->attitude.thrust = m->thrust;
-          t->attitude.type_mask = m->type_mask;
-          world.submit(t);
+          control.attitude.thrust = m->thrust;
+          control.attitude.type_mask = m->type_mask;
+          world.submit_control(*e, control);
         });
   }
   if (keep_services)

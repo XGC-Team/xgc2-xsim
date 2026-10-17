@@ -366,6 +366,8 @@ struct RosRuntime {
     auto &lane = *lanes[index];
     std::shared_ptr<const Frame> frame;
     std::shared_ptr<const TelemetryRates> rates;
+    std::vector<size_t> owned;
+    size_t next_state = 0;
     size_t cursor = 0;
     bool busy = false;
     while (running) {
@@ -386,21 +388,31 @@ struct RosRuntime {
       try {
         if (fresh) {
           const auto started = Clock::now();
-          for (const auto &state : frame->states)
-            if (state.key.id % lanes.size() == index)
-              if (auto e = state.entity.lock(); e && e->alive && e->io && e->io->publish)
-                e->io->publish(state, *rates);
+          // Rebuild from this captured frame, not revision (which also changes
+          // for commands). Keep indices only; the frame owns immutable states.
+          owned.clear();
+          for (size_t at = 0; at < frame->states.size(); ++at)
+            if (frame->states[at].key.id % lanes.size() == index) owned.push_back(at);
+          const size_t begin = frame->states.empty() ? 0 : next_state % frame->states.size();
+          const auto next = std::lower_bound(owned.begin(), owned.end(), begin);
+          cursor = next == owned.end() ? 0 : size_t(next - owned.begin());
+          for (const size_t at : owned) {
+            const auto &state = frame->states[at];
+            if (auto e = state.entity.lock(); e && e->alive && e->io && e->io->publish)
+              e->io->publish(state, *rates);
+          }
           const auto ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started).count());
           prepare_ns += ns;
           auto previous = prepare_ns_max.load();
           while (ns > previous && !prepare_ns_max.compare_exchange_weak(previous, ns)) {}
         }
-        for (size_t n = 0; n < frame->states.size(); ++n) {
-          const size_t at = (cursor + n) % frame->states.size();
+        for (size_t n = 0; n < owned.size(); ++n) {
+          const size_t slot = (cursor + n) % owned.size();
+          const size_t at = owned[slot];
           const auto &state = frame->states[at];
-          if (state.key.id % lanes.size() != index) continue;
           if (auto e = state.entity.lock(); e && e->alive && e->io && e->io->publish_sensor && e->io->publish_sensor()) {
-            cursor = (at + 1) % frame->states.size();
+            next_state = (at + 1) % frame->states.size();
+            cursor = (slot + 1) % owned.size();
             busy = true;
             break;
           }

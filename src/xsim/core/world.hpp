@@ -21,6 +21,7 @@ public:
   World(const World &) = delete;
   void submit(const Ticket &); // nonworld threads; continuous inputs coalesce
                                // by entity/type/time
+  void submit_control(Entity &, const ControlSample &); // one input producer; newest ROS value only
   void wake(); // nonworld threads: have the world thread run a boundary now
   static bool wait(const Ticket &);
   void apply_commands(); // world owner only; initial setup before start does not tick HOLD
@@ -45,6 +46,8 @@ private:
   struct Slot {
     std::shared_ptr<Entity> entity;
     size_t dense = 0;
+    ControlSample pending_control{};
+    bool has_control = false;
   };
   struct Geometry {
     Key key;
@@ -73,6 +76,7 @@ private:
   unsigned catchup_;
   PhysicsClock physics_clock_;
   std::atomic<uint64_t> wake_revision_{0};
+  std::atomic<uint64_t> control_revision_{0}; // paused-wait notification, not command ordering
   std::atomic<int64_t> wall_offset_ns_{0};
   std::mutex input_mutex_, output_mutex_;
   std::list<Ticket> inbox_, commands_;
@@ -94,6 +98,8 @@ private:
   xgc2::chassis_hold::ChassisHold hold_; // destroyed before the sink, feedback and wake state
   State state(uint64_t, const Slot &) const;
   Result apply(Command &);
+  Result apply_control(const ControlSample &, Slot &);
+  void apply_controls();
   void zero_command(const Entity &, size_t dense);
   bool write_zero(const std::string &, std::string &) override; // HOLD tick, world thread only
   bool latest(const std::string &, xgc2::chassis_hold::Feedback &) override;

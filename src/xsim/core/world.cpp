@@ -60,6 +60,14 @@ void World::submit(const Ticket &t) {
   }
   wake();
 }
+void World::submit_control(Entity &entity, const ControlSample &sample) {
+  if (entity.controls.publish(sample)) ++metrics.input_misses;
+  // The owner snapshots this counter before consuming mailboxes. Either it
+  // sees this publication, or its paused wait detects the change. Publishing
+  // after that wait's predicate observes paused=true and takes the wake lock.
+  ++control_revision_;
+  if (metrics.paused) wake();
+}
 void World::wake() {
   // What the caller published (an inbox entry, a HOLD state change) precedes the wake revision, which is taken
   // under the wake mutex.
@@ -117,6 +125,12 @@ void World::finish(const Ticket &t, Result r) {
   t->signal();
 }
 void World::cancel_pending_controls(Key key) {
+  const auto found = slots_.find(key.id);
+  if (found != slots_.end()) {
+    found->second.has_control = false;
+    ControlSample discarded;
+    found->second.entity->controls.take(discarded);
+  }
   const auto cancel = [key](const Ticket &ticket) {
     if (!continuous(ticket->op) || ticket->key.id != key.id ||
         ticket->key.generation != key.generation)
@@ -353,31 +367,10 @@ Result World::apply(Command &c) {
     r.enabled = e.enabled;
     return r;
   }
+  if (continuous(c.op)) return apply_control(c, s);
   if (!e.enabled) {
     r.success = false;
     r.reason = 2;
-    return r;
-  }
-  if (c.op == Op::Velocity && e.config.kind != Kind::FS150) {
-    if (!c.velocity.allFinite()) {
-      r.success = false;
-      r.reason = 2;
-      return r;
-    }
-    // The HOLD gate sits where the command would reach the model: a command that was queued before an
-    // engage, or received before the last release, never executes. It is separate from `enabled`: a held
-    // entity keeps its sensors and publication.
-    if (!hold_.admit(e.public_id, c.received_ns)) {
-      ++metrics.hold_refused;
-      r.success = false;
-      r.reason = 6;
-      return r;
-    }
-    if (e.config.kind == Kind::Scout)
-      scouts_[i].model.command(scouts_[i].age, c.velocity.x(), c.velocity.z());
-    else
-      mecanums_[i].model.command(c.velocity.x(), c.velocity.y(),
-                                 c.velocity.z());
     return r;
   }
   if (e.config.kind != Kind::FS150) {
@@ -410,7 +403,51 @@ Result World::apply(Command &c) {
     r.success = f.model.request_mode(mode);
     if (r.success)
       f.mode = c.mode;
-  } else if (c.op == Op::Pva) {
+  } else {
+    r.success = false;
+    r.reason = 3;
+  }
+  if (!r.success && !r.reason)
+    r.reason = 2;
+  return r;
+}
+Result World::apply_control(const ControlSample &c, Slot &s) {
+  Result r;
+  auto &e = *s.entity;
+  const auto i = s.dense;
+  r.key = {e.id, e.generation};
+  r.enabled = e.enabled;
+  if (c.key.id != e.id || c.key.generation != e.generation || !e.alive) {
+    r.reason = 1;
+    return r;
+  }
+  if (!e.enabled) {
+    r.reason = 2;
+    return r;
+  }
+  if (c.op == Op::Velocity && e.config.kind != Kind::FS150) {
+    if (!c.velocity.allFinite()) {
+      r.reason = 2;
+      return r;
+    }
+    if (!hold_.admit(e.public_id, c.received_ns)) {
+      ++metrics.hold_refused;
+      r.reason = 6;
+      return r;
+    }
+    if (e.config.kind == Kind::Scout)
+      scouts_[i].model.command(scouts_[i].age, c.velocity.x(), c.velocity.z());
+    else
+      mecanums_[i].model.command(c.velocity.x(), c.velocity.y(), c.velocity.z());
+    r.success = true;
+    return r;
+  }
+  if (e.config.kind != Kind::FS150) {
+    r.reason = 3;
+    return r;
+  }
+  auto &f = flights_[i];
+  if (c.op == Op::Pva) {
     // ROS local position coordinates differ by the declared origin translation.
     auto p = c.pva;
     if (p.coordinate_frame == 1)
@@ -427,6 +464,32 @@ Result World::apply(Command &c) {
   if (!r.success && !r.reason)
     r.reason = 2;
   return r;
+}
+void World::apply_controls() {
+  const auto now = Clock::now();
+  for (auto &entry : slots_) {
+    auto &slot = entry.second;
+    auto &entity = *slot.entity;
+    if (entity.controls.take(slot.pending_control)) {
+      if (slot.has_control) ++metrics.input_misses;
+      slot.has_control = true;
+    }
+    if (!slot.has_control) continue;
+    const auto &input = slot.pending_control;
+    if (now >= input.deadline || !entity.enabled ||
+        input.key.generation != entity.generation) {
+      slot.has_control = false;
+      continue;
+    }
+    if (input.at > time_) continue;
+    slot.has_control = false;
+    try {
+      if (apply_control(input, slot).success) ++revision_;
+    } catch (const std::exception &) {
+      // Keep the same numeric exception boundary as reliable requests.
+      ++metrics.input_misses;
+    }
+  }
 }
 void World::apply_commands() {
   const auto now = Clock::now();
@@ -470,6 +533,7 @@ void World::apply_commands() {
 }
 void World::boundary() {
   apply_commands();
+  apply_controls();
   // Only the world thread ticks after startup; deterministic fixtures use one owner thread throughout.
   // The facade polls the twists recorded by the zero sink after the domain has written every held robot.
   hold_samples_.clear();
@@ -772,9 +836,18 @@ void World::run() {
   started_wake_.notify_all();
   while (running_) {
     // Capture the wake revision before draining the inbox.
+    const auto control_revision = control_revision_.load();
     const auto wake_revision = wake_revision_.load();
+    const auto boundary_begin = nanoseconds(Clock::now());
     boundary();
     const auto begin = nanoseconds(Clock::now());
+    if (!metrics.paused) {
+      // Charge command/HOLD work even when an early management wake does not
+      // integrate. Resume may have rebased inside this boundary: do not charge
+      // work before its new active-wall anchor, or any condition-variable wait.
+      const auto active_begin = std::max(boundary_begin, time_ - wall_offset_ns_.load());
+      physics_clock_.observe(0, begin - active_begin);
+    }
     if (metrics.paused) {
       metrics.lag_ns = 0;
       if (!was_paused) metrics.active_wall_ns += begin - wall;
@@ -787,7 +860,10 @@ void World::run() {
       }
       emit();
       std::unique_lock<std::mutex> l(wake_mutex_);
-      const auto changed = [&] { return !running_ || wake_revision_ != wake_revision; };
+      const auto changed = [&] {
+        return !running_ || wake_revision_ != wake_revision ||
+               control_revision_ != control_revision;
+      };
       if (stepping_) wake_.wait_for(l, std::chrono::microseconds(100), changed);
       else wake_.wait(l, changed);
       continue;
