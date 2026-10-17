@@ -1,7 +1,7 @@
 schema: xgc2.product.v1
 id: xsim
 name: xsim
-version: 1.4.0-3
+version: 1.4.0-4
 kind: ros1-apt
 summary: Standalone ECS world with original FS150/Scout/Mecanum ROS interfaces and integrated CPU/GPU sensing.
 ros:
@@ -11,7 +11,7 @@ apt:
   distribution: focal
   install: [xsim]
   packages: [xsim, libxgc2-sensing-gpu, libxgc2-sensing-dev]
-  depends: [ros-noetic-roscpp, ros-noetic-mavros-msgs, ros-noetic-rosgraph-msgs, libxgc2-xrpc2 (>= 0.2.0-1~focal), libxgc2-chassis-hold1 (>= 0.2.0-1~focal)]
+  depends: [ros-noetic-roscpp, ros-noetic-mavros-msgs, ros-noetic-rosgraph-msgs, libxgc2-xrpc2 (>= 0.2.0-1~focal), libxgc2-chassis-hold1 (>= 0.2.0-1~focal), ros-noetic-xgc2-geometry-msgs (>= 1.5.0-4)]
 usage:
   install: sudo apt install xsim
   smoke_test: /opt/xgc2/xsim/bin/xsim --help
@@ -42,10 +42,11 @@ release:
   ref: main
   workflow: release.yml
   ci_workflow: ci.yml
-  requires: [libxgc2-math-dev, libxgc2-chassis-hold-dev, xgc2-xrpc]
+  requires: [libxgc2-math-dev, libxgc2-chassis-hold-dev, xgc2-xrpc, xgc2-ros-msgs]
   dependency_policy:
     xgc2-xrpc: rebuild
     libxgc2-math-dev: rebuild
     libxgc2-chassis-hold-dev: rebuild
+    xgc2-ros-msgs: rebuild
   apt_versions:
-    focal: 1.4.0-3
+    focal: 1.4.0-4

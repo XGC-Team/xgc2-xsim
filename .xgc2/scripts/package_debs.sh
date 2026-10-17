@@ -12,5 +12,5 @@ deps="$(cd "$shlibs" && dpkg-shlibdeps -O -e"$stage/opt/xgc2/xsim/bin/xsim")";de
 gpu_deps="$(cd "$shlibs" && dpkg-shlibdeps -O -e"$stage/usr/lib/xgc2-sensing/libxgc2-sensing-gpu.so")";gpu_deps="${gpu_deps#shlibs:Depends=}"
 version="$(awk -F': *' '/^version:/ {print $2;exit}' "$root/.xgc2/product.yml")"
 python3 "$root/.xgc2/scripts/package_debs.py" --version "$version" --stage "$stage" --output-dir "$out" \
- --depends "$deps, ros-noetic-roscpp, ros-noetic-mavros-msgs, ros-noetic-rosgraph-msgs" \
+ --depends "$deps, ros-noetic-roscpp, ros-noetic-mavros-msgs, ros-noetic-rosgraph-msgs, ros-noetic-xgc2-geometry-msgs (>= 1.5.0-4)" \
  --gpu-depends "$gpu_deps, libglfw3 (>= 3.3)"
