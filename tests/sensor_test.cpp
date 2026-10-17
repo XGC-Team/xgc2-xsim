@@ -654,7 +654,82 @@ void dynamic_scene_checks() {
   }
 }
 
+void completion_queue_checks() {
+  Sensors sensors(Json::object(), 1);
+  auto robot = entity(91, "completion");
+  const Json config{{"backend", "cpu"}, {"h_res", 4}, {"v_res", 2}, {"rate_hz", 10}};
+  robot->sensor = sensors.prepare(robot, config);
+  auto sensor = robot->sensor;
+  auto input = state(robot, epoch);
+  auto scan = [&](bool retained = true) {
+    const auto previous = sensor->scans.load();
+    sensors.submit(input);
+    const auto deadline = Clock::now() + std::chrono::seconds(3);
+    while (sensor->scans == previous) {
+      assert(Clock::now() < deadline);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    std::lock_guard<std::mutex> lock(sensor->mutex);
+    if (retained) assert(sensor->has_completed);
+  };
+  sensors.start_completions();
+  scan();
+  assert(!sensors.try_completion()); // A scan before late binding has no token.
+  sensors.enable_completions(sensor);
+  auto token = sensors.wait_completion();
+  assert(token == sensor);
+  Sample sample;
+  std::shared_ptr<const SensorPayload> payload;
+  assert(Sensors::take_completion(token, sample, payload) && sample.stamp == epoch);
+  assert(!sensors.try_completion());
+  std::atomic<bool> scan_waiting{false}, delivered{false};
+  std::thread scan_consumer([&] {
+    scan_waiting = true;
+    const auto ready = sensors.wait_completion();
+    Sample received;
+    std::shared_ptr<const SensorPayload> bytes;
+    assert(ready == sensor && Sensors::take_completion(ready, received, bytes));
+    delivered = true;
+  });
+  while (!scan_waiting) std::this_thread::yield();
+  input.stamp += 1000000000; scan(false);
+  scan_consumer.join();
+  assert(delivered);
+  for (int k = 1; k <= 3; ++k) { input.stamp += 1000000000; scan(); }
+  sensors.interrupt_completions();
+  assert(!sensors.wait_completion());
+  sensors.start_completions();
+  token = sensors.wait_completion();
+  assert(token == sensor);
+  assert(Sensors::take_completion(token, sample, payload) && sample.stamp == input.stamp);
+  assert(!sensors.try_completion()); // Latest overwrite did not enqueue three tokens.
+  input.stamp += 1000000000; scan();
+  token = sensors.wait_completion();
+  robot->alive = false;
+  assert(!Sensors::take_completion(token, sample, payload));
+  { std::lock_guard<std::mutex> lock(sensor->mutex); assert(!sensor->completion_queued); }
+  robot->alive = true;
+  input.stamp += 1000000000; scan();
+  token = sensors.wait_completion();
+  assert(Sensors::take_completion(token, sample, payload)); // Invalid token did not strand the next result.
+  token.reset(); payload.reset();
+  input.stamp += 1000000000; scan();
+  std::weak_ptr<Sensor> weak = sensor;
+  robot->sensor.reset(); sensor.reset(); robot.reset();
+  const auto retired_by = Clock::now() + std::chrono::seconds(3);
+  while (!weak.expired()) { assert(Clock::now() < retired_by); std::this_thread::yield(); }
+  assert(!sensors.try_completion()); // Queue never owns a retired sensor.
+  std::atomic<bool> waiting{false}, returned{false};
+  std::thread consumer([&] { waiting = true; assert(!sensors.wait_completion()); returned = true; });
+  while (!waiting) std::this_thread::yield();
+  sensors.interrupt_completions();
+  consumer.join();
+  assert(returned);
+  sensors.stop();
+}
+
 int main() {
+  completion_queue_checks();
   dynamic_scene_checks();
   cadence_checks();
   phased_worker_period_boundary();

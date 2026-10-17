@@ -14,7 +14,9 @@ int main(int argc, char **argv) {
   e->io = std::make_shared<EntityIO>(EntityIO{
     [ros_entity] { ros_entity->reconcile(); },
     [ros_entity](const State &state, const TelemetryRates &rates) { ros_entity->publish(state, rates); },
-    [ros_entity] { return ros_entity->publish_sensor(); },
+    [ros_entity](const Sample &sample, const std::shared_ptr<const SensorPayload> &payload) {
+      ros_entity->publish_sensor(sample, payload);
+    },
   });
   auto add = std::make_shared<Command>();
   add->op = Op::Add;

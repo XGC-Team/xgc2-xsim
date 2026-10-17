@@ -73,7 +73,8 @@ struct RosRuntime {
   std::shared_ptr<PublicationMetrics> telemetry_metrics = std::make_shared<PublicationMetrics>();
   std::shared_ptr<PublicationMetrics> cloud_metrics = std::make_shared<PublicationMetrics>();
   std::shared_ptr<PublicationMetrics> clock_metrics = std::make_shared<PublicationMetrics>();
-  std::vector<std::unique_ptr<Lane>> lanes;
+  Lane telemetry;
+  std::thread cloud;
   std::atomic<bool> running{false};
   std::atomic<uint64_t> frames{0}, coalesced{0}, prepare_ns{0}, prepare_ns_max{0}, errors{0};
   std::mutex error_mutex;
@@ -134,11 +135,6 @@ struct RosRuntime {
       if (phase_t0_ns < 0) throw std::invalid_argument("phase T0 must be nonnegative");
       has_phase_t0 = true;
     }
-    const auto workers = config.value("publish_workers", Json(2));
-    if (!workers.is_number_integer() || workers < 1 || workers > 8)
-      throw std::invalid_argument("publish_workers must be an integer in 1..8");
-    for (unsigned i = 0; i < workers.get<unsigned>(); ++i)
-      lanes.emplace_back(std::make_unique<Lane>());
     const auto topic = config.value("reference_cloud_topic", std::string{});
     if (!topic.empty()) {
       reference_message.height=1;reference_message.point_step=12;reference_message.is_dense=true;reference_message.header.frame_id="world";
@@ -163,8 +159,9 @@ struct RosRuntime {
   void start_lanes() {
     if (running.exchange(true)) return;
     try {
-      for (size_t i = 0; i < lanes.size(); ++i)
-        lanes[i]->thread = std::thread([this, i] { work(i); });
+      scene_sensors->start_completions();
+      telemetry.thread = std::thread([this] { work_telemetry(); });
+      cloud = std::thread([this] { work_cloud(); });
     } catch (...) {
       stop_lanes();
       throw;
@@ -175,15 +172,20 @@ struct RosRuntime {
     wake_connection();
     if (connection.joinable()) connection.join();
     stop_lanes();
-    for (const auto &lane : lanes) {
-      lane->next.reset();
-      lane->rates.reset();
-    }
+    telemetry.next.reset();
+    telemetry.rates.reset();
   }
   void stop_lanes() {
-    running = false;
-    for (const auto &lane : lanes) lane->wake.notify_all();
-    for (const auto &lane : lanes) if (lane->thread.joinable()) lane->thread.join();
+    {
+      std::lock_guard<std::mutex> lock(telemetry.mutex);
+      // Entity IO can retain this stopped runtime past the Sensors owner.
+      if (!running && !telemetry.thread.joinable() && !cloud.joinable()) return;
+      running = false;
+    }
+    telemetry.wake.notify_all();
+    scene_sensors->interrupt_completions();
+    if (telemetry.thread.joinable()) telemetry.thread.join();
+    if (cloud.joinable()) cloud.join();
   }
   void wake_connection() {
     const uint64_t one = 1;
@@ -241,6 +243,8 @@ struct RosRuntime {
         if (!entity->bound) continue;
         ++entity_bindings;
       } else entity->reconcile();
+      if (auto current = entity->entity.lock(); current && current->sensor)
+        scene_sensors->enable_completions(current->sensor);
       entity->applied_revision.store(revision, std::memory_order_release);
     }
   }
@@ -351,82 +355,63 @@ struct RosRuntime {
   void submit(const std::shared_ptr<const Frame> &frame,
               const std::shared_ptr<const TelemetryRates> &rates) {
     ++frames;
-    for (const auto &lane : lanes) {
-      {
-        std::lock_guard<std::mutex> lock(lane->mutex);
-        if (lane->next) ++coalesced;
-        lane->next = frame;
-        lane->rates = rates;
-      }
-      lane->wake.notify_one();
+    {
+      std::lock_guard<std::mutex> lock(telemetry.mutex);
+      if (telemetry.next) ++coalesced;
+      telemetry.next = frame;
+      telemetry.rates = rates;
     }
+    telemetry.wake.notify_one();
   }
-  void work(size_t index) {
-    pthread_setname_np(pthread_self(), "xsim-publish");
-    auto &lane = *lanes[index];
+  void publication_error(const std::exception &failure) {
+    ++errors;
+    std::lock_guard<std::mutex> lock(error_mutex);
+    if (error.empty()) error = failure.what();
+  }
+  void work_telemetry() {
+    pthread_setname_np(pthread_self(), "xsim-telemetry");
     std::shared_ptr<const Frame> frame;
     std::shared_ptr<const TelemetryRates> rates;
-    std::vector<size_t> owned;
-    size_t next_state = 0;
-    size_t cursor = 0;
-    bool busy = false;
     while (running) {
-      bool fresh = false;
       {
-        std::unique_lock<std::mutex> lock(lane.mutex);
-        if (!busy) lane.wake.wait_for(lock, std::chrono::milliseconds(1),
-                                     [&] { return !running || bool(lane.next); });
+        std::unique_lock<std::mutex> lock(telemetry.mutex);
+        telemetry.wake.wait(lock, [&] { return !running || bool(telemetry.next); });
         if (!running) break;
-        if (lane.next) {
-          frame = std::move(lane.next);
-          rates = lane.rates;
-          fresh = true;
-        }
+        frame = std::move(telemetry.next);
+        rates = std::move(telemetry.rates);
       }
-      busy = false;
-      if (!frame) continue;
       try {
-        if (fresh) {
-          const auto started = Clock::now();
-          // Rebuild from this captured frame, not revision (which also changes
-          // for commands). Keep indices only; the frame owns immutable states.
-          owned.clear();
-          for (size_t at = 0; at < frame->states.size(); ++at)
-            if (frame->states[at].key.id % lanes.size() == index) owned.push_back(at);
-          const size_t begin = frame->states.empty() ? 0 : next_state % frame->states.size();
-          const auto next = std::lower_bound(owned.begin(), owned.end(), begin);
-          cursor = next == owned.end() ? 0 : size_t(next - owned.begin());
-          for (const size_t at : owned) {
-            const auto &state = frame->states[at];
-            if (auto e = state.entity.lock(); e && e->alive && e->io && e->io->publish)
-              e->io->publish(state, *rates);
-          }
-          const auto ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started).count());
-          prepare_ns += ns;
-          auto previous = prepare_ns_max.load();
-          while (ns > previous && !prepare_ns_max.compare_exchange_weak(previous, ns)) {}
-        }
-        for (size_t n = 0; n < owned.size(); ++n) {
-          const size_t slot = (cursor + n) % owned.size();
-          const size_t at = owned[slot];
-          const auto &state = frame->states[at];
-          if (auto e = state.entity.lock(); e && e->alive && e->io && e->io->publish_sensor && e->io->publish_sensor()) {
-            next_state = (at + 1) % frame->states.size();
-            cursor = (slot + 1) % owned.size();
-            busy = true;
-            break;
-          }
-        }
-      } catch (const std::exception &failure) {
-        ++errors;
-        std::lock_guard<std::mutex> lock(error_mutex);
-        if (error.empty()) error = failure.what();
-      }
+        const auto started = Clock::now();
+        // This captured frame owns every state; no scan or roster polling.
+        for (const auto &state : frame->states)
+          if (auto e = state.entity.lock(); e && e->alive && e->io && e->io->publish)
+            e->io->publish(state, *rates);
+        const auto ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started).count());
+        prepare_ns += ns;
+        auto previous = prepare_ns_max.load();
+        while (ns > previous && !prepare_ns_max.compare_exchange_weak(previous, ns)) {}
+      } catch (const std::exception &failure) { publication_error(failure); }
+      frame.reset(); // An idle telemetry worker must not retain an old roster.
+      rates.reset();
+    }
+  }
+  void work_cloud() {
+    pthread_setname_np(pthread_self(), "xsim-cloud");
+    while (auto sensor = scene_sensors->wait_completion()) {
+      // Always take/clear the token, including removed or invalid entities.
+      // No queue mutex is held during this sensor lock or ROS serialization.
+      Sample sample;
+      std::shared_ptr<const SensorPayload> payload;
+      if (!Sensors::take_completion(sensor, sample, payload)) continue;
+      try {
+        if (auto e = sensor->entity.lock(); e && e->io && e->io->publish_sensor)
+          e->io->publish_sensor(sample, payload);
+      } catch (const std::exception &failure) { publication_error(failure); }
     }
   }
   Json status() {
     std::lock_guard<std::mutex> lock(error_mutex);
-    return {{"workers", lanes.size()}, {"initial_buffer_slots_per_topic", BufferedPublisher::buffer_count},
+    return {{"workers", 2}, {"telemetry_workers", 1}, {"cloud_workers", 1}, {"initial_buffer_slots_per_topic", BufferedPublisher::buffer_count},
             {"submitted_frames", frames.load()}, {"coalesced_worker_frames", coalesced.load()},
             {"prepare_ns", prepare_ns.load()}, {"prepare_ns_max", prepare_ns_max.load()},
             {"errors", errors.load()}, {"error", error},
@@ -455,7 +440,12 @@ RuntimeIO make_ros_io(const Json &config, World &world, Sensors &sensors) {
     entity->io = std::make_shared<EntityIO>(EntityIO{
       [ros, runtime] { if (ros->request_reconcile()) runtime->wake_connection(); },
       [ros, runtime](const State &state, const TelemetryRates &rates) { if (runtime->peer_ready) ros->publish(state, rates); },
-      [ros, runtime] { return runtime->peer_ready && ros->publish_sensor(); },
+      [ros](const Sample &sample, const std::shared_ptr<const SensorPayload> &payload) {
+        // The cloud owner starts after binding and is joined on an outage.
+        // A claimed completion finishes on its immutable publication even if
+        // master discovery changes after take_completion cleared its token.
+        ros->publish_sensor(sample, payload);
+      },
       ros->localization_pose_topic,
     });
     runtime->attach(ros);

@@ -435,22 +435,19 @@ void RosEntity::publish(const State &s, const TelemetryRates &rates) {
     }
   }
 }
-bool RosEntity::publish_sensor() {
-  if (!bound.load(std::memory_order_acquire)) return false;
+void RosEntity::publish_sensor(const Sample &sample, const std::shared_ptr<const SensorPayload> &payload) {
+  if (!bound.load(std::memory_order_acquire)) return;
   auto e=entity.lock();
-  if(!e || !e->alive || !e->enabled || !e->sensor)return false;
-  Sample sample;
-  std::shared_ptr<const SensorPayload> payload;
-  if(!Sensors::take_shared(e->sensor,sample,payload))return false;
+  if(!e || !e->alive || !e->enabled || !e->sensor)return;
   cloud_message.header.stamp.fromNSec(sample.stamp);
   cloud_message.width=payload->data.size()/cloud_message.point_step;
   cloud_message.row_step=cloud_message.width*cloud_message.point_step;
   if(beams){beam_message.header.stamp=cloud_message.header.stamp;beam_message.width=payload->beam_data.size()/beam_message.point_step;beam_message.row_step=payload->beam_data.size();}
   const PointCloudView cloud_view{cloud_message, payload->data};
   const PointCloudView beam_view{beam_message, payload->beam_data};
-  if (!current(e, sample.key.generation)) return true;
+  if (!current(e, sample.key.generation)) return;
   cloud.publish(cloud_view);
   if (beams) beams.publish(beam_view);
-  return true;
+  return;
 }
 } // namespace xsim

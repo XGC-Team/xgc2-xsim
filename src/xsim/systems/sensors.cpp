@@ -527,6 +527,16 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
   if (!s->gpu && cpu_threads_.empty())
     for (unsigned i = 0; i < workers_; ++i)
       cpu_threads_.emplace_back([this] { work(false); });
+  const auto roster_size = sensors_.size();
+  lock.unlock();
+  {
+    std::lock_guard<std::mutex> completion_lock(completion_mutex_);
+    // Cold-only compaction; completion never grows storage.
+    const auto count = completed_ready_.count;
+    for (size_t i = 0; i < count; ++i)
+      if (auto live = completed_ready_.pop()) completed_ready_.push(live);
+    completed_ready_.reserve(completed_ready_.count + roster_size);
+  }
   wake_.notify_all();
   return s;
 }
@@ -970,6 +980,7 @@ void Sensors::work(bool gpu) {
         ++s.misses;
       again = s.has_pending;
     }
+    notify_completed(selected);
     if (again) enqueue(selected);
   }
   if (gpu) {
@@ -980,9 +991,63 @@ void Sensors::work(bool gpu) {
       }
   }
 }
+void Sensors::start_completions() {
+  std::lock_guard<std::mutex> lock(completion_mutex_);
+  completion_active_ = true;
+}
+void Sensors::interrupt_completions() {
+  {
+    std::lock_guard<std::mutex> lock(completion_mutex_);
+    completion_active_ = false;
+  }
+  completion_wake_.notify_all();
+}
+void Sensors::enable_completions(const std::shared_ptr<Sensor> &s) {
+  {
+    std::lock_guard<std::mutex> lock(s->mutex);
+    s->completion_enabled = true;
+  }
+  notify_completed(s); // Includes the latest completion made before binding.
+}
+void Sensors::notify_completed(const std::shared_ptr<Sensor> &s) {
+  {
+    std::lock_guard<std::mutex> lock(s->mutex);
+    if (!s->completion_enabled || !s->has_completed || s->completion_queued) return;
+    s->completion_queued = true;
+  }
+  {
+    std::lock_guard<std::mutex> lock(completion_mutex_);
+    completed_ready_.push(s);
+  }
+  completion_wake_.notify_one();
+}
+std::shared_ptr<Sensor> Sensors::wait_completion() {
+  std::unique_lock<std::mutex> lock(completion_mutex_);
+  for (;;) {
+    completion_wake_.wait(lock, [&] { return !completion_active_ || completed_ready_.count; });
+    if (!completion_active_) return {};
+    if (auto sensor = completed_ready_.pop()) return sensor;
+  }
+}
+std::shared_ptr<Sensor> Sensors::try_completion() {
+  std::lock_guard<std::mutex> lock(completion_mutex_);
+  while (completion_active_ && completed_ready_.count)
+    if (auto sensor = completed_ready_.pop()) return sensor;
+  return {};
+}
+bool Sensors::take_completion(const std::shared_ptr<Sensor> &s, Sample &p,
+                              std::shared_ptr<const SensorPayload> &payload) {
+  std::lock_guard<std::mutex> lock(s->mutex);
+  s->completion_queued = false; // Clear even for removed/invalid completions.
+  return take_locked(s, p, payload);
+}
 bool Sensors::take_shared(const std::shared_ptr<Sensor> &s, Sample &p,
                           std::shared_ptr<const SensorPayload> &payload) {
-  std::lock_guard<std::mutex> l(s->mutex);
+  std::lock_guard<std::mutex> lock(s->mutex);
+  return take_locked(s, p, payload);
+}
+bool Sensors::take_locked(const std::shared_ptr<Sensor> &s, Sample &p,
+                          std::shared_ptr<const SensorPayload> &payload) {
   if (!s->has_completed)
     return false;
   auto e = s->entity.lock();
@@ -1044,6 +1109,7 @@ Json Sensors::status() const {
   return j;
 }
 void Sensors::stop() {
+  interrupt_completions();
   {
     std::unique_lock<std::mutex> lock(mutex_);
     stopping_ = true;
@@ -1059,6 +1125,10 @@ void Sensors::stop() {
       t.join();
   if (gpu_thread_.joinable())
     gpu_thread_.join();
+  {
+    std::lock_guard<std::mutex> completion_lock(completion_mutex_);
+    completed_ready_ = {};
+  }
   std::lock_guard<std::mutex> l(mutex_);
   cpu_ready_ = {};
   gpu_ready_ = {};
@@ -1067,6 +1137,7 @@ void Sensors::stop() {
       std::lock_guard<std::mutex> sl(sensor->mutex);
       sensor->has_pending = false;
       sensor->queued = false;
+      sensor->completion_enabled = sensor->completion_queued = false;
       sensor->pending.bodies.reset();
       sensor->completed.bodies.reset();
       sensor->cached_sample.bodies.reset();

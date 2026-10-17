@@ -5,12 +5,15 @@
 #include <functional>
 
 namespace xsim {
+struct Sample;
+struct SensorPayload;
+
 // One optional IO attachment per existing Entity. Its callbacks own the concrete
 // transport resources; there is no second entity roster or lifecycle authority.
 struct EntityIO {
   std::function<void()> reconcile;
   std::function<void(const State &, const TelemetryRates &)> publish;
-  std::function<bool()> publish_sensor;
+  std::function<void(const Sample &, const std::shared_ptr<const SensorPayload> &)> publish_sensor;
   const std::string localization_pose_topic{};
 };
 

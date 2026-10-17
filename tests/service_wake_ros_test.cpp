@@ -125,8 +125,7 @@ int main(int argc, char **argv) {
   xsim::Json config{{"entities", xsim::Json::array({
                         {{"name", "wake"}, {"kind", "fs150"}},
                         {{"name", "task"}, {"kind", "fs150"}},
-                    })},
-                    {"publish_workers", 1}};
+                    })}};
   auto io = xsim::make_ros_io(config, world, sensors);
   std::atomic<uint64_t> polls{0};
   auto inner = std::move(io.poll_services);

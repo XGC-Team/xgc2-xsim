@@ -59,6 +59,8 @@ struct Sensor {
   Sample pending, completed;
   bool has_pending = false, busy = false, has_completed = false;
   bool queued = false; // Sensors::mutex_; one ready token, never one per sample
+  // Sensor::mutex; no output token until its transport is bound.
+  bool completion_enabled = false, completion_queued = false;
   // Fixed owners; only the single scan worker may rewrite a unique payload.
   std::array<std::shared_ptr<SensorPayload>, payload_pool_size> payload_pool;
   size_t payload_cursor = 0;
@@ -110,6 +112,15 @@ public:
                           uint64_t revision, const std::vector<SceneObstaclePose> &poses);
   std::vector<uint8_t> reference_cloud() const;
   void stop();
+  // One completion consumer. Interrupt preserves queued latest samples for resume.
+  void start_completions();
+  void interrupt_completions();
+  void enable_completions(const std::shared_ptr<Sensor> &);
+  std::shared_ptr<Sensor> wait_completion();
+  std::shared_ptr<Sensor> try_completion();
+  static bool take_completion(const std::shared_ptr<Sensor> &, Sample &,
+                              std::shared_ptr<const SensorPayload> &);
+  // Direct pull is only for ad-hoc fixtures without a completion consumer.
   static bool take_shared(const std::shared_ptr<Sensor> &, Sample &,
                           std::shared_ptr<const SensorPayload> &);
   // Fixture compatibility: copies payload bytes after releasing the sensor lock.
@@ -172,6 +183,13 @@ private:
   std::condition_variable wake_;
   std::condition_variable cpu_wake_;
   Ready cpu_ready_, gpu_ready_;
+  std::mutex completion_mutex_;
+  std::condition_variable completion_wake_;
+  Ready completed_ready_;
+  bool completion_active_ = false;
+  void notify_completed(const std::shared_ptr<Sensor> &);
+  static bool take_locked(const std::shared_ptr<Sensor> &, Sample &,
+                          std::shared_ptr<const SensorPayload> &);
   size_t gpu_initializations_ = 0;
   std::vector<std::weak_ptr<Sensor>> sensors_;
   std::vector<std::thread> cpu_threads_;

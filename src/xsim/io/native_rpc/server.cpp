@@ -40,7 +40,6 @@ Server::Server(const Json &config, const std::string &path, RpcOptions options,
       {"max_model_step_ns", config.value("max_model_step_ns", int64_t(10000000))},
       {"catchup_batch", config.value("catchup_batch", 8u)},
       {"sensor_workers", config.value("sensor_workers", 2u)},
-      {"publish_workers", config.value("publish_workers", 2u)},
       {"publish_clock", config.value("publish_clock", false)}};
   for (const auto &j : config.value("entities", Json::array())) {
     const auto name = j.at("name").get<std::string>();
@@ -99,6 +98,7 @@ void Server::run(const volatile sig_atomic_t &stopping) {
     });
   }
   if (io_.start_outputs) io_.start_outputs();
+  if (!io_.publish_entities) sensors_.start_completions();
   world_.start();
   for (unsigned i = 0; i < 2; ++i)
     service_workers_.emplace_back([this] {
@@ -215,6 +215,8 @@ std::unique_ptr<Prepared> Server::prepare(const std::shared_ptr<Entity> &e, cons
   e->sensor = sensors_.prepare(e, settings.value("sensor", Json::object()));
   if (io_.attach_entity)
     io_.attach_entity(e, settings.value("ros", Json::object()));
+  if (!io_.publish_entities && e->sensor && e->io && e->io->publish_sensor)
+    sensors_.enable_completions(e->sensor);
   return std::make_unique<Prepared>(Prepared{e, std::move(model)});
 }
 
@@ -319,36 +321,31 @@ void Server::output() {
   }
   started_wake_.notify_all();
   std::shared_ptr<const Frame> frame;
-  size_t sensor_cursor=0;
   while (output_running_) {
     if (world_.take_frame(frame)) {
-      if (!frames_flowing_.exchange(true)) transport_->wake(); // readiness may have changed
-      sensors_.submit_frame(frame);
       {
         std::lock_guard<std::mutex> l(view_mutex_);
         latest_ = frame;
       }
+      if (!frames_flowing_.exchange(true)) transport_->wake(); // readiness may have changed
       if (io_.publish_frame) io_.publish_frame(*frame);
       const auto rates = std::atomic_load(&telemetry_rates_);
-      // Flush the entire telemetry snapshot before any large cloud. After
-      // each cloud, check for newer telemetry again instead of serializing
-      // a fleet's clouds ahead of everyone else's heartbeat.
+      // Clock and telemetry dispatch precede this frame's scan submissions.
       if (io_.publish_entities) io_.publish_entities(frame, rates);
       else for(const auto& s:frame->states)if(auto e=s.entity.lock();e && e->alive && e->io && e->io->publish)e->io->publish(s, *rates);
+      sensors_.submit_frame(frame);
     }
     if (io_.publish_entities) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }
-    bool published=false;
-    const auto count = frame ? frame->states.size() : 0;
-    for(size_t n=0;n<count;++n) {
-      const size_t i=(sensor_cursor+n)%count;
-      if(auto e=frame->states[i].entity.lock();e && e->alive && e->io && e->io->publish_sensor && e->io->publish_sensor()) {
-        sensor_cursor=(i+1)%count;published=true;break;
-      }
-    }
-    if(!published)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (auto sensor = sensors_.try_completion()) {
+      Sample sample;
+      std::shared_ptr<const SensorPayload> payload;
+      if (Sensors::take_completion(sensor, sample, payload))
+        if (auto e = sensor->entity.lock(); e && e->io && e->io->publish_sensor)
+          e->io->publish_sensor(sample, payload);
+    } else std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 }
 
