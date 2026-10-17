@@ -122,7 +122,10 @@ int main(int argc, char **argv) {
   xsim::World world(1700000000000000000LL, 2000000, 8000000, 8, 10000000,
                     "0123456789abcdef0123456789abcdef");
   xsim::Sensors sensors(xsim::Json::object(), 1);
-  xsim::Json config{{"entities", xsim::Json::array({{{"name", "wake"}, {"kind", "fs150"}}})},
+  xsim::Json config{{"entities", xsim::Json::array({
+                        {{"name", "wake"}, {"kind", "fs150"}},
+                        {{"name", "task"}, {"kind", "fs150"}},
+                    })},
                     {"publish_workers", 1}};
   auto io = xsim::make_ros_io(config, world, sensors);
   std::atomic<uint64_t> polls{0};
@@ -148,7 +151,9 @@ int main(int argc, char **argv) {
 
   ros::NodeHandle handle;
   auto client = handle.serviceClient<mavros_msgs::CommandBool>("/wake/mavros/cmd/arming");
+  auto task_client = handle.serviceClient<mavros_msgs::CommandBool>("/task/mavros/cmd/arming");
   assert(client.waitForExistence(ros::Duration(15)));
+  assert(task_client.waitForExistence(ros::Duration(15)));
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   const auto idle_before = polls.load();
   std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -175,10 +180,12 @@ int main(int argc, char **argv) {
   std::vector<std::thread> burst;
   for (int i = 0; i < kBurst; ++i)
     burst.emplace_back([&] { if (arm_once()) ++armed; });
+  const auto task = nlohmann::json::parse(http(socket, "GET", "/v1/entities/task", "task", instance, {}));
+  const auto task_generation = task.at("ref").at("generation").get<uint64_t>();
   xsim::Json reset_body = xsim::Json::object();
-  reset_body["generation"] = generation;
+  reset_body["generation"] = task_generation;
   reset_body["operation_timeout_ms"] = 3000;
-  const auto reset = nlohmann::json::parse(http(socket, "POST", "/v1/entities/wake/reset", "reset", instance, reset_body.dump()));
+  const auto reset = nlohmann::json::parse(http(socket, "POST", "/v1/entities/task/reset", "reset", instance, reset_body.dump()));
   const auto operation = nlohmann::json::parse(http(
       socket, "POST", "/v1/operations/" + reset.at("id").get<std::string>() + "/wait", "reset-wait", instance, "{}"));
   for (auto &thread : burst) thread.join();
