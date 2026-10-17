@@ -31,6 +31,19 @@ struct RosConnectionErrors : XmlRpc::XmlRpcErrorHandler {
     if (!connection_worker && previous) previous->error(message);
   }
 };
+struct ServiceQueue : ros::CallbackQueue {
+  std::mutex wake_mutex;
+  std::function<void()> wake;
+  void set_wake(std::function<void()> fn) {
+    std::lock_guard<std::mutex> lock(wake_mutex);
+    wake = std::move(fn);
+  }
+  void addCallback(const ros::CallbackInterfacePtr &callback, uint64_t removal_id = 0) override {
+    ros::CallbackQueue::addCallback(callback, removal_id);
+    std::lock_guard<std::mutex> lock(wake_mutex);
+    if (wake) wake();
+  }
+};
 struct RosRuntime {
   struct Lane {
     std::mutex mutex;
@@ -39,7 +52,8 @@ struct RosRuntime {
     std::shared_ptr<const TelemetryRates> rates;
     std::thread thread;
   };
-  ros::CallbackQueue inputs, services;
+  ros::CallbackQueue inputs;
+  ServiceQueue services;
   std::unique_ptr<ros::NodeHandle> node;
   const Json config;
   int wake_fd = -1;
@@ -435,7 +449,12 @@ RuntimeIO make_ros_io(const Json &config, World &world, Sensors &sensors) {
     runtime->attach(ros);
   };
   io.poll_inputs = [runtime] { runtime->inputs.callAvailable(ros::WallDuration(0)); };
-  io.poll_services = [runtime] { runtime->services.callOne(ros::WallDuration(.01)); };
+  io.bind_service_wake = [runtime](std::function<void()> wake) {
+    runtime->services.set_wake(std::move(wake));
+  };
+  io.poll_services = [runtime] {
+    return runtime->services.callOne(ros::WallDuration(0)) == ros::CallbackQueue::Called;
+  };
   io.inputs_ready = [runtime] { return runtime->peer_ready.load(); };
   io.okay = [runtime] { return !runtime->failed && ros::ok(); };
   io.publish_frame = [runtime](const Frame &frame) {

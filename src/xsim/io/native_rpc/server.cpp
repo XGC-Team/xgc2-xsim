@@ -84,9 +84,22 @@ Server::Server(const Json &config, const std::string &path, RpcOptions options,
 Server::~Server() noexcept { shutdown(); }
 
 void Server::run(const volatile sig_atomic_t &stopping) {
+  {
+    std::lock_guard<std::mutex> lock(preparation_mutex_);
+    preparing_ = true;
+  }
+  if (io_.bind_service_wake) {
+    io_.bind_service_wake([this] {
+      {
+        std::lock_guard<std::mutex> lock(preparation_mutex_);
+        if (!preparing_) return;
+        ++service_generation_;
+      }
+      preparation_wake_.notify_one();
+    });
+  }
   if (io_.start_outputs) io_.start_outputs();
   world_.start();
-  preparing_ = true;
   for (unsigned i = 0; i < 2; ++i)
     service_workers_.emplace_back([this] {
       try { service_work(); } catch (...) { worker_failed(); }
@@ -222,14 +235,15 @@ void Server::shutdown() noexcept {
     try { action(); }
     catch (...) { if (!cleanup_error_) cleanup_error_ = std::current_exception(); }
   };
+  attempt([&] { if (io_.bind_service_wake) io_.bind_service_wake({}); });
   attempt([&] { change_health("stopping"); });
-  preparing_ = false;
   for (auto &entry : requests_) if (entry.second.ticket) {
     int queued = 0;
     entry.second.ticket->phase.compare_exchange_strong(queued, 3);
   }
   attempt([&] {
     std::lock_guard<std::mutex> lock(preparation_mutex_);
+    preparing_ = false;
     preparation_tasks_.clear();
   });
   preparation_wake_.notify_all();
@@ -476,22 +490,29 @@ void Server::service_work() {
     ++service_started_;
   }
   started_wake_.notify_all();
+  uint64_t seen_service_generation = 0;
   while (preparing_) {
     std::function<void()> task;
     {
-      std::unique_lock<std::mutex> lock(preparation_mutex_);
-      if (preparation_tasks_.empty() && !io_.poll_services)
-        preparation_wake_.wait(lock, [this] { return !preparing_ || !preparation_tasks_.empty(); });
+      std::lock_guard<std::mutex> lock(preparation_mutex_);
       if (!preparing_) return;
       if (!preparation_tasks_.empty()) {
         task = std::move(preparation_tasks_.front());
         preparation_tasks_.pop_front();
       }
+      seen_service_generation = service_generation_;
     }
-    if (task) task();
-    // These are the original two service workers, not an additional pool.
-    // Native preparation is ordinary C++; only actual ROS services enter its queue.
-    if (io_.poll_services) io_.poll_services();
+    if (task) {
+      task();
+      continue;
+    }
+    // Original two workers. One nonblocking service callback, then native tasks again.
+    if (io_.poll_services && io_.poll_services()) continue;
+    std::unique_lock<std::mutex> lock(preparation_mutex_);
+    preparation_wake_.wait(lock, [&] {
+      return !preparing_ || !preparation_tasks_.empty() ||
+             service_generation_ != seen_service_generation;
+    });
   }
 }
 } // namespace xsim

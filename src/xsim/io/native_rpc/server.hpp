@@ -101,6 +101,7 @@ private:
   std::mutex preparation_mutex_;
   std::condition_variable preparation_wake_;
   std::deque<std::function<void()>> preparation_tasks_;
+  uint64_t service_generation_ = 0;
   std::vector<std::thread> service_workers_;
   std::atomic<bool> preparing_{false};
   std::mutex started_mutex_;

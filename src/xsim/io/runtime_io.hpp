@@ -18,7 +18,10 @@ struct EntityIO {
 // server and model/sensor systems a transport-free, headless runtime.
 struct RuntimeIO {
   std::function<void(const std::shared_ptr<Entity> &, const Json &)> attach_entity;
-  std::function<void()> poll_inputs, poll_services;
+  std::function<void()> poll_inputs;
+  // True when one ready service callback ran. False when none was ready.
+  std::function<bool()> poll_services;
+  std::function<void(std::function<void()>)> bind_service_wake;
   // With no connected input peer the native socket may wait longer between
   // events; its poll still wakes immediately for a management request.
   std::function<bool()> inputs_ready;
