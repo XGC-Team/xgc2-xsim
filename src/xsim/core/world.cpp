@@ -732,8 +732,11 @@ void World::emit() {
   frame->steps = steps_;
   frame->revision = revision_;
   observe_geometry(*frame);
-  std::unique_lock<std::mutex> l(output_mutex_, std::try_to_lock);
-  if (!l.owns_lock()) {
+  std::unique_lock<std::mutex> l(output_mutex_, std::defer_lock);
+  // A paused world may wait indefinitely after this final frame. Its short
+  // pointer handoff must complete; ordinary ticks can still skip a busy reader.
+  if (metrics.paused) l.lock();
+  else if (!l.try_lock()) {
     ++metrics.output_misses;
     return;
   }

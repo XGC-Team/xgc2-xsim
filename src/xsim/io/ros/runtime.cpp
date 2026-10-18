@@ -288,10 +288,13 @@ struct RosRuntime {
         std::string run_id;
         if (available) {
           args[1] = "/run_id";
-          available = master_call("getParam", args, response);
-          if (available && response[0].getType() == XmlRpc::XmlRpcValue::TypeInt && int(response[0]) == 1 &&
-              response[2].getType() == XmlRpc::XmlRpcValue::TypeString)
+          available = master_call("getParam", args, response) &&
+              response[0].getType() == XmlRpc::XmlRpcValue::TypeInt && int(response[0]) == 1 &&
+              response[2].getType() == XmlRpc::XmlRpcValue::TypeString;
+          if (available) {
             run_id = std::string(response[2]);
+            available = !run_id.empty();
+          }
         }
         if (!watching) break;
         if (!available) {
