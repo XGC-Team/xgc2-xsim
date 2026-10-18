@@ -64,13 +64,15 @@ def main(binary):
         rejected(invalid, 'directory allocation')
         for payload in ('{} {}', '{"sessionId":"one","sessionId":"two"}', ' '*(8*1024*1024+1)):
             rejected(command, 'exceeds 8 MiB' if len(payload)>8*1024*1024 else 'parse' if payload=='{} {}' else 'duplicate configuration', payload)
-        scene = root/'scene.yaml'
+        empty_scene = {'schema': 'xgc2.scene.compiled.v1', 'id': 'cli-fixture',
+                       'frame': 'world', 'geometries': [], 'models': {}, 'obstacles': []}
+        scene = root/'scene.json'
         selected = copy.deepcopy(frozen)
         selected['sceneAsset'] = {'sceneFile': str(scene)}
-        rejected(command, 'bad file', json.dumps(selected))
-        scene.write_text('obstacles: [unterminated\n')
-        rejected(command, 'end of', json.dumps(selected))
-        scene.write_text('obstacles: []\n')
+        rejected(command, 'cannot read scene document', json.dumps(selected))
+        scene.write_text('{"schema":')
+        rejected(command, 'parse error', json.dumps(selected))
+        scene.write_text(json.dumps(empty_scene))
 
         def start(arguments, document, expected_ids=None):
             before = time.time_ns()
@@ -168,18 +170,18 @@ def main(binary):
         process=start(arguments,selected)
         stop(process)
         assert not endpoint.exists()
-        missing = root/'core-scene.yaml'
-        host = root/'host-scene.yaml'
-        host.write_text('obstacles: []\n')
+        missing = root/'core-scene.json'
+        host = root/'host-scene.json'
+        host.write_text(json.dumps(empty_scene))
         remote = copy.deepcopy(selected)
         remote['sceneAsset']['sceneFile'] = str(missing)
         payload = json.dumps(remote)
         assert str(missing) in payload and str(host) not in payload
-        rejected(command + ['--scene-file', ''], 'bad file', payload)
+        rejected(command + ['--scene-file', ''], 'cannot read scene document', payload)
         rejected(command + ['--scene-file', str(host), '--scene-file', str(host)], 'more than once', payload)
         process = start(command + ['--scene-file', str(host)], remote)
         stop(process)
-        rejected(command + ['--scene-file', str(missing)], 'bad file', json.dumps(selected))
+        rejected(command + ['--scene-file', str(missing)], 'cannot read scene document', json.dumps(selected))
         assert not endpoint.exists()
         print(json.dumps({'frozenSessionStdin':True,'explicitRunAndTarget':True,'sessionSceneAsset':True,
                           'retiredInputsRejected':True,'shippedDefinitionArgv':True,'nativeEpoch':True,
