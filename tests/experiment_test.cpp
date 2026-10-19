@@ -64,6 +64,47 @@ int main(int argc, char **argv) {
       {"enabled", true}, {"acceleration", backend}, {"hFovDeg", 360}, {"vFovDeg", 90}, {"hRes", 360}, {"vRes", 90}};
     assert(config_for(selected)["entities"][0]["sensor"]["backend"] == backend);
   }
+  {
+    // A saved point cloud is a frozen asset fact (sceneAsset.pointCloud). It, and nothing next to
+    // the scene file, moves the cloud to the scene adapter: no entity sensor and no reference topic.
+    auto sensed = xsim::load_json_object(root + "/gpu-depth_frustum.input.json");
+    sensed["visualizationTopics"] = xsim::Json::array({{{"topic", "/xgc/scene/reference_cloud"},
+      {"messageType", "sensor_msgs/PointCloud2"}, {"role", "semantic"}, {"visible3d", true}}});
+    const auto both = config_for(sensed);
+    assert(both.contains("reference_cloud_topic") && both.at("entities").at(0).contains("sensor"));
+    auto saved = sensed;
+    saved["sceneAsset"] = {{"pointCloud", {{"file", "original-volume.xyz.f32"}, {"sha256", "0"},
+      {"format", "xyz-f32-le"}, {"frame", "world"}}}};
+    const auto moved = config_for(saved);
+    assert(!moved.contains("reference_cloud_topic"));
+    for (const auto &entity : moved.at("entities")) assert(!entity.contains("sensor"));
+    auto reduced = both;
+    reduced.erase("reference_cloud_topic");
+    for (auto &entity : reduced["entities"]) entity.erase("sensor");
+    assert(moved == reduced);
+    // The sensor selection is still validated; only its publisher moved.
+    auto invalid = saved;
+    invalid["robots"][0]["binding"]["simulationSensors"]["simpleLidar"]["hRes"] = 4097;
+    bool refused_sensor = false;
+    try { (void)config_for(invalid); } catch (const std::exception &) { refused_sensor = true; }
+    assert(refused_sensor);
+    auto not_object = saved;
+    not_object["sceneAsset"]["pointCloud"] = "original-volume.xyz.f32";
+    bool refused_cloud = false;
+    try { (void)config_for(not_object); } catch (const std::exception &) { refused_cloud = true; }
+    assert(refused_cloud);
+    // No manifest beside the scene file is read any more.
+    char manifest_pattern[] = "/tmp/xsim-experiment-manifest-XXXXXX";
+    assert(mkdtemp(manifest_pattern));
+    const std::filesystem::path manifest_dir(manifest_pattern);
+    std::ofstream(manifest_dir / "manifest.json") << R"({"pointCloud":{"file":"original-volume.xyz.f32"}})";
+    std::ofstream(manifest_dir / "scene.json") << R"({"schema":"xgc2.scene.compiled.v1","id":"yard","frame":"world","geometries":[],"models":{},"obstacles":[]})";
+    auto beside = sensed;
+    beside["sceneAsset"] = {{"sceneFile", (manifest_dir / "scene.json").string()}};
+    const auto ignored = xsim::resolve_scene_file(config_for(beside), "");
+    assert(ignored.contains("reference_cloud_topic") && ignored.at("entities").at(0).contains("sensor"));
+    std::filesystem::remove_all(manifest_dir);
+  }
   for (const bool locked : {false, true}) {
     auto authored = original;
     authored["scene"]["parameters"]["frozen"] = locked;

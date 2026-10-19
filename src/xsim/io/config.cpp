@@ -161,30 +161,15 @@ void apply_compiled_ground(Json &config) {
   if (robots) throw std::invalid_argument("planar contact does not support ground " + mode);
 }
 Json resolve_scene_file(Json j, const std::string &scene_file) {
-  // The frozen source path is the asset directory. Capture it before a compiled
-  // override replaces scene_file. Do not search that override or the working directory.
-  std::string asset_scene;
-  if (j.contains("scene_file") && j.at("scene_file").is_string())
-    asset_scene = j.at("scene_file").get<std::string>();
   // A non-empty host path replaces the frozen path. Empty leaves it. Load the winner once.
+  // The asset's identity and attachments (a saved point cloud) are frozen facts that
+  // experiment_config already applied; no file next to the scene is read.
   if (!scene_file.empty()) j["scene_file"] = scene_file;
   if (j.contains("scene_file") && !j.at("scene_file").is_null()) {
     if (!j.at("scene_file").is_string()) throw std::invalid_argument("scene_file must be a string");
     const auto path = j.at("scene_file").get<std::string>();
     if (path.empty()) return j;
     j["scene"]["document"] = load_scene_document(path);
-    const auto asset = std::filesystem::path(asset_scene);
-    if (!asset_scene.empty() && asset.has_parent_path()) {
-      const auto manifest = asset.parent_path() / "manifest.json";
-      // SceneNode's native lidar engine owns a saved point cloud named by the
-      // frozen asset manifest. Drop XSim's reference topic and entity sensors
-      // so they are not a second publisher. The source scene itself is not read.
-      if (std::filesystem::is_regular_file(manifest) &&
-          load_json_object(manifest.string()).contains("pointCloud")) {
-        j.erase("reference_cloud_topic");
-        for (auto& entity : j["entities"]) entity.erase("sensor");
-      }
-    }
     apply_compiled_ground(j);
   }
   return j;
