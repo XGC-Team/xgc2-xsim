@@ -55,13 +55,13 @@ int main() {
   reference["scene_file"] = scene;
   reference["reference_cloud_topic"] = "/xgc/scene/reference_cloud";
   assert(xsim::resolve_scene_file(reference, scene).contains("reference_cloud_topic"));
+  // A manifest beside the scene is not read: the saved cloud is the frozen sceneAsset.pointCloud
+  // fact that experiment_config applies (see experiment_test).
   std::ofstream(root / "manifest.json") << R"({"pointCloud":{"file":"original-volume.xyz.f32"}})";
   reference["entities"].push_back({{"name", "uav1"}, {"sensor", {{"backend", "gpu"}}}});
-  const auto fixed_cloud = xsim::resolve_scene_file(reference, scene);
-  assert(!fixed_cloud.contains("reference_cloud_topic"));
-  assert(!fixed_cloud.at("entities").at(0).contains("sensor"));
-  reference.erase("reference_cloud_topic");
-  assert(!xsim::resolve_scene_file(reference, scene).at("entities").at(0).contains("sensor"));
+  const auto beside_manifest = xsim::resolve_scene_file(reference, scene);
+  assert(beside_manifest.contains("reference_cloud_topic"));
+  assert(beside_manifest.at("entities").at(0).contains("sensor"));
   std::filesystem::remove(root / "manifest.json");
   const auto &document = from_flag.at("scene").at("document");
   assert(document.at("name") == "original-scene");
@@ -186,7 +186,7 @@ int main() {
   const auto compiled = (compiled_dir / "scene.compiled.json").string();
   std::ofstream(frozen_source) << "name: [source-geometry-must-not-load\n";
   std::ofstream(compiled) << R"({"schema":"xgc2.scene.compiled.v1","name":"compiled-only","geometries":[]})";
-  std::ofstream(compiled_dir / "manifest.json") << R"({"name":"compiled-decoy"})";
+  std::ofstream(compiled_dir / "manifest.json") << R"({"pointCloud":{"file":"decoy.xyz.f32"}})";
   std::ofstream(asset_dir / "manifest.json") << R"({"pointCloud":{"file":"original-volume.xyz.f32"}})";
   xsim::Json split = original;
   split["scene_file"] = frozen_source;
@@ -195,14 +195,9 @@ int main() {
   const auto owned = xsim::resolve_scene_file(split, compiled);
   assert(owned.at("scene_file") == compiled);
   assert(owned.at("scene").at("document").at("name") == "compiled-only");
-  assert(!owned.contains("reference_cloud_topic"));
-  assert(!owned.at("entities").at(0).contains("sensor"));
-  std::ofstream(asset_dir / "manifest.json") << R"({"obstacleInput":"fixed"})";
-  std::ofstream(compiled_dir / "manifest.json") << R"({"pointCloud":{"file":"decoy.xyz.f32"}})";
-  const auto geometry_only = xsim::resolve_scene_file(split, compiled);
-  assert(geometry_only.contains("reference_cloud_topic"));
-  assert(geometry_only.at("entities").at(0).contains("sensor"));
-  assert(geometry_only.at("scene").at("document").at("name") == "compiled-only");
+  // Neither the frozen source's manifest nor the compiled file's is consulted.
+  assert(owned.contains("reference_cloud_topic"));
+  assert(owned.at("entities").at(0).contains("sensor"));
   auto unfrozen = split;
   unfrozen.erase("scene_file");
   const auto no_source = xsim::resolve_scene_file(unfrozen, compiled);

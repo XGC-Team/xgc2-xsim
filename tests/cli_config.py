@@ -74,6 +74,35 @@ def main(binary):
         rejected(command, 'parse error', json.dumps(selected))
         scene.write_text(json.dumps(empty_scene))
 
+        # scene.parameters keys: XSim accepts the shared and xsim lists of the product contract
+        # (contracts/scene-parameters.json) and nothing else. The probe session carries a malformed
+        # sceneAsset, which is validated after the parameters, so an accepted key ends at that check.
+        configured = os.environ.get('XGC_SCENE_PARAMETERS_CONTRACT')
+        contract = Path(configured) if configured else Path(__file__).resolve().parents[4] / 'xgc2' / 'contracts' / 'scene-parameters.json'
+        if contract.is_file():
+            table = json.loads(contract.read_text())
+            probe = copy.deepcopy(frozen)
+            probe['sceneAsset'] = {'sceneFile': 5}
+
+            def parameter_accepted(key, value):
+                probe['scene']['parameters'] = {key: value}
+                result = subprocess.run(command, input=json.dumps(probe), capture_output=True, text=True, timeout=5)
+                assert result.returncode == 1 and not endpoint.exists(), result
+                if 'unknown scene parameter: ' + key in result.stderr:
+                    return False
+                assert 'sceneAsset.sceneFile must be a string' in result.stderr, result.stderr
+                return True
+
+            accepted = {**table['shared'], **table['simulators']['xsim']}
+            for key, spec in accepted.items():
+                assert parameter_accepted(key, spec['example']), 'XSim rejects the contract key ' + key
+            for key, spec in table['simulators']['gazebo'].items():
+                assert not parameter_accepted(key, spec['example']), 'XSim accepts the Gazebo-only key ' + key
+            assert not parameter_accepted('typo', 1)
+            assert 'pointCloudBackend' in accepted and accepted['pointCloudBackend']['default'] == 'auto'
+        else:
+            print('SKIP scene parameter contract:', contract, 'not found')
+
         def start(arguments, document, expected_ids=None):
             before = time.time_ns()
             process = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

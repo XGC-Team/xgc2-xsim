@@ -162,12 +162,21 @@ Json experiment_config(const Json &input, int64_t epoch_ns, const std::string &s
     {"input_poll_ns", poll}, {"publish_clock", !self_slot}, {"scene", Json::object()}, {"entities", Json::array()}};
   if (self_slot) config["use_sim_time"] = false;
   if (phase_t0_ns) config["phase_t0_ns"] = *phase_t0_ns;
+  // The frozen asset facts are read once by Core. A saved point cloud
+  // (sceneAsset.pointCloud) is published by the scene adapter's native lidar
+  // engine, so this process neither opens manifest.json nor publishes a second
+  // reference cloud or entity sensors.
+  bool saved_cloud = false;
   if (input.contains("sceneAsset") && !input.at("sceneAsset").is_null()) {
     const auto& scene_asset = input.at("sceneAsset");
     require(scene_asset.is_object(), "sceneAsset must be an object");
     if (scene_asset.contains("sceneFile")) {
       require(scene_asset.at("sceneFile").is_string(), "sceneAsset.sceneFile must be a string");
       config["scene_file"] = scene_asset.at("sceneFile");
+    }
+    if (scene_asset.contains("pointCloud")) {
+      require(scene_asset.at("pointCloud").is_object(), "sceneAsset.pointCloud must be an object");
+      saved_cloud = true;
     }
   }
   std::set<std::string> names;
@@ -236,14 +245,14 @@ Json experiment_config(const Json &input, int64_t epoch_ns, const std::string &s
     const auto authored_lidar = authored_sensors.value("simpleLidar", Json(false));
     entity["body_returns"] = authored_lidar.is_object() ? authored_lidar.value("bodyReturns", false) : false;
     const auto desired_sensor = sensor(authored_sensors, ns, backend);
-    if (!desired_sensor.is_null()) entity["sensor"] = desired_sensor;
+    if (!desired_sensor.is_null() && !saved_cloud) entity["sensor"] = desired_sensor;
     (void)parse_entity(entity);
     if (self_slot) config["ros_node_name"] = body;
     config["entities"].push_back(std::move(entity));
   }
   if (self_slot && matches != 1)
     require(false, matches == 0 ? "slot is not in the frozen roster" : "slot is not unique");
-  if (reference_requested(input.at("visualizationTopics"))) config["reference_cloud_topic"] = "/xgc/scene/reference_cloud";
+  if (!saved_cloud && reference_requested(input.at("visualizationTopics"))) config["reference_cloud_topic"] = "/xgc/scene/reference_cloud";
   return config;
 }
 Json experiment_robot_bindings(const Json &input, const std::string &slot_id) {
