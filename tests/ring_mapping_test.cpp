@@ -49,7 +49,7 @@ int main() {
         (shapes[0].position - (Eigen::Vector3d(2, 3, 4) + parent * Eigen::Vector3d(.1, .2, .3))).norm() > 1e-12 ||
         shapes[0].orientation.angularDistance(parent * child) > 1e-12)
         throw std::runtime_error("typed document ring/poses");
-    for (const auto invalid : {json::array({true, 1.2}), json::array({1.}), json::array({1., 1.2, 1.3}),
+    for (const auto& invalid : {json::array({true, 1.2}), json::array({1.}), json::array({1., 1.2, 1.3}),
                                json::array({0., 1.2})}) {
         auto bad = document;
         bad["geometries"][0]["radii"] = invalid;
