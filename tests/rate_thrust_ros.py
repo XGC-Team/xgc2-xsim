@@ -153,14 +153,21 @@ def scenario(x, rospy):
     assert last('state').armed and last('state').mode == 'OFFBOARD'
     recover_start = world_time()
 
-    def recover_step():
-        pva.publish(command)
-        step()
-        return target_after(recover_start, 7)
+    # Publish once: a later predicate must not enqueue another PVA after the
+    # post-recover target feedback that proves the stream changed to PVA.
+    pva.publish(command)
 
-    until(recover_step, 'PVA can replace the rate/thrust stream')
-    # With no further input the original COM_OF_LOSS_T hysteresis exits OFFBOARD.
-    x.operation('POST', '/v1/world/step', {'steps': 600})
+    def recover_step():
+        step()
+        return target_after(recover_start + 1, 7)
+
+    recovered = until(recover_step, 'PVA can replace the rate/thrust stream')
+    assert stamp(recovered) > recover_start and recovered.type_mask == 7
+    # No input after the observed PVA stage; retain the original 600-step loss gate.
+    loss_start = world_time()
+    loss_result = x.operation('POST', '/v1/world/step', {'steps': 600})
+    loss_end = int(loss_result['result']['time']['nanoseconds'])
+    assert loss_end - loss_start == 1200000000, '600 original 2ms steps must remain 1.2s'
     until(lambda: last('state').mode == 'AUTO.LOITER', 'existing OFFBOARD loss fallback')
     assert last('state').armed
     published = dict(rospy.get_published_topics())
