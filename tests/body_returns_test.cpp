@@ -127,7 +127,8 @@ int main(int argc, char** argv) {
         Frame raw_frame;
         const auto raw = observe(sensors, world, scanner, &raw_frame);
         const auto target = position(raw_frame, front->id);
-        const std::size_t stride = scanner->sensor->gpu ? 16 : 12;
+        const std::size_t stride = 12;
+        require(raw.size() % stride == 0, "untagged cloud length");
         bool raw_hit = false;
         for (std::size_t at = 0; at < raw.size(); at += stride) {
           float xyz[3]; std::memcpy(xyz, raw.data() + at, 12);

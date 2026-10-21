@@ -1,3 +1,4 @@
+#include "cloud_layout.hpp"
 #include "entity.hpp"
 #include "point_cloud_view.hpp"
 #include <cstring>
@@ -108,18 +109,12 @@ void RosEntity::bind() {
     cloud_message.header.frame_id = e->sensor->frame;
     beam_message.header.frame_id = e->sensor->frame;
     cloud.bind(input->advertise<sensor_msgs::PointCloud2>(e->sensor->topic, 1), cloud_metrics);
-    cloud_message.fields.resize((e->sensor->gpu || e->sensor->with_bodies) ? 4 : 3);
-    for (unsigned a = 0; a < cloud_message.fields.size(); ++a) {
-      auto &f = cloud_message.fields[a];
-      f.name = a == 3 ? (e->sensor->gpu ? "intensity" : "vehicle_id") : std::string(1, "xyz"[a]);
-      f.offset = a * 4;
-      f.datatype = a==3 && e->sensor->with_bodies ? sensor_msgs::PointField::INT32 : sensor_msgs::PointField::FLOAT32;
-      f.count = 1;
-    }
-    cloud_message.point_step = (e->sensor->gpu || e->sensor->with_bodies) ? 16 : 12;
-    cloud_message.height = 1;
-    cloud_message.is_dense = true;
-    cloud_message.is_bigendian = false;
+    const auto layout = cloudPointLayout(e->sensor->with_bodies);
+    cloud_message.fields = layout.fields;
+    cloud_message.point_step = layout.point_step;
+    cloud_message.height = layout.height;
+    cloud_message.is_dense = layout.is_dense;
+    cloud_message.is_bigendian = layout.is_bigendian;
     if(e->sensor->publish_beams){
       beams.bind(input->advertise<sensor_msgs::PointCloud2>("/"+e->config.name+"/simple_lidar/beams",1), cloud_metrics);
       beam_message.height=1;beam_message.is_dense=true;beam_message.point_step=e->sensor->with_bodies?36:32;

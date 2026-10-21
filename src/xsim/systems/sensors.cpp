@@ -395,7 +395,15 @@ std::shared_ptr<Sensor> Sensors::prepare(const std::shared_ptr<Entity> &e, const
   c.noise_std = j.value("noise_std", 0.0);
   // Static observation bytes depend on pose/geometry, not the transport stamp.
   s->cacheable = c.noise_std == 0;
-  c.seed = j.value("seed", 0u);
+  // FNV-1a 32 over the UTF-8 bytes of public_id, then the configured seed.
+  // Real prepare runs before World assigns e->id. Math still adds the scan index.
+  const unsigned configured_seed = j.value("seed", 0u);
+  uint32_t id_hash = 2166136261u;
+  for (unsigned char ch : e->public_id) {
+    id_hash ^= static_cast<uint32_t>(ch);
+    id_hash *= 16777619u;
+  }
+  c.seed = configured_seed ^ id_hash;
   c.surface_spacing = spacing_;
   c.penetrating_keep_buried = j.value("keep_buried",buried_);
   c.surface_spacing=j.value("surface_spacing",spacing_);
@@ -905,6 +913,12 @@ void Sensors::work(bool gpu) {
             } else if (s.with_bodies) {
               const int32_t id = -1;
               for (size_t at = 12; at < data.size(); at += 16) std::memcpy(data.data() + at, &id, 4);
+            }
+            if (!s.with_bodies) {
+              const size_t points = data.size() / 16;
+              for (size_t i = 0; i < points; ++i)
+                std::memmove(data.data() + i * 12, data.data() + i * 16, 12);
+              data.resize(points * 12);
             }
           }
           if (s.cacheable) {

@@ -949,6 +949,92 @@ int main() {
   assert(pressured->sensor->rate_recoveries > 0);
   assert(pressured->sensor->scans - before_recovery < 8);
 
+  // public_id bytes, not the numeric id World assigns after prepare.
+  // Eight by four beams, two scans. noise_std=0 keeps the cache.
+  {
+    Sensors noise_sensors(sceneFixture({{"obstacles", Json::array({{{"type", "box"},
+        {"position", {4, 0, 0}}, {"size", {1, 2, 2}}}})}}), 2);
+    Json noise = {{"backend", "cpu"}, {"h_fov_deg", 60}, {"v_fov_deg", 30},
+                  {"h_res", 8}, {"v_res", 4}, {"rate_hz", 10},
+                  {"world_bodies", false}, {"publish_beams", false},
+                  {"noise_std", 0.1}, {"seed", 7}};
+    auto first = entity(0, "noise_a");
+    auto second = entity(0, "noise_b");
+    auto again = entity(0, "noise_a");
+    assert(first->id == 0 && second->id == 0 && again->id == 0);
+    first->sensor = noise_sensors.prepare(first, noise);
+    second->sensor = noise_sensors.prepare(second, noise);
+    again->sensor = noise_sensors.prepare(again, noise);
+    first->id = 0x9ull;
+    assert(!first->sensor->cacheable && !second->sensor->cacheable && !again->sensor->cacheable);
+    Frame noise_frame;
+    noise_frame.stamp = epoch;
+    noise_frame.states = {state(first, noise_frame.stamp), state(second, noise_frame.stamp),
+                          state(again, noise_frame.stamp)};
+    std::vector<uint8_t> a, b, a2, noise_beams;
+    noise_sensors.submit_frame(noise_frame);
+    receive(first->sensor, a, noise_beams);
+    receive(second->sensor, b, noise_beams);
+    receive(again->sensor, a2, noise_beams);
+    assert(a == a2);
+    assert(a != b);
+    noise_frame.stamp += 100000000;
+    for (auto &s : noise_frame.states) s.stamp = noise_frame.stamp;
+    noise_sensors.submit_frame(noise_frame);
+    std::vector<uint8_t> a_next, a2_next;
+    receive(first->sensor, a_next, noise_beams);
+    receive(again->sensor, a2_next, noise_beams);
+    assert(a_next == a2_next);
+    assert(a_next != a);
+
+    const std::string utf8 = std::string("id_") + "\xC2\xA9";
+    auto utf = std::make_shared<Entity>(parse_entity({{"name", "utf_name"}, {"kind", "scout"}}), utf8);
+    auto utf_again = std::make_shared<Entity>(parse_entity({{"name", "utf_name"}, {"kind", "scout"}}), utf8);
+    auto utf_other = std::make_shared<Entity>(
+        parse_entity({{"name", "utf_name"}, {"kind", "scout"}}), std::string("id_A"));
+    utf->id = utf_again->id = utf_other->id = 0;
+    utf->alive = utf_again->alive = utf_other->alive = true;
+    utf->enabled = utf_again->enabled = utf_other->enabled = true;
+    utf->generation = utf_again->generation = utf_other->generation = 1;
+    utf->sensor = noise_sensors.prepare(utf, noise);
+    utf_again->sensor = noise_sensors.prepare(utf_again, noise);
+    utf_other->sensor = noise_sensors.prepare(utf_other, noise);
+    utf->id = 7;
+    Frame utf_frame;
+    utf_frame.stamp = epoch;
+    utf_frame.states = {state(utf, utf_frame.stamp), state(utf_again, utf_frame.stamp),
+                        state(utf_other, utf_frame.stamp)};
+    std::vector<uint8_t> u, u2, u3;
+    noise_sensors.submit_frame(utf_frame);
+    receive(utf->sensor, u, noise_beams);
+    receive(utf_again->sensor, u2, noise_beams);
+    receive(utf_other->sensor, u3, noise_beams);
+    assert(u == u2);
+    assert(u != u3);
+
+    Json quiet = noise;
+    quiet["noise_std"] = 0.0;
+    auto still = entity(303, "noise_off");
+    still->sensor = noise_sensors.prepare(still, quiet);
+    assert(still->sensor->cacheable);
+    Frame quiet_frame;
+    quiet_frame.stamp = epoch;
+    quiet_frame.states = {state(still, quiet_frame.stamp)};
+    noise_sensors.submit_frame(quiet_frame);
+    std::vector<uint8_t> q0;
+    receive(still->sensor, q0, noise_beams);
+    const auto quiet_computed = still->sensor->computed_scans.load();
+    quiet_frame.stamp += 100000000;
+    quiet_frame.states[0].stamp = quiet_frame.stamp;
+    noise_sensors.submit_frame(quiet_frame);
+    std::vector<uint8_t> q1;
+    receive(still->sensor, q1, noise_beams);
+    assert(q0 == q1);
+    assert(still->sensor->cache_hits == 1);
+    assert(still->sensor->computed_scans == quiet_computed);
+    noise_sensors.stop();
+  }
+
   const auto status = sensors.status();
   assert(status[0].at("requested_rate_hz") == 10.0);
   assert(status[0].at("cache_hits") == 2);
@@ -959,6 +1045,6 @@ int main() {
       "motion_invalidates_cache", "generation_invalidates_cache", "nonblocking_producer",
       "shared_frame_release", "geometry_revision_cache",
       "shared_cached_payload", "bounded_payload_pool_recovery",
-      "fresh_noise", "rate_boundary", "phased_worker_backoff", "phased_worker_recovery",
-      "unphased_period_unchanged"}}, {"sensors", status}}).dump() << '\n';
+      "fresh_noise", "independent_noise_seed", "rate_boundary", "phased_worker_backoff",
+      "phased_worker_recovery", "unphased_period_unchanged"}}, {"sensors", status}}).dump() << '\n';
 }

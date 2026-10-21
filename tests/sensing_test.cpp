@@ -5,6 +5,7 @@
 #include "systems/sensors.hpp"
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <thread>
@@ -47,6 +48,15 @@ Eigen::Quaterniond mounted(const Eigen::Quaterniond &q) {
       .normalized();
 }
 Json vector(const Eigen::Vector3d &v) { return Json::array({v.x(), v.y(), v.z()}); }
+// Same mix Sensors::prepare applies to the configured seed. Numeric entity id is not part of it.
+uint32_t prepared_seed(const std::string &public_id, unsigned configured) {
+  uint32_t id_hash = 2166136261u;
+  for (unsigned char byte : public_id) {
+    id_hash ^= static_cast<uint32_t>(byte);
+    id_hash *= 16777619u;
+  }
+  return configured ^ id_hash;
+}
 
 // The world every case scans: one obstacle of each kind.
 const std::vector<Eigen::Vector3d> cube = {{-.5, -.5, -.5}, {.5, -.5, -.5}, {-.5, .5, -.5}, {.5, .5, -.5},
@@ -125,7 +135,7 @@ void raycast_and_noise() {
   noise.v_res = 4;
   noise.range = 12;
   noise.noise_std = .05;
-  noise.seed = 7;
+  noise.seed = prepared_seed("noisy", 7);
   auto expected = reference(plain);
   auto noise_expected = reference(noise);
 
@@ -150,7 +160,7 @@ void raycast_and_noise() {
     noise_expected->scanInto(still.position, still.orientation, {}, false, &want);
     assert(!want.empty() && cloud == want);
   }
-  // The noise of two sensors with one seed starts alike and is not shared; another seed is another stream.
+  // Same configured seed with different public ids is not one stream; another configured seed is another stream.
   auto twin = entity(3, "twin"), other_seed = entity(4, "other_seed");
   twin->sensor = sensors.prepare(twin, noisy_config);
   Json different = noisy_config;
@@ -163,7 +173,9 @@ void raycast_and_noise() {
   Bytes first, second;
   receive(twin->sensor, first, beams);
   receive(other_seed->sensor, second, beams);
-  reference(noise)->scanInto({-1, 1, .5}, Eigen::Quaterniond::Identity(), {}, false, &want);
+  scene::SensorConfig twin_noise = noise;
+  twin_noise.seed = prepared_seed("twin", 7);
+  reference(twin_noise)->scanInto({-1, 1, .5}, Eigen::Quaterniond::Identity(), {}, false, &want);
   assert(first == want && second != want);
   sensors.stop();
 }
@@ -375,7 +387,7 @@ void fleet_on_workers() {
       model.v_res = 5;
       model.range = 14;
       model.noise_std = i ? .02 : 0;
-      model.seed = unsigned(i);
+      model.seed = prepared_seed(m.robot->public_id, unsigned(i));
       config.update(Json{{"h_res", model.h_res}, {"v_res", 5}, {"range", 14}, {"noise_std", model.noise_std},
                          {"seed", i}});
     } else if (i % 3 == 1) {

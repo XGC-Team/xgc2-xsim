@@ -118,7 +118,7 @@ int main(int argc, char **argv) {
           assert(Clock::now() < deadline); std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         assert(sample.stamp == pose.stamp && sample.key.id == pose.key.id && beams.empty());
-        assert(data.size() == 32 && number(data, 0) == float(pose.position.x()));
+        assert(data.size() == 36 && number(data, 0) == float(pose.position.x()));
         assert(number(data, 1) == float(pose.orientation.w()) && number(data, 2) == float(double(pose.stamp) * 1e-9));
         assert(number(data, 3) == (robot == a ? 240.f : 120.f));
         assert(number(data, 4) == float(map.size() / 3) && number(data, 5) == .2f);

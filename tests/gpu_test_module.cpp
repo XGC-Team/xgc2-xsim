@@ -45,10 +45,12 @@ int scan(void *handle, const double position[3], const double q[4], double stamp
   if (mode("scan")) {
     std::snprintf(error, size, "%s", "test scan failure"); return -1;
   }
-  const float points[8] = {float(position[0]), float(q[0]), float(stamp), float(p->h_res),
+  const float values[8] = {float(position[0]), float(q[0]), float(stamp), float(p->h_res),
       float(map_count.load()), float(p->min_range_m), float(p->point_cover_spacing_m), float(p->publish_rate_hz)};
-  void *bytes = grow(context, sizeof(points));
-  assert(bytes); std::memcpy(bytes, points, sizeof(points));
+  float records[12] = {};
+  for (int i = 0; i < 8; ++i) records[(i / 3) * 4 + (i % 3)] = values[i];
+  void *bytes = grow(context, sizeof(records));
+  assert(bytes); std::memcpy(bytes, records, sizeof(records));
   return 0;
 }
 void destroy(void *handle) {

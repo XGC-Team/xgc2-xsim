@@ -29,7 +29,7 @@ void main() {
   keep=keep && abs(atan(local.z,length(local.xy)))<=bounds.w;
   if(crop.x>0.0 && range>0.0) {
     keep=keep && local.x/range>=crop.y;
-    if(crop.z>0.0) keep=keep && abs(delta.z)<=crop.z*range;
+    if(crop.z>0.0) keep=keep && abs(delta.z)<=crop.z*bounds.y;
   }
   selected=vec4(worldPoint,keep?1.0:0.0);
   gl_Position=vec4(0.0);
