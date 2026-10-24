@@ -42,6 +42,10 @@ target_include_directories(xsim_world PUBLIC "${XGC2_MATH_INCLUDE}" "${EIGEN_INC
 target_link_libraries(xsim_world PUBLIC px4_v1_12_3::core XgcChassisHold::core Threads::Threads)
 add_library(xsim_config STATIC io/config.cpp io/experiment.cpp)
 target_link_libraries(xsim_config PUBLIC xsim_world nlohmann_json::nlohmann_json)
+# GCC 8 provides C++17 filesystem in its separate compatibility library.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+  target_link_libraries(xsim_config PUBLIC stdc++fs)
+endif()
 add_library(xsim_startup STATIC io/startup.cpp)
 target_compile_features(xsim_startup PUBLIC cxx_std_17)
 target_include_directories(xsim_startup PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")

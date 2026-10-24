@@ -15,18 +15,8 @@ mkdir -p "$package_output"
 build_output="$(mktemp -d "$package_output/build.XXXXXX")"
 trap 'rm -rf -- "$build_output"' EXIT
 python3 "$sim_source/.xgc2/scripts/check_gpu_module_sources.py"
-cmake -S "$sim_source/src/sensing-gpu" -B "$build_output/gpu" \
- -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
- -DCMAKE_PREFIX_PATH="$cmake_prefix_list" -DXGC2_MATH_INCLUDE="${XGC2_MATH_INCLUDE:-/usr/include}"
-cmake --build "$build_output/gpu" --parallel 2
-(cd "$build_output/gpu" && ctest --output-on-failure)
-DESTDIR="$build_output/stage" cmake --install "$build_output/gpu"
-cmake -S "$sim_source/src/xsim" -B "$build_output/server" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/xgc2/xsim \
- -DCMAKE_PREFIX_PATH="$cmake_prefix_list" \
- -DXGC2_MATH_INCLUDE="${XGC2_MATH_INCLUDE:-/usr/include}" -DFS150_ASSET_SOURCE_ROOT="$fs150_source" -DXSIM_TESTS=ON
-cmake --build "$build_output/server" --parallel 2
-(cd "$build_output/server" && ctest --output-on-failure)
-DESTDIR="$build_output/stage" cmake --install "$build_output/server"
+XGC2_SOURCE_TESTS=ON XGC2_MATH_INCLUDE="${XGC2_MATH_INCLUDE:-/usr/include}" \
+  "$sim_source/.xgc2/scripts/build_source.sh" "$build_output" "$build_output/stage" "$fs150_source"
 "$sim_source/.xgc2/scripts/package_debs.sh" --install-root "$build_output/stage" --output-dir "$package_output"
 cp -a "$build_output/stage/opt" "$build_output/stage/usr" "$package_output/"
 sha256sum "$package_output"/*.deb > "$package_output/SHA256SUMS"
