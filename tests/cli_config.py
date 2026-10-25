@@ -78,8 +78,14 @@ def main(binary):
         # (contracts/scene-parameters.json) and nothing else. The probe session carries a malformed
         # sceneAsset, which is validated after the parameters, so an accepted key ends at that check.
         configured = os.environ.get('XGC_SCENE_PARAMETERS_CONTRACT')
-        contract = Path(configured) if configured else Path(__file__).resolve().parents[4] / 'xgc2' / 'contracts' / 'scene-parameters.json'
-        if contract.is_file():
+        if configured:
+            contract = Path(configured)
+            assert contract.is_file(), 'configured scene parameters contract is missing: ' + configured
+        else:
+            contract = next((parent / 'xgc2' / 'contracts' / 'scene-parameters.json'
+                             for parent in Path(__file__).resolve().parents
+                             if (parent / 'xgc2' / 'contracts' / 'scene-parameters.json').is_file()), None)
+        if contract is not None:
             table = json.loads(contract.read_text())
             probe = copy.deepcopy(frozen)
             probe['sceneAsset'] = {'sceneFile': 5}
