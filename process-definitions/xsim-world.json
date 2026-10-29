@@ -38,7 +38,8 @@
           "rosMasterUri": {
             "type": "string",
             "description": "Pre-allocated session ROS_MASTER_URI; the master may start after xsim.",
-            "fixedOnly": true
+            "fixedOnly": true,
+            "output": true
           },
           "targetId": {
             "type": "string",
@@ -112,6 +113,153 @@
           "${sceneFile}",
           "--sensor-init-timeout-ms",
           "${sensorInitTimeoutMs}"
+        ],
+        "env": {
+          "ROS_HOSTNAME": "",
+          "ROS_IP": "${rosIp}",
+          "ROS_MASTER_URI": "${rosMasterUri}",
+          "ROS_NAMESPACE": ""
+        },
+        "stdinParameter": "configJson"
+      },
+      "services": [
+        {
+          "service": "xgc2.simulation",
+          "api_version": "v1",
+          "profile": "http.v1",
+          "endpointParameter": "socketPath"
+        }
+      ],
+      "setupFiles": [
+        "${rosInstallPath}/setup.bash"
+      ],
+      "readiness": {
+        "kind": "describe",
+        "startGraceMs": 15000,
+        "timeoutMs": 30000
+      },
+      "stop": {
+        "graceMs": 15000
+      },
+      "logs": {
+        "maxBytes": 1048576,
+        "files": 3
+      }
+    },
+    {
+      "id": "xsim-hil",
+      "version": "2.0.0",
+      "label": "XSim onboard HIL",
+      "description": "Explicit one-slot PX4 virtual plant on an onboard Agent; no physical FCU device is opened. Uses the shared geometry with XSim dynamics even when mixed simulated slots use Gazebo.",
+      "parameters": {
+        "properties": {
+          "installRoot": {
+            "type": "string",
+            "default": "/opt/xgc2/xsim"
+          },
+          "configJson": {
+            "type": "string",
+            "default": "",
+            "description": "Opaque frozen Experiment input forwarded verbatim through stdin to the native server."
+          },
+          "socketPath": {
+            "type": "string",
+            "default": "",
+            "description": "Explicit private Unix control socket supplied by the workflow.",
+            "fixedOnly": true
+          },
+          "rosInstallPath": {
+            "type": "string",
+            "description": "Absolute ROS installation prefix",
+            "default": "/opt/ros/noetic",
+            "x-xgc-path-kind": "directory"
+          },
+          "rosIp": {
+            "type": "string",
+            "description": "ROS_IP advertised by xsim",
+            "output": true,
+            "fixedOnly": true
+          },
+          "rosMasterUri": {
+            "type": "string",
+            "description": "Pre-allocated session ROS_MASTER_URI; the master may start after xsim.",
+            "fixedOnly": true,
+            "output": true
+          },
+          "targetId": {
+            "type": "string",
+            "description": "Explicit workflow-owned world target identity, independent of the native process incarnation.",
+            "fixedOnly": true
+          },
+          "runId": {
+            "type": "string",
+            "description": "World Run identity supplied by the workflow.",
+            "fixedOnly": true
+          },
+          "sensorInitTimeoutMs": {
+            "type": "integer",
+            "default": 10000,
+            "minimum": 1,
+            "maximum": 600000,
+            "description": "Budget for native GPU initialization; a hung driver terminates the process."
+          },
+          "slotId": {
+            "type": "string",
+            "default": "",
+            "description": "Required physical PX4 slot. HIL explicitly supplies its virtual plant without changing the frozen physical binding."
+          },
+          "phaseT0": {
+            "type": "string",
+            "default": "",
+            "description": "Optional integer nanosecond phase. Empty leaves it unset. It does not replace the process UTC epoch."
+          },
+          "sceneFile": {
+            "type": "string",
+            "default": "",
+            "description": "Optional host-local scene path. Empty keeps the frozen session scene path. A non-empty value overrides that path and is not written back into the session."
+          }
+        },
+        "groups": [
+          {
+            "id": "ros-advanced",
+            "label": "ROS Advanced",
+            "collapsed": true,
+            "parameters": [
+              "rosInstallPath",
+              "rosIp",
+              "rosMasterUri"
+            ]
+          }
+        ],
+        "required": [
+          "socketPath",
+          "targetId",
+          "rosMasterUri",
+          "configJson",
+          "runId",
+          "rosIp",
+          "slotId"
+        ]
+      },
+      "command": {
+        "executable": "${installRoot}/bin/xsim",
+        "args": [
+          "--experiment-stdin",
+          "--socket",
+          "${socketPath}",
+          "--target-id",
+          "${targetId}",
+          "--run-id",
+          "${runId}",
+          "--slot",
+          "${slotId}",
+          "--phase-t0",
+          "${phaseT0}",
+          "--scene-file",
+          "${sceneFile}",
+          "--sensor-init-timeout-ms",
+          "${sensorInitTimeoutMs}",
+          "--hil"
         ],
         "env": {
           "ROS_HOSTNAME": "",

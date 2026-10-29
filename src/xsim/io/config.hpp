@@ -9,7 +9,7 @@ Json load_manifest(const std::string &path);
 // Call after experiment_config validates the frozen Session. Checks identities and
 // returns internal entity name -> exact public ID from the simulated roster.
 // Empty slot_id keeps every simulated plant. A non-empty slot_id returns that one body.
-Json experiment_robot_bindings(const Json &input, const std::string &slot_id = {});
+Json experiment_robot_bindings(const Json &input, const std::string &slot_id = {}, bool hil = false);
 Json parse_json_object(const std::string &contents);
 Json load_json_object(const std::string &path);
 // Non-empty scene_file replaces config["scene_file"] and that file is loaded once.
@@ -19,8 +19,10 @@ Json load_json_object(const std::string &path);
 Json resolve_scene_file(Json config, const std::string &scene_file);
 // epoch_ns is sampled once by the native process, never supplied by Session authoring.
 // slot_id is the process --slot value, not a Session field. Empty keeps Type1.
+// hil is an explicit process choice: one physical PX4 host gets a virtual plant;
+// the frozen Session and its real-device binding remain unchanged.
 // phase_t0_ns, when non-null, is an independent phase count and is not epoch_ns.
 Json experiment_config(const Json &input, int64_t epoch_ns, const std::string &slot_id = {},
-                       const int64_t *phase_t0_ns = nullptr);
+                       const int64_t *phase_t0_ns = nullptr, bool hil = false);
 Json load_config(const std::string &path, const std::string &scene_file = "");
 } // namespace xsim

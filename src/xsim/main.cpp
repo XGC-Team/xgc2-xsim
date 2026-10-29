@@ -56,12 +56,17 @@ int main(int argc, char **argv) {
     std::string socket, target_id, run_id, slot_id, phase_text, scene_file;
     unsigned sensor_initialization_timeout_ms = 10000;
     bool has_experiment_stdin = false, has_socket = false, has_target = false, has_run = false, has_sensor_timeout = false;
-    bool has_slot = false, has_phase = false, has_scene = false;
+    bool has_slot = false, has_phase = false, has_scene = false, hil = false;
     for (int i = 1; i < argc; ++i) {
       const std::string arg = argv[i];
       if (arg == "--help") {
-        std::cout << "xsim --experiment-stdin --run-id RUN --socket SOCKET --target-id TARGET [--slot SLOT] [--phase-t0 NS] [--scene-file PATH] [--sensor-init-timeout-ms MS]\n";
+        std::cout << "xsim --experiment-stdin --run-id RUN --socket SOCKET --target-id TARGET [--slot SLOT] [--hil] [--phase-t0 NS] [--scene-file PATH] [--sensor-init-timeout-ms MS]\n";
         return 0;
+      }
+      if (arg == "--hil") {
+        if (hil) throw std::invalid_argument("argument occurs more than once: " + arg);
+        hil = true;
+        continue;
       }
       if (arg == "--experiment-stdin") {
         if (has_experiment_stdin) throw std::invalid_argument("argument occurs more than once: " + arg);
@@ -104,6 +109,7 @@ int main(int argc, char **argv) {
       throw std::invalid_argument("target and run identifiers must be explicit bounded identifiers");
     if (has_slot && !slot_id.empty() && !valid_identity(slot_id))
       throw std::invalid_argument("slot must be an explicit bounded identifier");
+    if (hil && slot_id.empty()) throw std::invalid_argument("HIL requires one explicit slot");
     int64_t phase_t0_ns = 0;
     const int64_t *phase_t0 = nullptr;
     if (has_phase && !phase_text.empty()) {
@@ -130,9 +136,9 @@ int main(int argc, char **argv) {
     const auto frozen = experiment_stdin();
     const auto epoch_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
-    auto config = xsim::resolve_scene_file(xsim::experiment_config(frozen, epoch_ns, slot_id, phase_t0), scene_file);
+    auto config = xsim::resolve_scene_file(xsim::experiment_config(frozen, epoch_ns, slot_id, phase_t0, hil), scene_file);
     config["run_id"] = run_id;
-    rpc.robot_bindings = xsim::experiment_robot_bindings(frozen, slot_id);
+    rpc.robot_bindings = xsim::experiment_robot_bindings(frozen, slot_id, hil);
     rpc.frozen_experiment = true;
     const auto &epoch = config.at("epoch_ns");
     if (!epoch.is_number_integer() ||

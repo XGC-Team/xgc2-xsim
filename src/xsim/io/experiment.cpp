@@ -122,21 +122,29 @@ Json sensor(const Json &authored, const std::string &ns, const std::string &defa
 }
 } // namespace
 Json experiment_config(const Json &input, int64_t epoch_ns, const std::string &slot_id,
-                       const int64_t *phase_t0_ns) {
+                       const int64_t *phase_t0_ns, bool hil) {
   require(input.is_object(), "frozen Session must be one object");
   for (const char *key : {"context", "settings", "instanceId", "epochNs"})
     require(!input.contains(key), std::string("retired Session envelope field: ") + key);
   require(!text(input, "sessionId").empty(), "frozen sessionId is required");
   require(epoch_ns > 0, "native startup epoch must be positive");
   const auto run_mode = text(input, "runMode");
-  require(run_mode == "simulation" || run_mode == "hybrid", "unsupported runMode");
-  require(text(input.at("scene"), "simulator") == "xsim", "scene simulator must be xsim");
+  require(run_mode == "simulation" || run_mode == "hybrid" || (hil && run_mode == "physical"), "unsupported runMode");
+  require(!hil || !slot_id.empty(), "HIL requires one explicit slot");
+  const auto scene_backend = text(input.at("scene"), "simulator");
+  require(scene_backend == "xsim" || (hil && scene_backend == "gazebo"), "scene simulator must be xsim");
   const auto &robots = input.at("robots");
   require(robots.is_array() && robots.size() <= 256, "robots must be the frozen roster");
   auto parameters = input.at("scene").value("parameters", Json::object());
   require(parameters.is_object(), "scene parameters must be an object");
   // Robot projection already lowered Scene scope into the frozen slot bindings.
   parameters.erase("lidar");
+  // HIL always uses the local XSim plant. A mixed Gazebo scene still supplies
+  // shared geometry, but its world timing/drivers do not configure this plant.
+  if (hil && scene_backend == "gazebo") {
+    for (const char *key : {"overrideWorldPhysicsTiming", "maxStepSize", "realTimeUpdateRate",
+                            "required_components", "clock_rate_hz"}) parameters.erase(key);
+  }
   for (auto i = parameters.begin(); i != parameters.end(); ++i)
     require(i.key() == "modelStepMs" || i.key() == "outputPeriodMs" || i.key() == "commandPollMs" ||
       i.key() == "pointCloudBackend" || i.key() == "fcuParameters" || i.key() == "generation" || i.key() == "frozen", "unknown scene parameter: " + i.key());
@@ -188,7 +196,13 @@ Json experiment_config(const Json &input, int64_t epoch_ns, const std::string &s
         continue;
       ++matches;
     }
-    if (!simulated_robot(robot, run_mode)) {
+    if (hil) {
+      require(run_mode == "physical" || (run_mode == "hybrid" &&
+        text(robot.at("binding"), "hybridSource") == "physical"), "HIL requires a physical slot");
+      require(text(robot, "kind") == "px4_multirotor", "HIL requires a PX4 multirotor");
+      require(input.value("experimentType", std::string{}) == "onboard" &&
+        !text(robot, "targetId").empty() && text(robot, "targetId") != "local", "HIL requires an onboard Agent");
+    } else if (!simulated_robot(robot, run_mode)) {
       if (self_slot) require(false, "slot is not a simulated robot");
       continue;
     }
@@ -219,7 +233,7 @@ Json experiment_config(const Json &input, int64_t epoch_ns, const std::string &s
     } else throw std::invalid_argument("experiment: unsupported robot kind: " + kind);
     require(binding.contains("applyModelDynamics") && binding.at("applyModelDynamics").is_boolean(),
       "applyModelDynamics must be a boolean");
-    const auto plant = binding.at("applyModelDynamics").get<bool>();
+    const auto plant = hil || binding.at("applyModelDynamics").get<bool>();
     const auto &pose = binding.at("initialPose");
     Json position = Json::array({number(pose.at("x")), number(pose.at("y")), number(pose.at("z"))});
     const auto yaw = number(pose.at("yaw"));
@@ -255,10 +269,11 @@ Json experiment_config(const Json &input, int64_t epoch_ns, const std::string &s
   if (!saved_cloud && reference_requested(input.at("visualizationTopics"))) config["reference_cloud_topic"] = "/xgc/scene/reference_cloud";
   return config;
 }
-Json experiment_robot_bindings(const Json &input, const std::string &slot_id) {
+Json experiment_robot_bindings(const Json &input, const std::string &slot_id, bool hil) {
   require(input.is_object(), "frozen Session must be one object");
   const auto run_mode = text(input, "runMode");
-  require(run_mode == "simulation" || run_mode == "hybrid", "unsupported runMode");
+  require(run_mode == "simulation" || run_mode == "hybrid" || (hil && run_mode == "physical"), "unsupported runMode");
+  require(!hil || !slot_id.empty(), "HIL requires one explicit slot");
   const auto &robots = input.at("robots");
   require(robots.is_array() && robots.size() <= 256, "robots must be the frozen roster");
   Json bindings = Json::object();
@@ -272,7 +287,13 @@ Json experiment_robot_bindings(const Json &input, const std::string &slot_id) {
         continue;
       ++matches;
     }
-    if (!simulated_robot(robot, run_mode)) {
+    if (hil) {
+      require(run_mode == "physical" || (run_mode == "hybrid" &&
+        text(robot.at("binding"), "hybridSource") == "physical"), "HIL requires a physical slot");
+      require(text(robot, "kind") == "px4_multirotor", "HIL requires a PX4 multirotor");
+      require(input.value("experimentType", std::string{}) == "onboard" &&
+        !text(robot, "targetId").empty() && text(robot, "targetId") != "local", "HIL requires an onboard Agent");
+    } else if (!simulated_robot(robot, run_mode)) {
       if (self_slot) require(false, "slot is not a simulated robot");
       continue;
     }
@@ -287,7 +308,7 @@ Json experiment_robot_bindings(const Json &input, const std::string &slot_id) {
     const auto &binding = robot.at("binding");
     require(binding.contains("applyModelDynamics") && binding.at("applyModelDynamics").is_boolean(),
       "applyModelDynamics must be a boolean");
-    if (!binding.at("applyModelDynamics").get<bool>()) {
+    if (!hil && !binding.at("applyModelDynamics").get<bool>()) {
       if (self_slot) require(false, "slot does not select a simulated body");
       continue;
     }

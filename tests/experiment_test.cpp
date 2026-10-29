@@ -420,6 +420,49 @@ int main(int argc, char **argv) {
   slot_id(duplicate_slot["robots"][1], "scout-1");
   reject_slot(duplicate_slot, "scout-1");
 
+  // Explicit HIL cannot turn a fleet, simulated slot or station into a physical plant.
+  auto hil_input = original;
+  hil_input["experimentType"] = "onboard";
+  auto px4 = original.at("robots").at(1);
+  assert(px4.at("kind") == "px4_multirotor");
+  px4["targetId"] = "onboard";
+  px4["binding"].erase("executionHost");
+  px4["binding"]["applyModelDynamics"] = false;
+  px4["binding"]["hybridSource"] = "physical";
+  hil_input["robots"] = xsim::Json::array({px4});
+  hil_input["runMode"] = "physical";
+  const auto hil_id = px4.at("slotId").get<std::string>();
+  const auto before_hil = hil_input;
+  const auto hil_world = xsim::experiment_config(hil_input, startup_epoch, hil_id, nullptr, true);
+  assert(hil_world.at("entities").size() == 1 && hil_world.at("use_sim_time") == false);
+  assert(hil_world.at("publish_clock") == false);
+  assert(xsim::experiment_robot_bindings(hil_input, hil_id, true).size() == 1);
+  assert(hil_input == before_hil);
+  hil_input["runMode"] = "hybrid";
+  assert(xsim::experiment_config(hil_input, startup_epoch, hil_id, nullptr, true) == hil_world);
+  hil_input["scene"]["simulator"] = "gazebo";
+  hil_input["scene"]["parameters"] = {{"maxStepSize", .004}, {"realTimeUpdateRate", 250}};
+  assert(xsim::experiment_config(hil_input, startup_epoch, hil_id, nullptr, true) == hil_world);
+  const auto reject_hil = [](const xsim::Json &input, const std::string &id) {
+    bool refused = false;
+    try { (void)xsim::experiment_config(input, startup_epoch, id, nullptr, true); }
+    catch (const std::exception &) { refused = true; }
+    assert(refused);
+    refused = false;
+    try { (void)xsim::experiment_robot_bindings(input, id, true); }
+    catch (const std::exception &) { refused = true; }
+    assert(refused);
+  };
+  reject_hil(hil_input, "");
+  reject_hil(hil_input, "missing");
+  hil_input["robots"][0]["binding"]["hybridSource"] = "simulation";
+  reject_hil(hil_input, hil_id);
+  hil_input["runMode"] = "simulation";
+  reject_hil(hil_input, hil_id);
+  hil_input["runMode"] = "physical";
+  hil_input["robots"][0]["targetId"] = "local";
+  reject_hil(hil_input, hil_id);
+
   char pattern[] = "/tmp/xsim-experiment-ground-XXXXXX";
   assert(mkdtemp(pattern));
   const std::filesystem::path ground_dir(pattern);
