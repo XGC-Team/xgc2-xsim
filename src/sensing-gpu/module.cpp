@@ -64,11 +64,15 @@ public:
     return last_metadata;
   }
   ~Renderer() {
-    renderer->activate();
-    // Release projection buffers before the renderer destroys its owner context.
-    if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
-    if (color_buffer) glDeleteRenderbuffers(1, &color_buffer);
-    if (depth_buffer) glDeleteRenderbuffers(1, &depth_buffer);
+    // A failed GL initialization must unwind without touching GLFW: the owner
+    // context may already be terminated and there is nothing to release.
+    if (framebuffer || color_buffer || depth_buffer) {
+      renderer->activate();
+      // Release projection buffers before the renderer destroys its owner context.
+      if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
+      if (color_buffer) glDeleteRenderbuffers(1, &color_buffer);
+      if (depth_buffer) glDeleteRenderbuffers(1, &depth_buffer);
+    }
   }
   void projection(const xgc2_math::scene::SensorMetadata &m) {
     renderer->setParameters(m.h_res, m.v_res, 250.0f, 250.0f,

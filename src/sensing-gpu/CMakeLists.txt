@@ -50,6 +50,15 @@ if(BUILD_TESTING)
   target_link_libraries(xgc2_sensing_gpu_crop_parity_test PRIVATE Eigen3::Eigen)
   add_test(NAME xgc2_sensing_gpu_crop_parity COMMAND xgc2_sensing_gpu_crop_parity_test)
   add_test(NAME xgc2_sensing_gpu_abi COMMAND xgc2_sensing_gpu_abi_test $<TARGET_FILE:xgc2-sensing-gpu>)
+  # Real software-GL window-creation failure: llvmpipe exposes GL 4.5, so the
+  # module must return nullptr and unwind instead of aborting in ~Renderer.
+  find_program(XGC2_SENSING_XVFB_RUN xvfb-run)
+  if(XGC2_SENSING_XVFB_RUN)
+    add_test(NAME xgc2_sensing_gpu_abi_software_gl
+      COMMAND ${CMAKE_COMMAND} -E env LIBGL_ALWAYS_SOFTWARE=1
+        ${XGC2_SENSING_XVFB_RUN} -a -s "-screen 0 1280x720x24"
+        $<TARGET_FILE:xgc2_sensing_gpu_abi_test> $<TARGET_FILE:xgc2-sensing-gpu>)
+  endif()
   add_test(NAME xgc2_sensing_gpu_sources COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/../../.xgc2/scripts/check_gpu_module_sources.py")
   # Compiled with the suite, but execution requires real hardware and a display.
   add_executable(xgc2_sensing_gpu_reference_test tests/gpu_reference_test.cpp ${renderer_sources})

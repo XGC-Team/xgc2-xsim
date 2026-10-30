@@ -2,11 +2,60 @@
 #include <xgc2_math/scene/sensor_metadata.hpp>
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <iostream>
 #include <limits>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <vector>
+
+namespace {
+int child_create(const xgc2_sensing_gpu_api *api,
+                 const xgc2_sensing_gpu_projection &valid) {
+  char error[256] = {};
+  const float point[3] = {1, 0, 0};
+  void *context = api->create(point, 1, &valid, error, sizeof(error));
+  if (context) {
+    api->destroy(context);
+    return 2;
+  }
+  return error[0] ? 0 : 3;
+}
+
+// The child is a fresh process with the real module loaded. A failed GL
+// initialization must unwind and return nullptr with an error; touching GLFW
+// after glfwTerminate()/failed glfwInit() used to abort the process.
+int expect_unwind(const xgc2_sensing_gpu_api *api,
+                  const xgc2_sensing_gpu_projection &valid, bool clear_display,
+                  bool allow_success) {
+  const pid_t pid = fork();
+  if (pid == 0) {
+    if (clear_display) unsetenv("DISPLAY");
+    setenv("LIBGL_ALWAYS_SOFTWARE", "1", 1);
+    _exit(child_create(api, valid));
+  }
+  if (pid < 0) {
+    std::cerr << "cannot fork partial-init child\n";
+    return 1;
+  }
+  int status = 0;
+  if (waitpid(pid, &status, 0) != pid) return 1;
+  if (!WIFEXITED(status)) {
+    std::cerr << "partial-init child died by signal " << WTERMSIG(status) << '\n';
+    return 1;
+  }
+  const int code = WEXITSTATUS(status);
+  if (code == 0) return 0;
+  if (code == 2 && allow_success) {
+    std::cerr << "software GL exposes a usable 4.6 context; window path not exercised\n";
+    return 0;
+  }
+  std::cerr << "partial-init child status " << code << '\n';
+  return 1;
+}
+}  // namespace
 
 int main(int argc, char **argv) {
   assert(argc == 2);
@@ -62,6 +111,13 @@ int main(int argc, char **argv) {
   char tiny[2] = {'x', 'x'};
   assert(!api->create(nullptr, 0, &valid, tiny, sizeof(tiny)) && tiny[1] == '\0');
   api->destroy(nullptr);
+  // Real partial-init regression: the module is loaded in a fresh process with
+  // no display and with software GL. Both paths must return nullptr with an
+  // error and unwind without aborting; alive-only is not the contract.
+  if (expect_unwind(api, valid, true, false) ||
+      expect_unwind(api, valid, false, true))
+    return 1;
   // Keep the module resident, as the core does; no GL context was acquired.
-  std::cout << "PASS: real module dlopen, ABI and " << invalid.size() << " invalid projections without GL\n";
+  std::cout << "PASS: real module dlopen, ABI and " << invalid.size()
+            << " invalid projections without GL; partial-init unwinds cleanly\n";
 }
