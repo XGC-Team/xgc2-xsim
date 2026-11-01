@@ -1,7 +1,7 @@
 schema: xgc2.product.v1
 id: xsim
 name: xsim
-version: 1.4.0-5
+version: 1.4.0-6
 kind: ros1-apt
 summary: Standalone ECS world with original FS150/Scout/Mecanum ROS interfaces and integrated CPU/GPU sensing.
 ros:
@@ -49,4 +49,4 @@ release:
     libxgc2-chassis-hold-dev: rebuild
     xgc2-ros-msgs: rebuild
   apt_versions:
-    focal: 1.4.0-5
+    focal: 1.4.0-6
