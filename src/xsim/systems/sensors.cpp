@@ -1016,6 +1016,11 @@ void Sensors::interrupt_completions() {
   }
   completion_wake_.notify_all();
 }
+void Sensors::bind_completion_wake(std::function<void()> wake) {
+  std::lock_guard<std::mutex> lock(completion_mutex_);
+  completion_notify_ = std::move(wake);
+  if (completion_notify_ && completed_ready_.count) completion_notify_();
+}
 void Sensors::enable_completions(const std::shared_ptr<Sensor> &s) {
   {
     std::lock_guard<std::mutex> lock(s->mutex);
@@ -1032,6 +1037,7 @@ void Sensors::notify_completed(const std::shared_ptr<Sensor> &s) {
   {
     std::lock_guard<std::mutex> lock(completion_mutex_);
     completed_ready_.push(s);
+    if (completion_notify_) completion_notify_();
   }
   completion_wake_.notify_one();
 }
@@ -1048,6 +1054,10 @@ std::shared_ptr<Sensor> Sensors::try_completion() {
   while (completion_active_ && completed_ready_.count)
     if (auto sensor = completed_ready_.pop()) return sensor;
   return {};
+}
+bool Sensors::has_completion() {
+  std::lock_guard<std::mutex> lock(completion_mutex_);
+  return completion_active_ && completed_ready_.count;
 }
 bool Sensors::take_completion(const std::shared_ptr<Sensor> &s, Sample &p,
                               std::shared_ptr<const SensorPayload> &payload) {

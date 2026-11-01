@@ -98,7 +98,10 @@ void Server::run(const volatile sig_atomic_t &stopping) {
     });
   }
   if (io_.start_outputs) io_.start_outputs();
-  if (!io_.publish_entities) sensors_.start_completions();
+  if (!io_.publish_entities) {
+    sensors_.bind_completion_wake([this] { world_.wake_output(); });
+    sensors_.start_completions();
+  }
   world_.start();
   for (unsigned i = 0; i < 2; ++i)
     service_workers_.emplace_back([this] {
@@ -254,7 +257,9 @@ void Server::shutdown() noexcept {
     if (worker.joinable()) attempt([&] { worker.join(); });
   service_workers_.clear();
   output_running_ = false;
+  world_.wake_output();
   if (output_.joinable()) attempt([&] { output_.join(); });
+  attempt([&] { if (!io_.publish_entities) sensors_.bind_completion_wake({}); });
   attempt([&] { if (io_.stop_outputs) io_.stop_outputs(); });
   attempt([&] { sensors_.stop(); });
   // All native producers have quiesced before any retained reply or endpoint
@@ -322,7 +327,9 @@ void Server::output() {
   started_wake_.notify_all();
   std::shared_ptr<const Frame> frame;
   while (output_running_) {
-    if (world_.take_frame(frame)) {
+    const bool has_frame = world_.wait_frame(frame);
+    if (!output_running_) break;
+    if (has_frame) {
       {
         std::lock_guard<std::mutex> l(view_mutex_);
         latest_ = frame;
@@ -335,17 +342,17 @@ void Server::output() {
       else for(const auto& s:frame->states)if(auto e=s.entity.lock();e && e->alive && e->io && e->io->publish)e->io->publish(s, *rates);
       sensors_.submit_frame(frame);
     }
-    if (io_.publish_entities) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      continue;
+    if (!io_.publish_entities) {
+      if (auto sensor = sensors_.try_completion()) {
+        Sample sample;
+        std::shared_ptr<const SensorPayload> payload;
+        if (Sensors::take_completion(sensor, sample, payload))
+          if (auto e = sensor->entity.lock(); e && e->io && e->io->publish_sensor)
+            e->io->publish_sensor(sample, payload);
+        // Return to frame dispatch between completions, even under load.
+        if (sensors_.has_completion()) world_.wake_output();
+      }
     }
-    if (auto sensor = sensors_.try_completion()) {
-      Sample sample;
-      std::shared_ptr<const SensorPayload> payload;
-      if (Sensors::take_completion(sensor, sample, payload))
-        if (auto e = sensor->entity.lock(); e && e->io && e->io->publish_sensor)
-          e->io->publish_sensor(sample, payload);
-    } else std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 }
 

@@ -676,11 +676,16 @@ void completion_queue_checks() {
   scan();
   assert(!sensors.try_completion()); // A scan before late binding has no token.
   sensors.enable_completions(sensor);
+  std::atomic<unsigned> notifications{0};
+  sensors.bind_completion_wake([&] { ++notifications; });
+  assert(notifications == 1); // Binding after a completed scan cannot lose its wake.
+  assert(sensors.has_completion());
   auto token = sensors.wait_completion();
   assert(token == sensor);
   Sample sample;
   std::shared_ptr<const SensorPayload> payload;
   assert(Sensors::take_completion(token, sample, payload) && sample.stamp == epoch);
+  assert(!sensors.has_completion());
   assert(!sensors.try_completion());
   std::atomic<bool> scan_waiting{false}, delivered{false};
   std::thread scan_consumer([&] {
@@ -695,6 +700,7 @@ void completion_queue_checks() {
   input.stamp += 1000000000; scan(false);
   scan_consumer.join();
   assert(delivered);
+  assert(notifications >= 2); // A new scan wakes the existing output owner.
   for (int k = 1; k <= 3; ++k) { input.stamp += 1000000000; scan(); }
   sensors.interrupt_completions();
   assert(!sensors.wait_completion());
@@ -712,8 +718,11 @@ void completion_queue_checks() {
   input.stamp += 1000000000; scan();
   token = sensors.wait_completion();
   assert(Sensors::take_completion(token, sample, payload)); // Invalid token did not strand the next result.
+  sensors.bind_completion_wake({});
+  const auto notifications_after_unbind = notifications.load();
   token.reset(); payload.reset();
   input.stamp += 1000000000; scan();
+  assert(notifications == notifications_after_unbind);
   std::weak_ptr<Sensor> weak = sensor;
   robot->sensor.reset(); sensor.reset(); robot.reset();
   const auto retired_by = Clock::now() + std::chrono::seconds(3);

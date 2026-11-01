@@ -115,9 +115,12 @@ public:
   // One completion consumer. Interrupt preserves queued latest samples for resume.
   void start_completions();
   void interrupt_completions();
+  // Notify the existing output owner when a completion token becomes ready.
+  void bind_completion_wake(std::function<void()>);
   void enable_completions(const std::shared_ptr<Sensor> &);
   std::shared_ptr<Sensor> wait_completion();
   std::shared_ptr<Sensor> try_completion();
+  bool has_completion();
   static bool take_completion(const std::shared_ptr<Sensor> &, Sample &,
                               std::shared_ptr<const SensorPayload> &);
   // Direct pull is only for ad-hoc fixtures without a completion consumer.
@@ -185,6 +188,7 @@ private:
   Ready cpu_ready_, gpu_ready_;
   std::mutex completion_mutex_;
   std::condition_variable completion_wake_;
+  std::function<void()> completion_notify_;
   Ready completed_ready_;
   bool completion_active_ = false;
   void notify_completed(const std::shared_ptr<Sensor> &);

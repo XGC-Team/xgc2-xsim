@@ -745,6 +745,8 @@ void World::emit() {
   frame_cursor_ = (index + 1) % frame_pool_size;
   emitted_revision_ = revision_;
   emitted_stamp_ = time_;
+  l.unlock();
+  output_wake_.notify_one();
 }
 bool World::take_frame(std::shared_ptr<const Frame> &f) {
   std::lock_guard<std::mutex> l(output_mutex_);
@@ -757,6 +759,20 @@ bool World::take_frame(Frame &f) {
   if (!take_frame(shared)) return false;
   f = *shared;
   return true;
+}
+bool World::wait_frame(std::shared_ptr<const Frame> &f) {
+  std::unique_lock<std::mutex> l(output_mutex_);
+  output_wake_.wait(l, [this] { return ready_ || output_notified_; });
+  output_notified_ = false;
+  f = std::move(ready_);
+  return bool(f);
+}
+void World::wake_output() {
+  {
+    std::lock_guard<std::mutex> l(output_mutex_);
+    output_notified_ = true;
+  }
+  output_wake_.notify_one();
 }
 void World::start() {
   std::unique_lock<std::mutex> lock(wake_mutex_);

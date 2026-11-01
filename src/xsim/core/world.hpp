@@ -32,6 +32,9 @@ public:
   static constexpr size_t frame_pool_size = 16;
   bool take_frame(std::shared_ptr<const Frame> &); // immutable shared output
   bool take_frame(Frame &); // fixture-only copy, outside the output lock
+  // One output consumer waits for a frame or an explicit external wake.
+  bool wait_frame(std::shared_ptr<const Frame> &);
+  void wake_output();
   void start(); // once per World; returns after the first native boundary and output snapshot
   void stop();
   // Chassis HOLD (the xgc2-chassis-hold contract). The roster is the Scout and Mecanum entities, keyed by their
@@ -84,6 +87,8 @@ private:
   // frames; only a slot held exclusively by this pool can be rewritten.
   std::array<std::shared_ptr<Frame>, frame_pool_size> frame_pool_;
   std::shared_ptr<const Frame> ready_;
+  std::condition_variable output_wake_;
+  bool output_notified_ = false;
   size_t frame_cursor_ = 0;
   std::vector<Geometry> geometry_;
   uint64_t geometry_revision_ = 0;

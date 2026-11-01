@@ -180,6 +180,38 @@ void zero_integration_cost_is_retained() {
   clock.rebase(10000000000LL, 12345);
   assert(clock.target(10000000000LL) == 12345); // Resume clears old window debt/cost.
 }
+void output_wakes_on_frame_or_explicit_signal() {
+  World world(epoch);
+  world.metrics.paused = true;
+  world.start();
+  std::shared_ptr<const Frame> frame;
+  assert(world.wait_frame(frame) && frame->stamp == epoch);
+  frame.reset();
+
+  // An output signal is retained even if it arrives before the waiter.
+  world.wake_output();
+  assert(!world.wait_frame(frame) && !frame);
+
+  std::atomic<bool> waiting{false}, returned{false};
+  std::thread consumer([&] {
+    waiting = true;
+    assert(!world.wait_frame(frame));
+    returned = true;
+  });
+  eventually([&] { return waiting.load(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  assert(!returned.load());
+  world.wake_output();
+  eventually([&] { return returned.load(); });
+  consumer.join();
+
+  auto step = command(Op::Step);
+  step->steps = 1;
+  world.submit(step);
+  assert(World::wait(step) && step->result.success);
+  assert(world.wait_frame(frame) && frame->stamp == epoch + world.dt);
+  world.stop();
+}
 } // namespace
 
 int main() {
@@ -187,5 +219,6 @@ int main() {
   paused_input_management_and_hold();
   pause_arrival_race();
   zero_integration_cost_is_retained();
+  output_wakes_on_frame_or_explicit_signal();
   std::cout << "PASS: continuous tickets, paused wakes, HOLD, exact Step, Reset and clock cost\n";
 }
