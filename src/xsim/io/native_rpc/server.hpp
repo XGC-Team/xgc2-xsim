@@ -23,6 +23,7 @@ public:
          World &, Sensors &, RuntimeIO io = {});
   ~Server() noexcept;
   void run(const volatile sig_atomic_t &stopping);
+  int duplicate_signal_wake_fd() const noexcept;
 private:
   struct Preparation {
     std::atomic<bool> done{false};
@@ -66,6 +67,7 @@ private:
   uint64_t next_generation_ = 1;
   Clock::time_point next_expiry_ = Clock::now();
   void harvest();
+  void reconcile_entities();
   Json entity_json(const std::string &, const PublicEntity &);
   Json entity_json(const std::string &, const PublicEntity &, const State *);
   Json describe();

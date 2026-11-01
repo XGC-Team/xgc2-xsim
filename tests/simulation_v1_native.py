@@ -260,9 +260,15 @@ def main():
             evidence["checks"].append("native release, replacement fences and immutable retained receipts")
 
             old_instance = instance
+            # The paused server has no new frame or input. SIGTERM itself must
+            # wake its transport owner, then join and remove the endpoint.
+            time.sleep(0.1)
+            stopped_at = time.monotonic()
             process.send_signal(signal.SIGTERM)
-            assert process.wait(timeout=5) == 0
+            assert process.wait(timeout=0.75) == 0
+            assert time.monotonic() - stopped_at < 0.75
             assert not os.path.exists(endpoint)
+            evidence["checks"].append("idle SIGTERM wakes and joins the transport owner")
             description, _ = start()
             assert instance != old_instance
             current = instance

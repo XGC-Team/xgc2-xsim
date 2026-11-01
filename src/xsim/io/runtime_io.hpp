@@ -22,12 +22,11 @@ struct EntityIO {
 struct RuntimeIO {
   std::function<void(const std::shared_ptr<Entity> &, const Json &)> attach_entity;
   std::function<void()> poll_inputs;
+  std::function<bool()> inputs_pending;
+  std::function<void(std::function<void()>)> bind_input_wake;
   // True when one ready service callback ran. False when none was ready.
   std::function<bool()> poll_services;
   std::function<void(std::function<void()>)> bind_service_wake;
-  // With no connected input peer the native socket may wait longer between
-  // events; its poll still wakes immediately for a management request.
-  std::function<bool()> inputs_ready;
   std::function<bool()> okay;
   std::function<void(const Frame &)> publish_frame;
   std::function<void(const std::shared_ptr<const Frame> &,

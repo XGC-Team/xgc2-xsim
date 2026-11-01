@@ -77,16 +77,22 @@ Server::Server(const Json &config, const std::string &path, RpcOptions options,
       [this](xgc2::xrpc::HttpRequest request, xgc2::xrpc::HttpReply reply) {
         http_request(std::move(request), std::move(reply));
       }, limits_, xgc2::xrpc::HttpIdentity{instance_, {"/v1/describe"}}, options.retained_parent_fd));
-  transport_->set_wakeup_handler([this] { harvest(); answer_ready_waiters(); });
+  transport_->set_wakeup_handler([this] { harvest(); reconcile_entities(); answer_ready_waiters(); });
 }
 
 Server::~Server() noexcept { shutdown(); }
+
+int Server::duplicate_signal_wake_fd() const noexcept {
+  return transport_->duplicate_signal_wake_fd();
+}
 
 void Server::run(const volatile sig_atomic_t &stopping) {
   {
     std::lock_guard<std::mutex> lock(preparation_mutex_);
     preparing_ = true;
   }
+  if (io_.bind_input_wake)
+    io_.bind_input_wake([this] { transport_->wake(); });
   if (io_.bind_service_wake) {
     io_.bind_service_wake([this] {
       {
@@ -120,25 +126,55 @@ void Server::run(const volatile sig_atomic_t &stopping) {
   outputs_started_ = true;
   change_health("ready");
   pthread_setname_np(pthread_self(), "xsim-input");
-  auto next_input=Clock::now();
+  // Preserve the original initial input cycle and its configured cadence,
+  // even when the queue is empty at startup. Later cycles wait for demand.
+  if (io_.poll_inputs) io_.poll_inputs();
+  auto next_input = Clock::now() + std::chrono::nanoseconds(input_poll_ns_);
+  reconcile_entities();
   while (!stopping && !worker_failed_ && (!io_.okay || io_.okay())) {
-    if(Clock::now()>=next_input){if (io_.poll_inputs) io_.poll_inputs();next_input=Clock::now()+std::chrono::nanoseconds(input_poll_ns_);}
-    std::shared_ptr<const Frame> view;
-    {
-      std::lock_guard<std::mutex> l(view_mutex_);
-      view = latest_;
+    auto now = Clock::now();
+    if (io_.inputs_pending && io_.inputs_pending() && now >= next_input) {
+      if (io_.poll_inputs) io_.poll_inputs();
+      next_input = Clock::now() + std::chrono::nanoseconds(input_poll_ns_);
     }
-    for (const auto &s : view->states)
-      if (auto e = s.entity.lock(); e && e->alive && e->io && e->io->reconcile)
-        e->io->reconcile();
-    transport_->poll(std::chrono::milliseconds(io_.inputs_ready && !io_.inputs_ready() ? 10 : 1));
     prune_waiters();
     answer_ready_waiters();
-    if (Clock::now() >= next_expiry_) { harvest(); next_expiry_ = Clock::now() + std::chrono::seconds(1); }
+    now = Clock::now();
+    if (now >= next_expiry_) {
+      harvest();
+      next_expiry_ = Clock::now() + std::chrono::seconds(1);
+    }
+    // A preparation can expire between periodic retention sweeps.
+    bool preparation_due = false;
+    for (const auto &entry : requests_)
+      if (entry.second.preparation && !entry.second.submitted && entry.second.ticket &&
+          entry.second.ticket->phase == 0 && entry.second.ticket->deadline <= now)
+        preparation_due = true;
+    if (preparation_due) harvest();
+    auto deadline = next_expiry_;
+    if (io_.inputs_pending && io_.inputs_pending()) deadline = std::min(deadline, next_input);
+    for (const auto &waiter : ready_waiters_) deadline = std::min(deadline, waiter.until);
+    for (const auto &entry : requests_)
+      if (entry.second.preparation && !entry.second.submitted && entry.second.ticket &&
+          entry.second.ticket->phase == 0)
+        deadline = std::min(deadline, entry.second.ticket->deadline);
+    const auto remaining = deadline - Clock::now();
+    transport_->poll_one_for(std::max(remaining, Clock::duration::zero()));
   }
   shutdown();
   if (worker_error_) std::rethrow_exception(worker_error_);
   if (cleanup_error_) std::rethrow_exception(cleanup_error_);
+}
+
+void Server::reconcile_entities() {
+  std::shared_ptr<const Frame> view;
+  {
+    std::lock_guard<std::mutex> lock(view_mutex_);
+    view = latest_;
+  }
+  for (const auto &state : view->states)
+    if (auto entity = state.entity.lock(); entity && entity->alive && entity->io && entity->io->reconcile)
+      entity->io->reconcile();
 }
 
 void Server::harvest() {
@@ -240,6 +276,7 @@ void Server::shutdown() noexcept {
     try { action(); }
     catch (...) { if (!cleanup_error_) cleanup_error_ = std::current_exception(); }
   };
+  attempt([&] { if (io_.bind_input_wake) io_.bind_input_wake({}); });
   attempt([&] { if (io_.bind_service_wake) io_.bind_service_wake({}); });
   attempt([&] { change_health("stopping"); });
   for (auto &entry : requests_) if (entry.second.ticket) {
@@ -326,6 +363,7 @@ void Server::output() {
   }
   started_wake_.notify_all();
   std::shared_ptr<const Frame> frame;
+  std::uint64_t notified_revision = UINT64_MAX;
   while (output_running_) {
     const bool has_frame = world_.wait_frame(frame);
     if (!output_running_) break;
@@ -334,7 +372,11 @@ void Server::output() {
         std::lock_guard<std::mutex> l(view_mutex_);
         latest_ = frame;
       }
-      if (!frames_flowing_.exchange(true)) transport_->wake(); // readiness may have changed
+      const bool first_frame = !frames_flowing_.exchange(true);
+      if (first_frame || frame->revision != notified_revision) {
+        notified_revision = frame->revision;
+        transport_->wake(); // readiness or the world revision changed
+      }
       if (io_.publish_frame) io_.publish_frame(*frame);
       const auto rates = std::atomic_load(&telemetry_rates_);
       // Clock and telemetry dispatch precede this frame's scan submissions.

@@ -11,6 +11,8 @@
 #include <ros/ros.h>
 #endif
 #include <csignal>
+#include <cerrno>
+#include <cstdint>
 #include <array>
 #include <iostream>
 #include <limits>
@@ -38,7 +40,18 @@ xsim::Json experiment_stdin() {
   return xsim::parse_json_object(bytes);
 }
 volatile sig_atomic_t stopping = 0;
-void signal_stop(int) { stopping = 1; }
+volatile sig_atomic_t stop_wake_fd = -1;
+void signal_stop(int) {
+  const int saved_errno = errno;
+  stopping = 1;
+  const int fd = stop_wake_fd;
+  if (fd >= 0) {
+    const std::uint64_t one = 1;
+    const auto ignored = ::write(fd, &one, sizeof(one));
+    (void)ignored;
+  }
+  errno = saved_errno;
+}
 #ifdef XSIM_ROS
 xgc2::xrpc::DirectoryGrant ros_directory(const char *name) {
   const char *path = std::getenv(name);
@@ -167,7 +180,13 @@ int main(int argc, char **argv) {
     io = xsim::make_ros_io(config, world, sensors);
 #endif
     xsim::Server server(config, socket, std::move(rpc), world, sensors, std::move(io));
+    // Keep this descriptor until process exit: a signal handler on another
+    // thread may already have read its value when the server is shutting down.
+    const int signal_fd = server.duplicate_signal_wake_fd();
+    if (signal_fd < 0) throw std::runtime_error("cannot duplicate stop wake descriptor");
+    stop_wake_fd = signal_fd;
     server.run(stopping);
+    stop_wake_fd = -1;
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "xsim: " << error.what() << '\n';

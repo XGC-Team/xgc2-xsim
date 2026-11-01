@@ -31,12 +31,17 @@ struct RosConnectionErrors : XmlRpc::XmlRpcErrorHandler {
     if (!connection_worker && previous) previous->error(message);
   }
 };
-struct ServiceQueue : ros::CallbackQueue {
+struct WakeQueue : ros::CallbackQueue {
   std::mutex wake_mutex;
   std::function<void()> wake;
   void set_wake(std::function<void()> fn) {
     std::lock_guard<std::mutex> lock(wake_mutex);
     wake = std::move(fn);
+    if (wake && !isEmpty()) wake();
+  }
+  void notify_owner() {
+    std::lock_guard<std::mutex> lock(wake_mutex);
+    if (wake) wake();
   }
   void addCallback(const ros::CallbackInterfacePtr &callback, uint64_t removal_id = 0) override {
     ros::CallbackQueue::addCallback(callback, removal_id);
@@ -52,8 +57,8 @@ struct RosRuntime {
     std::shared_ptr<const TelemetryRates> rates;
     std::thread thread;
   };
-  ros::CallbackQueue inputs;
-  ServiceQueue services;
+  WakeQueue inputs;
+  WakeQueue services;
   std::unique_ptr<ros::NodeHandle> node;
   const Json config;
   int wake_fd = -1;
@@ -152,6 +157,7 @@ struct RosRuntime {
       catch (const std::exception &failure) {
         set_peer("failed", failure.what());
         failed = true;
+        inputs.notify_owner();
         std::cerr << "xsim: ROS binding failed: " << failure.what() << '\n';
       }
     });
@@ -202,10 +208,13 @@ struct RosRuntime {
     wake_connection();
   }
   void set_peer(const std::string &state, const std::string &reason) {
-    std::lock_guard<std::mutex> lock(connection_mutex);
-    peer_state = state;
-    peer_reason = reason;
-    peer_ready.store(state == "ready", std::memory_order_release);
+    {
+      std::lock_guard<std::mutex> lock(connection_mutex);
+      peer_state = state;
+      peer_reason = reason;
+      peer_ready.store(state == "ready", std::memory_order_release);
+    }
+    inputs.notify_owner();
   }
   Json ros_status() {
     std::lock_guard<std::mutex> lock(connection_mutex);
@@ -318,6 +327,7 @@ struct RosRuntime {
           if (replaced) {
             set_peer("master_replaced", "ROS master identity changed; ending this Run binding");
             failed = true;
+            inputs.notify_owner();
             std::cerr << "xsim: ROS master identity changed; ending this Run binding\n";
             return;
           }
@@ -454,13 +464,16 @@ RuntimeIO make_ros_io(const Json &config, World &world, Sensors &sensors) {
     runtime->attach(ros);
   };
   io.poll_inputs = [runtime] { runtime->inputs.callAvailable(ros::WallDuration(0)); };
+  io.inputs_pending = [runtime] { return !runtime->inputs.isEmpty(); };
+  io.bind_input_wake = [runtime](std::function<void()> wake) {
+    runtime->inputs.set_wake(std::move(wake));
+  };
   io.bind_service_wake = [runtime](std::function<void()> wake) {
     runtime->services.set_wake(std::move(wake));
   };
   io.poll_services = [runtime] {
     return runtime->services.callOne(ros::WallDuration(0)) == ros::CallbackQueue::Called;
   };
-  io.inputs_ready = [runtime] { return runtime->peer_ready.load(); };
   io.okay = [runtime] { return !runtime->failed && ros::ok(); };
   io.publish_frame = [runtime](const Frame &frame) {
     runtime->latest_stamp = frame.stamp;
