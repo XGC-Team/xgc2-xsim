@@ -12,6 +12,7 @@ import tempfile
 import time
 
 from native_http import UnixHTTP
+from frozen_session import robot as frozen_robot, session as frozen_session
 
 
 def main(binary):
@@ -159,7 +160,12 @@ def main(binary):
             _, error = process.communicate(timeout=5)
             assert process.returncode==0, error
 
-        mixed = json.loads((fixture/'default-mixed.input.json').read_text())
+        mixed = frozen_session([
+            frozen_robot('scout-1', 'ugv1', 'scout_mini', (1, 2, .18)),
+            frozen_robot('px4-1', 'uav1', 'px4_multirotor', (-1, 0, 0)),
+            frozen_robot('px4-2', 'uav2', 'px4_multirotor', (-2, 0, 0)),
+            frozen_robot('mecanum-1', 'mecanum1', 'mecanum_ugv', (0, 0, 0)),
+        ])
         for document in (frozen, selected, mixed):
             process = start(command, document)
             stop(process)
