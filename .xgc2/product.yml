@@ -11,7 +11,7 @@ apt:
   distribution: focal
   install: [xsim]
   packages: [xsim, libxgc2-sensing-gpu, libxgc2-sensing-dev]
-  depends: [ros-noetic-roscpp, ros-noetic-mavros-msgs, ros-noetic-rosgraph-msgs, libxgc2-xrpc2 (>= 0.2.0-1~focal), libxgc2-chassis-hold1 (>= 0.2.0-1~focal), ros-noetic-xgc2-geometry-msgs (>= 1.5.0-4)]
+  depends: [ros-noetic-roscpp, ros-noetic-mavros-msgs, ros-noetic-rosgraph-msgs, libxgc2-xrpc2 (>= 0.2.1-3~focal), libxgc2-chassis-hold1 (>= 0.2.0-1~focal), ros-noetic-xgc2-geometry-msgs (>= 1.5.0-4)]
 usage:
   install: sudo apt install xsim
   smoke_test: /opt/xgc2/xsim/bin/xsim --help

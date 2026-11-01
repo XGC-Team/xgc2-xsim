@@ -17,7 +17,7 @@ def robot(slot, namespace, kind, position, *, sensor=False):
     model_id, profile_id = _MODELS[kind]
     body = '/' + namespace
     return {
-        'slotId': slot, 'kind': kind, 'namespace': body,
+        'slotId': slot, 'kind': kind, 'namespace': body, 'source': 'simulation',
         'derived': {'modelId': model_id},
         'profile': {'id': profile_id, 'parameters': {
             'namespace': body,
