@@ -20,10 +20,9 @@ bool ros_name(const std::string &value, bool allow_segments) {
   }
   return true;
 }
-bool simulated_robot(const Json &robot, const std::string &run_mode) {
-  if (run_mode != "hybrid") return true;
-  const auto source = text(robot.at("binding"), "hybridSource");
-  require(source == "simulation" || source == "physical", "invalid Hybrid source");
+bool simulated_robot(const Json &robot) {
+  const auto source = text(robot, "source");
+  require(source == "simulation" || source == "physical", "invalid frozen robot source");
   return source == "simulation";
 }
 double number(const Json &v) {
@@ -197,12 +196,11 @@ Json experiment_config(const Json &input, int64_t epoch_ns, const std::string &s
       ++matches;
     }
     if (hil) {
-      require(run_mode == "physical" || (run_mode == "hybrid" &&
-        text(robot.at("binding"), "hybridSource") == "physical"), "HIL requires a physical slot");
+      require(!simulated_robot(robot), "HIL requires a physical slot");
       require(text(robot, "kind") == "px4_multirotor", "HIL requires a PX4 multirotor");
       require(input.value("experimentType", std::string{}) == "onboard" &&
         !text(robot, "targetId").empty() && text(robot, "targetId") != "local", "HIL requires an onboard Agent");
-    } else if (!simulated_robot(robot, run_mode)) {
+    } else if (!simulated_robot(robot)) {
       if (self_slot) require(false, "slot is not a simulated robot");
       continue;
     }
@@ -288,12 +286,11 @@ Json experiment_robot_bindings(const Json &input, const std::string &slot_id, bo
       ++matches;
     }
     if (hil) {
-      require(run_mode == "physical" || (run_mode == "hybrid" &&
-        text(robot.at("binding"), "hybridSource") == "physical"), "HIL requires a physical slot");
+      require(!simulated_robot(robot), "HIL requires a physical slot");
       require(text(robot, "kind") == "px4_multirotor", "HIL requires a PX4 multirotor");
       require(input.value("experimentType", std::string{}) == "onboard" &&
         !text(robot, "targetId").empty() && text(robot, "targetId") != "local", "HIL requires an onboard Agent");
-    } else if (!simulated_robot(robot, run_mode)) {
+    } else if (!simulated_robot(robot)) {
       if (self_slot) require(false, "slot is not a simulated robot");
       continue;
     }

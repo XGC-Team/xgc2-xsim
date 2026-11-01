@@ -10,6 +10,20 @@ namespace {
 constexpr int64_t startup_epoch = 1791271800123456789;
 xsim::Json config_for(const xsim::Json &input) { return xsim::experiment_config(input, startup_epoch); }
 void slot_id(xsim::Json &robot, const xsim::Json &id) { robot["slotId"] = id; robot["binding"]["id"] = id; }
+// Preserve the byte-hashed historical compiler corpus. Core now projects an
+// effective source on each frozen row; supply that fact in test memory only.
+xsim::Json frozen_fixture(const std::string &path) {
+  auto input = xsim::load_json_object(path);
+  const auto mode = input.value("runMode", std::string{});
+  if (!input.contains("robots") || !input.at("robots").is_array()) return input;
+  for (auto &robot : input["robots"]) {
+    if (!robot.is_object()) continue;
+    if (mode == "simulation" || mode == "physical") robot["source"] = mode;
+    else if (mode == "hybrid" && robot.contains("binding") && robot["binding"].is_object() &&
+             robot["binding"].contains("hybridSource")) robot["source"] = robot["binding"]["hybridSource"];
+  }
+  return input;
+}
 }
 
 int main(int argc, char **argv) {
@@ -25,7 +39,7 @@ int main(int argc, char **argv) {
       std::cerr << name << " missing fixture: " << input_path << '\n';
       return 1;
     }
-    try { input = xsim::load_json_object(input_path); }
+    try { input = frozen_fixture(input_path); }
     catch (const std::exception &) { if (entry.contains("expectedError")) continue; throw; }
     if (entry.contains("expectedConfig")) {
       const auto expected = xsim::load_json_object(root + "/" + entry.at("expectedConfig").get<std::string>());
@@ -40,7 +54,7 @@ int main(int argc, char **argv) {
       if (!rejected) { std::cerr << name << " was accepted\n"; return 1; }
     }
   }
-  auto original = xsim::load_json_object(root + "/default-mixed.input.json");
+  auto original = frozen_fixture(root + "/default-mixed.input.json");
   // Target visibility survives lowering even when that target has no sensor.
   for (const bool visible : {false, true}) {
     auto selected = original;
@@ -67,7 +81,7 @@ int main(int argc, char **argv) {
   {
     // A saved point cloud is a frozen asset fact (sceneAsset.pointCloud). It, and nothing next to
     // the scene file, moves the cloud to the scene adapter: no entity sensor and no reference topic.
-    auto sensed = xsim::load_json_object(root + "/gpu-depth_frustum.input.json");
+    auto sensed = frozen_fixture(root + "/gpu-depth_frustum.input.json");
     sensed["visualizationTopics"] = xsim::Json::array({{{"topic", "/xgc/scene/reference_cloud"},
       {"messageType", "sensor_msgs/PointCloud2"}, {"role", "semantic"}, {"visible3d", true}}});
     const auto both = config_for(sensed);
@@ -205,18 +219,34 @@ int main(int argc, char **argv) {
     auto modified = original; modified["robots"][0]["namespace"] = invalid;
     reject_binding(modified);
   }
-  auto hybrid = xsim::load_json_object(root + "/hybrid-filter-physical-sensor.input.json");
+  auto hybrid = frozen_fixture(root + "/hybrid-filter-physical-sensor.input.json");
   const xsim::Json hybrid_bindings{{"ugv1", "scout-1"}, {"mecanum1", "mecanum-1"}};
   assert(xsim::experiment_robot_bindings(hybrid) == hybrid_bindings);
   // Physical members are outside this world's identity map and are not repaired.
   hybrid["robots"][1].erase("slotId");
   hybrid["robots"][1].erase("namespace");
   assert(xsim::experiment_robot_bindings(hybrid) == hybrid_bindings);
-  auto invalid_source = hybrid; invalid_source["robots"][0]["binding"]["hybridSource"] = "unknown";
+  auto invalid_source = hybrid; invalid_source["robots"][0]["source"] = "unknown";
   reject_binding(invalid_source);
+  auto missing_source = hybrid; missing_source["robots"][0].erase("source");
+  reject_binding(missing_source);
+  for (const auto &invalid : {invalid_source, missing_source}) {
+    bool refused = false;
+    try { (void)config_for(invalid); } catch (const std::exception &) { refused = true; }
+    assert(refused);
+  }
+  // A non-onboard experiment still has its genuine binding arm. The frozen
+  // effective source, not that authored declaration, selects this world.
+  auto non_onboard = frozen_fixture(root + "/hybrid-filter-physical-sensor.input.json");
+  const auto non_onboard_expected = config_for(non_onboard);
+  const auto non_onboard_bindings = xsim::experiment_robot_bindings(non_onboard);
+  for (auto &robot : non_onboard["robots"])
+    robot["binding"]["hybridSource"] = robot["source"] == "simulation" ? "physical" : "simulation";
+  assert(config_for(non_onboard) == non_onboard_expected);
+  assert(xsim::experiment_robot_bindings(non_onboard) == non_onboard_bindings);
   auto invalid_mode = original; invalid_mode["runMode"] = "unknown";
   reject_binding(invalid_mode);
-  const auto simulation_physical = xsim::load_json_object(root + "/simulation-retains-physical-hybrid-flags.input.json");
+  const auto simulation_physical = frozen_fixture(root + "/simulation-retains-physical-hybrid-flags.input.json");
   assert(xsim::experiment_robot_bindings(simulation_physical) == expected_bindings);
   auto empty = original; empty["robots"] = xsim::Json::array();
   assert(xsim::experiment_robot_bindings(empty) == xsim::Json::object());
@@ -268,7 +298,7 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 100; ++i) {
     const auto name = "uav" + std::to_string(i);
     const auto ns = "/" + name;
-    xsim::Json robot{{"slotId", "model-" + name}, {"name", name}, {"namespace", ns},
+    xsim::Json robot{{"slotId", "model-" + name}, {"name", name}, {"namespace", ns}, {"source", "simulation"},
       {"kind", "px4_multirotor"}, {"derived", {{"modelId", "fs150"}}},
       {"profile", {{"parameters", {{"localization_pose_topic", ns + "/pose"}, {"localization_twist_topic", ns + "/twist"}}}}},
       {"binding", {{"id", "model-" + name}, {"namespace", ns}, {"hybridSource", "simulation"},
@@ -297,7 +327,7 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 3; ++i) {
     const auto name = std::string("slot") + std::to_string(i);
     const auto ns = "/" + name;
-    xsim::Json robot{{"slotId", name}, {"name", name}, {"namespace", ns},
+    xsim::Json robot{{"slotId", name}, {"name", name}, {"namespace", ns}, {"source", "simulation"},
       {"kind", selected_kind[i]}, {"derived", {{"modelId", selected_model[i]}}},
       {"profile", {{"parameters", {{"localization_pose_topic", ns + "/pose"}, {"localization_twist_topic", ns + "/twist"}}}}},
       {"binding", {{"id", name}, {"namespace", ns}, {"hybridSource", "simulation"},
@@ -373,6 +403,14 @@ int main(int argc, char **argv) {
   bool station_required = false;
   try { (void)config_for(onboard); } catch (const std::exception &) { station_required = true; }
   assert(station_required);
+  // Current onboard slots have no executionHost or hybridSource. The selected
+  // native SIM target uses the frozen effective source with its typed binding.
+  onboard["experimentType"] = "onboard";
+  onboard["runMode"] = "hybrid";
+  onboard["robots"][0]["binding"].erase("executionHost");
+  onboard["robots"][0]["binding"].erase("hybridSource");
+  onboard["robots"][0]["binding"]["slotDeployment"] = {{"resource", {{"kind", "asset-agent"}}}, {"plant", "simulation"}};
+  onboard["robots"][0]["source"] = "simulation";
   auto no_world = onboard;
   no_world["deployment"] = xsim::Json::object();
   assert(!no_world.at("deployment").contains("worldHost"));
@@ -393,6 +431,10 @@ int main(int argc, char **argv) {
   const auto self_bindings = xsim::experiment_robot_bindings(onboard, "scout-1");
   assert(self_bindings.size() == 1);
   assert(self_bindings.at("ugv1") == "scout-1");
+  auto container = onboard;
+  container["robots"][0]["binding"]["slotDeployment"]["resource"]["kind"] = "slot-container";
+  assert(xsim::experiment_config(container, startup_epoch, "scout-1") == self);
+  assert(xsim::experiment_robot_bindings(container, "scout-1") == self_bindings);
   const int64_t phase = 42;
   const auto phased = xsim::experiment_config(onboard, startup_epoch, "scout-1", &phase);
   assert(phased.at("epoch_ns") == startup_epoch && phased.at("phase_t0_ns") == phase);
@@ -411,8 +453,12 @@ int main(int argc, char **argv) {
     assert(refused);
   };
   reject_slot(original, "missing-slot");
-  const auto hybrid_roster = xsim::load_json_object(root + "/hybrid-filter-physical-sensor.input.json");
+  const auto hybrid_roster = frozen_fixture(root + "/hybrid-filter-physical-sensor.input.json");
   reject_slot(hybrid_roster, "px4-1");
+  auto physical_onboard = onboard;
+  physical_onboard["robots"][0]["binding"]["slotDeployment"]["plant"] = "physical";
+  physical_onboard["robots"][0]["source"] = "physical";
+  reject_slot(physical_onboard, "Robot:Case_01.rev-2");
   auto tracker_slot = original;
   tracker_slot["robots"][0]["binding"]["applyModelDynamics"] = false;
   reject_slot(tracker_slot, "scout-1");
@@ -428,7 +474,9 @@ int main(int argc, char **argv) {
   px4["targetId"] = "onboard";
   px4["binding"].erase("executionHost");
   px4["binding"]["applyModelDynamics"] = false;
-  px4["binding"]["hybridSource"] = "physical";
+  px4["binding"].erase("hybridSource");
+  px4["binding"]["slotDeployment"] = {{"resource", {{"kind", "asset-agent"}}}, {"plant", "physical"}};
+  px4["source"] = "physical";
   hil_input["robots"] = xsim::Json::array({px4});
   hil_input["runMode"] = "physical";
   const auto hil_id = px4.at("slotId").get<std::string>();
@@ -455,11 +503,12 @@ int main(int argc, char **argv) {
   };
   reject_hil(hil_input, "");
   reject_hil(hil_input, "missing");
-  hil_input["robots"][0]["binding"]["hybridSource"] = "simulation";
+  hil_input["robots"][0]["source"] = "simulation";
   reject_hil(hil_input, hil_id);
   hil_input["runMode"] = "simulation";
   reject_hil(hil_input, hil_id);
   hil_input["runMode"] = "physical";
+  hil_input["robots"][0]["source"] = "physical";
   hil_input["robots"][0]["targetId"] = "local";
   reject_hil(hil_input, hil_id);
 
