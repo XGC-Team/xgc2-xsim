@@ -362,17 +362,23 @@ void RosEntity::publish(const State &s, const TelemetryRates &rates) {
     last_stamp = s.stamp;
     last_generation = s.key.generation;
     if (s.enabled) {
-      auto &p = localization_pose_message;
-      p.header.stamp = stamp;
-      p.pose.position.x = s.position.x();
-      p.pose.position.y = s.position.y();
-      p.pose.position.z = s.position.z();
-      orientation(p.pose.orientation, s.orientation);
+      const bool localization_due =
+          schedule.due(TelemetryGroup::Localization, s.stamp, rates);
+      const bool local_due =
+          flight && schedule.due(TelemetryGroup::Local, s.stamp, rates);
       auto &v = localization_twist_message;
-      v.header.stamp = stamp;
-      vector(v.twist.linear, s.velocity);
-      vector(v.twist.angular, s.orientation * s.omega);
-      if (schedule.due(TelemetryGroup::Localization, s.stamp, rates)) {
+      if (localization_due || local_due) {
+        v.header.stamp = stamp;
+        vector(v.twist.linear, s.velocity);
+        vector(v.twist.angular, s.orientation * s.omega);
+      }
+      if (localization_due) {
+        auto &p = localization_pose_message;
+        p.header.stamp = stamp;
+        p.pose.position.x = s.position.x();
+        p.pose.position.y = s.position.y();
+        p.pose.position.z = s.position.z();
+        orientation(p.pose.orientation, s.orientation);
         double *axes[3] = {&p.pose.position.x, &p.pose.position.y,
                            &p.pose.position.z};
         for (int a = 0; a < 3; ++a)
@@ -380,7 +386,7 @@ void RosEntity::publish(const State &s, const TelemetryRates &rates) {
         localization_pose.publish(p);
         localization_twist.publish(v);
       }
-      if (flight && schedule.due(TelemetryGroup::Local, s.stamp, rates)) {
+      if (local_due) {
         auto &local = local_pose_message;
         local.header.stamp = stamp;
         local.pose.position.x = s.position.x() - e->config.local_origin.x();
