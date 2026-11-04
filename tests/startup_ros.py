@@ -314,7 +314,8 @@ def main():
     definition = json.loads((Path(__file__).resolve().parents[1] / "process-definitions/xsim-world.json").read_text())["definitions"][0]
     assert definition["readiness"]["kind"] == "describe"
     uri = definition["parameters"]["properties"]["rosMasterUri"]
-    assert uri["fixedOnly"] and "default" not in uri and "output" not in uri
+    assert uri["fixedOnly"] and "default" not in uri
+    assert uri["output"] is True
     assert "rosMasterUri" in definition["parameters"]["required"]
     with tempfile.TemporaryDirectory(prefix="xsim-start-order-") as directory:
         root = Path(directory)
