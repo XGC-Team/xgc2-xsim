@@ -52,11 +52,6 @@ private:
     ControlSample pending_control{};
     bool has_control = false;
   };
-  struct Geometry {
-    Key key;
-    bool enabled = false;
-    Eigen::Vector3d position{Eigen::Vector3d::Zero()};
-  };
   struct HoldSample {
     uint64_t id;
     double linear, angular;
@@ -90,9 +85,6 @@ private:
   std::condition_variable output_wake_;
   bool output_notified_ = false;
   size_t frame_cursor_ = 0;
-  std::vector<Geometry> geometry_;
-  uint64_t geometry_revision_ = 0;
-  bool geometry_dirty_ = true;
   std::atomic<bool> running_{false};
   std::thread thread_;
   std::condition_variable wake_;
@@ -109,8 +101,7 @@ private:
   bool write_zero(const std::string &, std::string &) override; // HOLD tick, world thread only
   bool latest(const std::string &, xgc2::chassis_hold::Feedback &) override;
   void reset(Slot &, Model &&);
-  void reserve_frames(); // topology changes; geometrical capacity growth
-  void observe_geometry(Frame &);
+  void reserve_frames(); // topology changes; frame state capacity growth
   void emit();
   void finish(const Ticket &, Result);
   void cancel_pending_controls(Key);

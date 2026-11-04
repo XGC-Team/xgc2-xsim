@@ -43,9 +43,7 @@ struct State {
 };
 struct Frame {
   int64_t stamp = 0;
-  // Geometry tokens cover body key/generation/enabled/position, not time.
-  // Zero denotes an ad-hoc fixture snapshot without an authoritative token.
-  uint64_t steps = 0, revision = 0, geometry_revision = 0;
+  uint64_t steps = 0, revision = 0;
   std::vector<State> states;
 };
 struct Metrics {

@@ -804,7 +804,6 @@ int main() {
   shared_source->sensor = sensors.prepare(shared_source, config);
   auto mutable_shared = std::make_shared<Frame>(frame);
   mutable_shared->states[0] = state(shared_source, mutable_shared->stamp);
-  mutable_shared->geometry_revision = 999;
   std::shared_ptr<const Frame> immutable = std::move(mutable_shared);
   sensors.submit_frame(immutable);
   const auto first_payload = receive_shared(shared_source->sensor, sample);
@@ -830,7 +829,6 @@ int main() {
   assert(immutable.use_count() == 1);
   mutable_shared = std::make_shared<Frame>(*immutable);
   mutable_shared->stamp += 100000000;
-  ++mutable_shared->geometry_revision;
   mutable_shared->states[1].position.y() = 0;
   for (auto &s : mutable_shared->states) s.stamp = mutable_shared->stamp;
   immutable = std::move(mutable_shared);

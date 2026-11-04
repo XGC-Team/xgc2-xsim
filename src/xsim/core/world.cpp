@@ -247,7 +247,6 @@ Result World::apply(Command &c) {
     if (chassis)
       hold_ids_.emplace(e->public_id, e->id);
     e->alive = true;
-    geometry_dirty_ = true;
     reserve_frames();
     r.key = {e->id, e->generation};
     return r;
@@ -324,7 +323,6 @@ Result World::apply(Command &c) {
       hold_.remove(e.public_id); // the HOLD state of the ID stays for a re-created entity
     }
     slots_.erase(found);
-    geometry_dirty_ = true;
     r.enabled = false;
     return r;
   }
@@ -658,8 +656,6 @@ Frame World::capture() const {
   f.stamp = time_;
   f.steps = steps_;
   f.revision = revision_;
-  // An ad-hoc capture has no authoritative emitted-geometry token. The legacy
-  // sensor fixture entry point computes its own exact geometry observation.
   for (const auto &s : slots_)
     f.states.push_back(state(s.first, s.second));
   return f;
@@ -674,33 +670,6 @@ void World::reserve_frames() {
       frame->states.reserve(std::max(required, frame->states.capacity() * 2));
       ++metrics.frame_array_grows;
     }
-  if (geometry_.capacity() < required)
-    geometry_.reserve(std::max(required, geometry_.capacity() * 2));
-}
-void World::observe_geometry(Frame &frame) {
-  bool changed = geometry_dirty_ || geometry_.size() != frame.states.size();
-  if (!changed)
-    for (size_t i = 0; i < geometry_.size(); ++i) {
-      const auto &previous = geometry_[i];
-      const auto &current = frame.states[i];
-      if (previous.key.id != current.key.id ||
-          previous.key.generation != current.key.generation ||
-          previous.enabled != current.enabled ||
-          !(previous.position.array() == current.position.array()).all()) {
-        changed = true;
-        break;
-      }
-    }
-  if (changed) {
-    ++geometry_revision_;
-    geometry_.resize(frame.states.size());
-    for (size_t i = 0; i < geometry_.size(); ++i) {
-      const auto &current = frame.states[i];
-      geometry_[i] = {current.key, current.enabled, current.position};
-    }
-    geometry_dirty_ = false;
-  }
-  frame.geometry_revision = geometry_revision_;
 }
 void World::emit() {
   if (emitted_stamp_ == time_ && emitted_revision_ == revision_)
@@ -731,7 +700,6 @@ void World::emit() {
   frame->stamp = time_;
   frame->steps = steps_;
   frame->revision = revision_;
-  observe_geometry(*frame);
   std::unique_lock<std::mutex> l(output_mutex_, std::defer_lock);
   // A paused world may wait indefinitely after this final frame. Its short
   // pointer handoff must complete; ordinary ticks can still skip a busy reader.

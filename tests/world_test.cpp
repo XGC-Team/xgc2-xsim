@@ -103,16 +103,14 @@ int main() {
       pooled.advance();
       std::shared_ptr<const Frame> frame;
       assert(pooled.take_frame(frame));
-      assert(frame->geometry_revision > 0 && frame->states.size() == 1);
+      assert(frame->states.size() == 1);
       for (const auto &earlier : held) {
         assert(earlier.get() != frame.get());
-        assert(earlier->geometry_revision == frame->geometry_revision);
       }
       held.push_back(std::move(frame));
     }
     const auto oldest_stamp = held.front()->stamp;
     const auto *const reusable = held.front().get();
-    const auto old_geometry = held.front()->geometry_revision;
     const auto misses = pooled.metrics.output_misses.load();
     pooled.advance();
     std::shared_ptr<const Frame> resumed;
@@ -129,7 +127,6 @@ int main() {
     pooled.advance();
     assert(pooled.take_frame(resumed) && resumed.get() == reusable);
     assert(resumed->stamp == oldest_stamp + int64_t(World::frame_pool_size + 1) * pooled.dt);
-    assert(resumed->geometry_revision == old_geometry);
     held.clear();
     for (size_t i = 0; i < World::frame_pool_size * 2; ++i) {
       pooled.advance();
@@ -142,22 +139,16 @@ int main() {
     pooled.advance();
     assert(pooled.take_frame(resumed));
     assert(resumed->states.size() == 2 && retained->states.size() == 1);
-    assert(resumed->geometry_revision > retained->geometry_revision);
-    const auto enabled_geometry = resumed->geometry_revision;
     start(pooled, first);
     pooled.advance();
     assert(pooled.take_frame(resumed));
-    assert(resumed->geometry_revision > enabled_geometry);
-    const auto stationary_geometry = resumed->geometry_revision;
     pooled.advance();
     assert(pooled.take_frame(resumed));
-    assert(resumed->geometry_revision == stationary_geometry);
     auto motion = request(pooled, Op::Velocity, {first->id, first->generation});
     motion->velocity = {1, 0, 0};
     execute(pooled, motion);
     pooled.advance();
     assert(pooled.take_frame(resumed));
-    assert(resumed->geometry_revision > stationary_geometry);
     assert(retained->states.front().key.generation == 0);
     assert(retained->states.front().position == first->config.initial);
   }
