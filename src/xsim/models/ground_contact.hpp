@@ -80,37 +80,64 @@ inline double fs150SupportClearance(const RigidBodyModel &body, double world_gro
 }
 
 namespace support_detail {
-inline double inverse_mass(const RigidBodyModel &body, const Eigen::Quaterniond &orientation,
-                           const Eigen::Vector3d &r_body, const Eigen::Vector3d &direction) {
+struct CornerResponse {
+  std::array<Eigen::Vector3d, 3> direction;
+  std::array<Eigen::Vector3d, 3> lever;
+  std::array<Eigen::Vector3d, 3> angular;
+};
+
+// Orientation, corner lever and inverse inertia are constant while the support
+// impulses are resolved. Cache their three world-axis responses once per corner
+// instead of transforming the same axes in every solver pass.
+inline CornerResponse corner_response(const RigidBodyModel &body,
+                                      const Eigen::Quaterniond &orientation,
+                                      const Eigen::Vector3d &r_body) {
+  CornerResponse response;
+  for (int axis = 0; axis < 3; ++axis) {
+    response.direction[axis] = Eigen::Vector3d::Unit(axis);
+    const Eigen::Vector3d body_direction =
+        orientation.conjugate() * response.direction[axis];
+    response.lever[axis] = r_body.cross(body_direction);
+    response.angular[axis] = body.inverse_inertia() * response.lever[axis];
+  }
+  return response;
+}
+
+inline double inverse_mass(const RigidBodyModel &body,
+                           const Eigen::Quaterniond &orientation,
+                           const Eigen::Vector3d &r_body,
+                           const Eigen::Vector3d &direction) {
   const Eigen::Vector3d normal_body = orientation.conjugate() * direction;
   const Eigen::Vector3d lever = r_body.cross(normal_body);
   return 1.0 / body.parameters().mass + lever.dot(body.inverse_inertia() * lever);
 }
 
+inline double inverse_mass(const RigidBodyModel &body,
+                           const CornerResponse &response) {
+  return 1.0 / body.parameters().mass +
+         response.lever[2].dot(response.angular[2]);
+}
+
 inline void apply_impulse(RigidBodyState &state, const RigidBodyModel &body,
-                          const Eigen::Vector3d &r_body, const Eigen::Vector3d &direction,
+                          const CornerResponse &response, int axis,
                           double impulse) {
   if (impulse == 0.0)
     return;
-  const Eigen::Vector3d normal_body = state.orientation.conjugate() * direction;
-  const Eigen::Vector3d lever = r_body.cross(normal_body);
-  state.velocity += direction * (impulse / body.parameters().mass);
-  state.angular_velocity += body.inverse_inertia() * lever * impulse;
+  state.velocity += response.direction[axis] * (impulse / body.parameters().mass);
+  state.angular_velocity += response.angular[axis] * impulse;
 }
 
 // World impulse at the contact to the change in that point's world velocity.
 // Orientation is constant while impulses are resolved.
 inline Eigen::Matrix3d point_delassus(const RigidBodyModel &body,
                                       const Eigen::Quaterniond &orientation,
-                                      const Eigen::Vector3d &r_body) {
+                                      const Eigen::Vector3d &r_body,
+                                      const CornerResponse &response) {
   Eigen::Matrix3d metric = Eigen::Matrix3d::Zero();
   const double inv_mass = 1.0 / body.parameters().mass;
   for (int axis = 0; axis < 3; ++axis) {
-    const Eigen::Vector3d direction = Eigen::Vector3d::Unit(axis);
-    const Eigen::Vector3d body_direction = orientation.conjugate() * direction;
-    const Eigen::Vector3d angular =
-        body.inverse_inertia() * r_body.cross(body_direction);
-    metric.col(axis) = direction * inv_mass + orientation * angular.cross(r_body);
+    metric.col(axis) = response.direction[axis] * inv_mass +
+                       orientation * response.angular[axis].cross(r_body);
   }
   return 0.5 * (metric + metric.transpose());
 }
@@ -173,10 +200,13 @@ inline GroundContactResult resolveFlatGroundContact(RigidBodyModel &body,
 
   std::array<Eigen::Matrix3d, Fs150SupportFace::kCorners> metric{};
   std::array<Eigen::LDLT<Eigen::Matrix3d>, Fs150SupportFace::kCorners> factor;
+  std::array<support_detail::CornerResponse, Fs150SupportFace::kCorners> response{};
   for (int i = 0; i < Fs150SupportFace::kCorners; ++i) {
     if (!active[i])
       continue;
-    metric[i] = support_detail::point_delassus(body, state.orientation, lever[i]);
+    response[i] = support_detail::corner_response(body, state.orientation, lever[i]);
+    metric[i] = support_detail::point_delassus(body, state.orientation, lever[i],
+                                               response[i]);
     if (!metric[i].allFinite() || metric[i](2, 2) <= 0.0)
       return result.valid = false, result;
     factor[i].compute(metric[i]);
@@ -239,9 +269,9 @@ inline GroundContactResult resolveFlatGroundContact(RigidBodyModel &body,
         }
       }
       const Eigen::Vector3d delta = impulse - previous;
-      apply_impulse(state, body, lever[i], Eigen::Vector3d::UnitX(), delta.x());
-      apply_impulse(state, body, lever[i], Eigen::Vector3d::UnitY(), delta.y());
-      apply_impulse(state, body, lever[i], normal, delta.z());
+      apply_impulse(state, body, response[i], 0, delta.x());
+      apply_impulse(state, body, response[i], 1, delta.y());
+      apply_impulse(state, body, response[i], 2, delta.z());
       friction_x[i] = impulse.x();
       friction_y[i] = impulse.y();
       lambda[i] = impulse.z();
@@ -249,11 +279,11 @@ inline GroundContactResult resolveFlatGroundContact(RigidBodyModel &body,
       // speed with normal impulse only; do not shrink the friction again.
       const double opening = point_velocity(i).z();
       if (opening < -kBoundSpeed) {
-        const double normal_mass = inverse_mass(body, state.orientation, lever[i], normal);
+        const double normal_mass = inverse_mass(body, response[i]);
         if (!std::isfinite(normal_mass) || normal_mass <= 0.0)
           return result.valid = false, result;
         const double extra = -opening / normal_mass;
-        apply_impulse(state, body, lever[i], normal, extra);
+        apply_impulse(state, body, response[i], 2, extra);
         lambda[i] += extra;
       }
     }
@@ -265,11 +295,11 @@ inline GroundContactResult resolveFlatGroundContact(RigidBodyModel &body,
     const double opening = point_velocity(i).z();
     if (opening >= -kBoundSpeed)
       continue;
-    const double normal_mass = inverse_mass(body, state.orientation, lever[i], normal);
+    const double normal_mass = inverse_mass(body, response[i]);
     if (!std::isfinite(normal_mass) || normal_mass <= 0.0)
       return result.valid = false, result;
     const double extra = -opening / normal_mass;
-    apply_impulse(state, body, lever[i], normal, extra);
+    apply_impulse(state, body, response[i], 2, extra);
     lambda[i] += extra;
   }
 
