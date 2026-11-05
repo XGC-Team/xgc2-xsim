@@ -233,11 +233,16 @@ private:
   Eigen::Vector4d motor_at(const Eigen::Vector4d &initial,
                          const Eigen::Vector4d &target, double t) const {
     Eigen::Vector4d speed;
+    std::optional<double> response_up, response_down;
     for (int i = 0; i < 4; ++i) {
-      const double tau = target[i] > initial[i] ? parameters_.motor_tau_up
-                                               : parameters_.motor_tau_down;
+      const bool increasing = target[i] > initial[i];
+      const double tau = increasing ? parameters_.motor_tau_up
+                                    : parameters_.motor_tau_down;
+      auto &response = increasing ? response_up : response_down;
+      if (!response)
+        response = std::expm1(-t / tau);
       // expm1 avoids cancellation for tiny dt. This is a convex interpolation.
-      speed[i] = initial[i] + (target[i] - initial[i]) * (-std::expm1(-t / tau));
+      speed[i] = initial[i] + (target[i] - initial[i]) * (-*response);
       speed[i] = std::clamp(speed[i], 0.0, parameters_.max_rotor_speed);
     }
     return speed;
