@@ -93,12 +93,19 @@ bool World::wait(const Ticket &t) {
   t->feedback_at = Clock::now();
   return t->phase.load(std::memory_order_acquire) == 2;
 }
+World::Slot *World::find_slot(uint64_t id) {
+  const auto it = slot_index_.find(id);
+  return it == slot_index_.end() ? nullptr : &slots_[it->second].slot;
+}
+const World::Slot *World::find_slot(uint64_t id) const {
+  const auto it = slot_index_.find(id);
+  return it == slot_index_.end() ? nullptr : &slots_[it->second].slot;
+}
 void World::finish(const Ticket &t, Result r) {
   const bool capture = r.success || r.interrupted;
   if (capture && t->capture_state && !r.has_state && r.key.id) {
-    const auto found = slots_.find(r.key.id);
-    if (found != slots_.end()) {
-      r.state = state(found->first, found->second);
+    if (const auto *found = find_slot(r.key.id)) {
+      r.state = state(r.key.id, *found);
       r.has_state = true;
     }
   }
@@ -111,7 +118,7 @@ void World::finish(const Ticket &t, Result r) {
       r.reason = 5;
     } else if (capture) {
       for (const auto &entry : slots_)
-        t->states.push_back(state(entry.first, entry.second));
+        t->states.push_back(state(entry.id, entry.slot));
     }
   }
   if (!r.interrupted) r.applied = true;
@@ -125,11 +132,10 @@ void World::finish(const Ticket &t, Result r) {
   t->signal();
 }
 void World::cancel_pending_controls(Key key) {
-  const auto found = slots_.find(key.id);
-  if (found != slots_.end()) {
-    found->second.has_control = false;
+  if (auto *found = find_slot(key.id)) {
+    found->has_control = false;
     ControlSample discarded;
-    found->second.entity->controls.take(discarded);
+    found->entity->controls.take(discarded);
   }
   const auto cancel = [key](const Ticket &ticket) {
     if (!continuous(ticket->op) || ticket->key.id != key.id ||
@@ -208,7 +214,7 @@ Result World::apply(Command &c) {
     auto &p = *c.prepared;
     auto e = p.entity;
     for (const auto &s : slots_)
-      if (s.second.entity->config.name == e->config.name) {
+      if (s.slot.entity->config.name == e->config.name) {
         r.success = false;
         r.reason = 4;
         return r;
@@ -243,7 +249,8 @@ Result World::apply(Command &c) {
       mecanums_.back().model.bind(mecanum_poses_, i);
       mecanum_ids_.push_back(e->id);
     }
-    slots_.emplace(e->id, Slot{e, i});
+    slot_index_[e->id] = slots_.size();
+    slots_.push_back({e->id, Slot{e, i}});
     if (chassis)
       hold_ids_.emplace(e->public_id, e->id);
     e->alive = true;
@@ -258,25 +265,25 @@ Result World::apply(Command &c) {
       return r;
     }
     for (auto &v : c.resets) {
-      auto s = slots_.find(v.first.id);
-      if (s == slots_.end() ||
-          s->second.entity->generation != v.first.generation) {
+      auto *s = find_slot(v.first.id);
+      if (!s || s->entity->generation != v.first.generation) {
         r.success = false;
         r.reason = 1;
         return r;
       }
     }
     for (auto &v : c.resets)
-      reset(slots_.at(v.first.id), std::move(v.second));
+      reset(*find_slot(v.first.id), std::move(v.second));
     return r;
   }
-  auto found = slots_.find(c.key.id);
-  if (found == slots_.end()) {
+  const auto slot_it = slot_index_.find(c.key.id);
+  if (slot_it == slot_index_.end()) {
     r.success = false;
     r.reason = 1;
     return r;
   }
-  auto &s = found->second;
+  const size_t slot_pos = slot_it->second;
+  auto &s = slots_[slot_pos].slot;
   auto &e = *s.entity;
   auto i = s.dense;
   r.key = {e.id, e.generation};
@@ -302,7 +309,7 @@ Result World::apply(Command &c) {
       if (i + 1 != models.size()) {
         models[i] = std::move(models.back());
         ids[i] = ids.back();
-        slots_.at(ids[i]).dense = i;
+        find_slot(ids[i])->dense = i;
         models[i].model.rebind(i);
       }
       columns.erase(i);
@@ -322,7 +329,12 @@ Result World::apply(Command &c) {
       hold_ids_.erase(e.public_id);
       hold_.remove(e.public_id); // the HOLD state of the ID stays for a re-created entity
     }
-    slots_.erase(found);
+    slot_index_.erase(slot_it);
+    if (slot_pos + 1 != slots_.size()) {
+      slots_[slot_pos] = std::move(slots_.back());
+      slot_index_[slots_[slot_pos].id] = slot_pos;
+    }
+    slots_.pop_back();
     r.enabled = false;
     return r;
   }
@@ -400,7 +412,7 @@ Result World::apply(Command &c) {
     }
     r.success = f.model.request_mode(mode);
     if (r.success)
-      f.mode = c.mode;
+      f.set_mode(c.mode);
   } else {
     r.success = false;
     r.reason = 3;
@@ -464,9 +476,13 @@ Result World::apply_control(const ControlSample &c, Slot &s) {
   return r;
 }
 void World::apply_controls() {
+  const uint64_t rev = control_revision_.load(std::memory_order_acquire);
+  if (rev == consumed_control_revision_ && deferred_control_count_ == 0)
+    return;
   const auto now = Clock::now();
+  size_t remaining_deferred = 0;
   for (auto &entry : slots_) {
-    auto &slot = entry.second;
+    auto &slot = entry.slot;
     auto &entity = *slot.entity;
     if (entity.controls.take(slot.pending_control)) {
       if (slot.has_control) ++metrics.input_misses;
@@ -479,7 +495,10 @@ void World::apply_controls() {
       slot.has_control = false;
       continue;
     }
-    if (input.at > time_) continue;
+    if (input.at > time_) {
+      ++remaining_deferred;
+      continue;
+    }
     slot.has_control = false;
     try {
       if (apply_control(input, slot).success) ++revision_;
@@ -488,6 +507,8 @@ void World::apply_controls() {
       ++metrics.input_misses;
     }
   }
+  consumed_control_revision_ = rev;
+  deferred_control_count_ = remaining_deferred;
 }
 void World::apply_commands() {
   const auto now = Clock::now();
@@ -543,7 +564,12 @@ bool World::write_zero(const std::string &public_id, std::string &error) {
     error = "entity is not in the world";
     return false;
   }
-  const auto &slot = slots_.at(roster->second);
+  const auto *found = find_slot(roster->second);
+  if (!found) {
+    error = "entity is not in the world";
+    return false;
+  }
+  const auto &slot = *found;
   const auto &e = *slot.entity;
   // Zero replaces the model's command and drops the velocity commands still waiting for their time.
   cancel_pending_controls({e.id, e.generation});
@@ -620,8 +646,9 @@ State World::state(uint64_t id, const Slot &s) const {
   const auto i = s.dense;
   if (e.config.kind == Kind::FS150) {
     const auto &f = flights_[i];
-    v.position = f.model.state().position;
-    v.velocity = f.model.state().velocity;
+    const auto ts = f.model.state();
+    v.position = ts.position;
+    v.velocity = ts.velocity;
     v.orientation = f.model.orientation();
     v.omega = f.model.angular_velocity_body();
     v.specific_force = f.model.specific_force_body();
@@ -629,7 +656,7 @@ State World::state(uint64_t id, const Slot &s) const {
     v.landed = f.model.landed();
     v.control = f.model.control_output();
     v.rotors = f.model.rotor_speed();
-    std::strncpy(v.mode.data(), f.mode.c_str(), v.mode.size() - 1);
+    v.mode = f.mode;
   } else {
     auto pose = e.config.kind == Kind::Scout ? scouts_[i].model.pose()
                                              : mecanums_[i].model.pose();
@@ -657,7 +684,7 @@ Frame World::capture() const {
   f.steps = steps_;
   f.revision = revision_;
   for (const auto &s : slots_)
-    f.states.push_back(state(s.first, s.second));
+    f.states.push_back(state(s.id, s.slot));
   return f;
 }
 void World::reserve_frames() {
@@ -696,7 +723,7 @@ void World::emit() {
   }
   frame->states.resize(slots_.size());
   size_t at = 0;
-  for (const auto &s : slots_) frame->states[at++] = state(s.first, s.second);
+  for (const auto &s : slots_) frame->states[at++] = state(s.id, s.slot);
   frame->stamp = time_;
   frame->steps = steps_;
   frame->revision = revision_;

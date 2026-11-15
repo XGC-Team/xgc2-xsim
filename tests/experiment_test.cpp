@@ -79,6 +79,28 @@ int main(int argc, char **argv) {
     assert(config_for(selected)["entities"][0]["sensor"]["backend"] == backend);
   }
   {
+    auto generic_cone = original;
+    generic_cone["robots"][0]["binding"]["simulationSensors"]["simpleLidar"] = {
+      {"enabled", true}, {"preset", "heading_cone_crop"}};
+    const auto cone_sensor = config_for(generic_cone).at("entities").at(0).at("sensor");
+    assert(cone_sensor.at("heading_crop") == true && cone_sensor.at("heading_cos_min") == 0.5);
+
+    auto generic_halfspace = original;
+    generic_halfspace["robots"][0]["binding"]["simulationSensors"]["simpleLidar"] = {
+      {"enabled", true}, {"preset", "heading_halfspace_crop"}};
+    const auto half_sensor = config_for(generic_halfspace).at("entities").at(0).at("sensor");
+    assert(half_sensor.at("heading_crop") == true && half_sensor.at("heading_cos_min") == 0);
+
+    for (const char *retired_preset : {"zju_cpu_crop", "zju_cpu_crop_ego_v2"}) {
+      auto retired = original;
+      retired["robots"][0]["binding"]["simulationSensors"]["simpleLidar"] = {
+        {"enabled", true}, {"preset", retired_preset}};
+      bool refused = false;
+      try { (void)config_for(retired); } catch (const std::exception &) { refused = true; }
+      assert(refused);
+    }
+  }
+  {
     // A saved point cloud is a frozen asset fact (sceneAsset.pointCloud). It, and nothing next to
     // the scene file, moves the cloud to the scene adapter: no entity sensor and no reference topic.
     auto sensed = frozen_fixture(root + "/gpu-depth_frustum.input.json");

@@ -50,7 +50,7 @@
           "simpleLidar": {
             "enabled": true,
             "mode": "",
-            "preset": "zju_cpu_crop",
+            "preset": "heading_cone_crop",
             "rateHz": 12,
             "rangeMeters": 5,
             "hFovDeg": 120,

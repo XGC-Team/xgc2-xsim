@@ -173,11 +173,14 @@ inline matrix::Vector3f body(const Eigen::Vector3d &flu) {
 inline Eigen::Vector3d body(const matrix::Vector3f &frd) {
   return {frd(0), -frd(1), -frd(2)};
 }
-inline Eigen::Quaterniond world_rotation() {
-  const double c = std::sqrt(0.5);
-  return {0.0, c, c, 0.0};
+inline const Eigen::Quaterniond &world_rotation() {
+  static const Eigen::Quaterniond q{0.0, std::sqrt(0.5), std::sqrt(0.5), 0.0};
+  return q;
 }
-inline Eigen::Quaterniond body_rotation() { return {0.0, 1.0, 0.0, 0.0}; }
+inline const Eigen::Quaterniond &body_rotation() {
+  static const Eigen::Quaterniond q{0.0, 1.0, 0.0, 0.0};
+  return q;
+}
 inline matrix::Quatf attitude(const Eigen::Quaterniond &flu_enu) {
   const auto q = (world_rotation() * flu_enu * body_rotation()).normalized();
   return {static_cast<float>(q.w()), static_cast<float>(q.x()),
@@ -188,10 +191,13 @@ inline Eigen::Quaterniond attitude(const matrix::Quatf &frd_ned) {
   return (world_rotation().conjugate() * q * body_rotation().conjugate()).normalized();
 }
 inline float heading(double enu) {
-  return static_cast<float>(std::remainder(std::acos(-1.0) / 2.0 - enu,
-                                           2.0 * std::acos(-1.0)));
+  constexpr double kPi = 3.141592653589793238462643383279502884;
+  return static_cast<float>(std::remainder(0.5 * kPi - enu, 2.0 * kPi));
 }
-inline float radians(float degrees) { return degrees * float(std::acos(-1.0) / 180.0); }
+inline float radians(float degrees) {
+  constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
+  return degrees * kDegToRad;
+}
 inline vehicle_local_position_setpoint_s setpoint(const MaskedPva &value) {
   vehicle_local_position_setpoint_s out{};
   const auto p = world(value.position), v = world(value.velocity), a = world(value.acceleration);
@@ -260,7 +266,7 @@ public:
 
   explicit FlightController(const RigidBodyParameters &plant,
                             const FlightControllerParameters &parameters = {})
-      : plant_(plant), parameters_(parameters),
+      : parameters_(parameters),
         tilt_air_(parameters.get("MPC_TILTMAX_AIR")),
         tilt_land_(parameters.get("MPC_TILTMAX_LND")),
         motor_slew_max_(parameters.get("MOT_SLEW_MAX")),
@@ -271,6 +277,15 @@ public:
     if (parameters.get("MPC_THR_MIN") > parameters.get("MPC_THR_MAX") ||
         plant.max_rotor_speed < kMotorArmedZero + kMotorScaling)
       throw std::invalid_argument("invalid thrust limits or FS motor command range");
+    if (&plant == &fs150EquivalentParameters() ||
+        plant == fs150EquivalentParameters()) {
+      plant_ = &fs150EquivalentParameters();
+      allocation_ = &canonical_allocation();
+    } else {
+      custom_plant_ = std::make_unique<CustomPlant>(plant, build_allocation(plant));
+      plant_ = &custom_plant_->plant;
+      allocation_ = &custom_plant_->allocation;
+    }
     const auto p = [&parameters](const char *name) { return parameters.get(name); };
     attitude_.setProportionalGain({p("MC_ROLL_P"), p("MC_PITCH_P"), p("MC_YAW_P")},
                                   p("MC_YAW_WEIGHT"));
@@ -292,14 +307,6 @@ public:
     position_.setHoverThrust(p("MPC_THR_HOVER"));
     mixer_->set_airmode(static_cast<Mixer::Airmode>(int(p("MC_AIRMODE"))));
     mixer_->set_thrust_factor(p("THR_MDL_FAC"));
-    for (int i = 0; i != 4; ++i) {
-      physical_matrix_.col(i) << 1.0, plant.rotor_position[i].y(),
-          -plant.rotor_position[i].x(), plant.moment_ratio * plant.rotor_yaw_sign[i];
-      const auto &r = rotors()[i];
-      normalized_matrix_.row(i) << r.roll_scale, r.pitch_scale, r.yaw_scale, r.thrust_scale;
-    }
-    if (!physical_matrix_.fullPivLu().isInvertible())
-      throw std::invalid_argument("singular physical rotor geometry");
   }
   FlightController(const FlightController &) = delete;
   FlightController &operator=(const FlightController &) = delete;
@@ -411,17 +418,17 @@ public:
         const auto &channel = fs150_native_asset::rotors[i];
         const double omega = channel.zero_position_armed + channel.input_scaling *
                              (motor[i] + channel.input_offset);
-        force[i] = plant_.thrust_coefficient * omega * omega;
+        force[i] = plant_->thrust_coefficient * omega * omega;
       }
-    return physical_matrix_ * force;
+    return allocation_->physical_matrix * force;
   }
   Eigen::Vector4d normalized_controls_for_wrench(const Eigen::Vector4d &wrench) const {
-    const auto force = physical_matrix_.fullPivLu().solve(wrench).eval();
+    const auto force = allocation_->physical_lu.solve(wrench).eval();
     Eigen::Vector4d thrust_model;
     const double alpha = thrust_model_factor_;
     for (int i = 0; i != 4; ++i) {
       const auto &channel = fs150_native_asset::rotors[i];
-      const double motor = (std::sqrt(force[i] / plant_.thrust_coefficient) -
+      const double motor = (std::sqrt(force[i] / plant_->thrust_coefficient) -
                             channel.zero_position_armed) / channel.input_scaling - channel.input_offset;
       if (!std::isfinite(motor) || motor < -1e-10 || motor > 1.0 + 1e-10)
         throw std::invalid_argument("wrench outside unsaturated FS motor domain");
@@ -429,10 +436,41 @@ public:
     }
     // Only an unsaturated target has this unique reverse mapping. Mixer
     // desaturation intentionally loses input information; no inverse is claimed.
-    return normalized_matrix_.fullPivLu().solve(thrust_model);
+    return allocation_->normalized_lu.solve(thrust_model);
   }
 
 private:
+  struct AllocationMatrices {
+    Eigen::Matrix4d physical_matrix{Eigen::Matrix4d::Zero()};
+    Eigen::Matrix4d normalized_matrix{Eigen::Matrix4d::Zero()};
+    Eigen::FullPivLU<Eigen::Matrix4d> physical_lu;
+    Eigen::FullPivLU<Eigen::Matrix4d> normalized_lu;
+  };
+  struct CustomPlant {
+    RigidBodyParameters plant;
+    AllocationMatrices allocation;
+    CustomPlant(const RigidBodyParameters &p, AllocationMatrices &&a)
+        : plant(p), allocation(std::move(a)) {}
+  };
+  static AllocationMatrices build_allocation(const RigidBodyParameters &plant) {
+    AllocationMatrices out;
+    for (int i = 0; i != 4; ++i) {
+      out.physical_matrix.col(i) << 1.0, plant.rotor_position[i].y(),
+          -plant.rotor_position[i].x(), plant.moment_ratio * plant.rotor_yaw_sign[i];
+      const auto &r = rotors()[i];
+      out.normalized_matrix.row(i) << r.roll_scale, r.pitch_scale, r.yaw_scale, r.thrust_scale;
+    }
+    out.physical_lu.compute(out.physical_matrix);
+    if (!out.physical_lu.isInvertible())
+      throw std::invalid_argument("singular physical rotor geometry");
+    out.normalized_lu.compute(out.normalized_matrix);
+    return out;
+  }
+  static const AllocationMatrices &canonical_allocation() {
+    static const AllocationMatrices value = build_allocation(fs150EquivalentParameters());
+    return value;
+  }
+
   // Unit-only access to replay the upstream component fixture schema. The
   // runtime still obtains saturation solely from its previous real mixer.
   friend struct FlightControllerReplay;
@@ -491,7 +529,9 @@ private:
     }
   }
 
-  RigidBodyParameters plant_;
+  std::unique_ptr<CustomPlant> custom_plant_;
+  const RigidBodyParameters *plant_{nullptr};
+  const AllocationMatrices *allocation_{nullptr};
   FlightControllerParameters parameters_;
   // Parameters are immutable after construction; reset/move retains the values.
   float tilt_air_, tilt_land_, motor_slew_max_, thrust_model_factor_;
@@ -502,8 +542,6 @@ private:
   std::unique_ptr<std::array<float, 4>> controls_;
   std::unique_ptr<MultirotorMixer> mixer_;
   MultirotorMixer::saturation_status saturation_{};
-  Eigen::Matrix4d physical_matrix_;
-  Eigen::Matrix4d normalized_matrix_;
 };
 
 } // namespace xgc_lightweight

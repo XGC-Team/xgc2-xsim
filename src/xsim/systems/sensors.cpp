@@ -553,16 +553,19 @@ void Sensors::submit_frame(const std::shared_ptr<const Frame> &frame) {
   if (last_frame_stamp_ && frame->stamp > last_frame_stamp_)
     source_period_ns_ = frame->stamp - last_frame_stamp_;
   last_frame_stamp_ = frame->stamp;
-  const auto body_revision = fixture_geometry_revision(*frame);
-  for (const auto &v : frame->states) submit_sample(v, frame, body_revision);
+  BodyReturnSummary summary;
+  const auto body_revision = fixture_geometry_revision(*frame, &summary);
+  for (const auto &v : frame->states) submit_sample(v, frame, body_revision, &summary);
 }
-uint64_t Sensors::fixture_geometry_revision(const Frame &frame) {
+uint64_t Sensors::fixture_geometry_revision(const Frame &frame, BodyReturnSummary *summary) {
   // Only eligible target geometry invalidates observations. The default-off
   // roster never makes scanner caches depend on invisible neighbour motion.
   bool changed = !fixture_geometry_revision_;
   size_t count = 0;
+  uint64_t sole_id = 0;
   for (const auto& current : frame.states) {
     if (!current.body_returns) continue;
+    if (count == 0) sole_id = current.key.id;
     if (count >= fixture_geometry_.size()) changed = true;
     else {
       const auto& previous = fixture_geometry_[count];
@@ -570,6 +573,10 @@ uint64_t Sensors::fixture_geometry_revision(const Frame &frame) {
           !(previous.position.array() == current.position.array()).all()) changed = true;
     }
     ++count;
+  }
+  if (summary) {
+    summary->count = count;
+    summary->sole_id = sole_id;
   }
   changed |= count != fixture_geometry_.size();
   if (changed) {
@@ -586,10 +593,12 @@ void Sensors::submit_frame(const Frame &frame) {
   submit_frame(std::shared_ptr<const Frame>(std::move(fixture)));
 }
 void Sensors::submit(const State &v, std::shared_ptr<const Frame> bodies) {
-  const auto revision = bodies ? fixture_geometry_revision(*bodies) : 0;
-  submit_sample(v, bodies, revision);
+  BodyReturnSummary summary;
+  const auto revision = bodies ? fixture_geometry_revision(*bodies, &summary) : 0;
+  submit_sample(v, bodies, revision, bodies ? &summary : nullptr);
 }
-void Sensors::submit_sample(const State &v, const std::shared_ptr<const Frame> &bodies, uint64_t body_revision) {
+void Sensors::submit_sample(const State &v, const std::shared_ptr<const Frame> &bodies,
+                            uint64_t body_revision, const BodyReturnSummary *body_summary) {
   auto owner = v.entity.lock();
   auto s = owner ? owner->sensor : nullptr;
   if (!s)
@@ -685,8 +694,15 @@ void Sensors::submit_sample(const State &v, const std::shared_ptr<const Frame> &
     s->pending.scene_version = active_version;
   }
   bool observe_bodies = false;
-  if (bodies) for (const auto& body : bodies->states)
-    observe_bodies |= body.body_returns && body.key.id != v.key.id;
+  if (bodies) {
+    if (body_summary) {
+      observe_bodies = body_summary->count > 1 ||
+                       (body_summary->count == 1 && body_summary->sole_id != v.key.id);
+    } else {
+      for (const auto& body : bodies->states)
+        observe_bodies |= body.body_returns && body.key.id != v.key.id;
+    }
+  }
   s->pending.body_observation = observe_bodies;
   if (observe_bodies) {
     s->pending.bodies = bodies;
@@ -857,9 +873,21 @@ void Sensors::work(bool gpu) {
           auto &beam_data = writable->beam_data;
           beam_data.clear();
           s.others.clear();
-          if (sample.bodies) for (const auto& body : sample.bodies->states)
-            if (body.body_returns && body.key.id != sample.key.id)
+          if (sample.bodies) {
+            const double range = s.body_config.range;
+            const bool can_cull = sample.position.allFinite() &&
+                                  std::isfinite(range) && range >= 0.0;
+            const double cutoff = range + 0.3 + 1e-6;
+            const double cutoff_sq = cutoff * cutoff;
+            for (const auto& body : sample.bodies->states) {
+              if (!body.body_returns || body.key.id == sample.key.id)
+                continue;
+              if (can_cull && body.position.allFinite() &&
+                  (body.position - sample.position).squaredNorm() > cutoff_sq)
+                continue;
               s.others.push_back({int(body.key.id), body.position, 0.3});
+            }
+          }
           if (!gpu) {
             if (sample.scene) s.cpu->setScene(sample.scene);
             if(!s.publish_beams)s.cpu->scanInto(sample.position,sample.orientation,s.others,s.with_bodies,&data);

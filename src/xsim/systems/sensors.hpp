@@ -146,6 +146,10 @@ private:
     bool enabled = false;
     Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   };
+  struct BodyReturnSummary {
+    size_t count = 0;
+    uint64_t sole_id = 0;
+  };
   bool phased_ = false;
   int64_t phase_t0_ns_ = 0;
   std::shared_ptr<const xgc2_math::scene::LidarScene> scene_;
@@ -204,13 +208,15 @@ private:
   const xgc2_sensing_gpu_api *gpu_api_ = nullptr;
   void work(bool gpu);
   void enqueue(const std::shared_ptr<Sensor>&);
-  void submit_sample(const State &, const std::shared_ptr<const Frame> &, uint64_t body_revision = 0);
+  void submit_sample(const State &, const std::shared_ptr<const Frame> &,
+                     uint64_t body_revision = 0,
+                     const BodyReturnSummary *body_summary = nullptr);
   std::shared_ptr<const xgc2_math::scene::LidarScene> scene_for(const xgc2_math::scene::SensorConfig &) const;
   bool claim_scene_job(bool bootstrap, SceneJob *job);
   void publish_scene_job(const SceneJob &job);
   void release_scene_claim();
   void invalidate_dynamic_scene();
   std::shared_ptr<const xgc2_math::scene::LidarScene> cold_policy(double spacing, bool buried);
-  uint64_t fixture_geometry_revision(const Frame &);
+  uint64_t fixture_geometry_revision(const Frame &, BodyReturnSummary *summary = nullptr);
 };
 } // namespace xsim

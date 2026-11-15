@@ -47,7 +47,7 @@
           "simpleLidar": {
             "enabled": true,
             "mode": "",
-            "preset": "zju_cpu_crop_ego_v2",
+            "preset": "heading_halfspace_crop",
             "rateHz": 0,
             "rangeMeters": 0,
             "hFovDeg": 0,
@@ -114,7 +114,7 @@
           "simpleLidar": {
             "enabled": true,
             "mode": "",
-            "preset": "zju_cpu_crop_ego_v2",
+            "preset": "heading_halfspace_crop",
             "rateHz": 0,
             "rangeMeters": 0,
             "hFovDeg": 0,
@@ -183,7 +183,7 @@
           "simpleLidar": {
             "enabled": true,
             "mode": "",
-            "preset": "zju_cpu_crop_ego_v2",
+            "preset": "heading_halfspace_crop",
             "rateHz": 0,
             "rangeMeters": 0,
             "hFovDeg": 0,
@@ -252,7 +252,7 @@
           "simpleLidar": {
             "enabled": true,
             "mode": "",
-            "preset": "zju_cpu_crop_ego_v2",
+            "preset": "heading_halfspace_crop",
             "rateHz": 0,
             "rangeMeters": 0,
             "hFovDeg": 0,

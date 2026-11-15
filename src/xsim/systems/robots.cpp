@@ -10,7 +10,7 @@ Model prepare_model(const Config &c) {
 void step_robot(Flight &f, bool enabled, double h) {
   if (enabled) {
     if (f.model.step(h) == FlightEvent::OffboardLost)
-      f.mode = "AUTO.LOITER";
+      f.set_mode("AUTO.LOITER");
   } else if (f.ever_started)
     f.model.stepPhysicsOnly(h);
 }

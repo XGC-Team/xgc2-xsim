@@ -24,7 +24,7 @@
     "cpu-depth-beams.expected-config.json": "5a11df064597d09ed194fd1a1a84c6336d9fdc0f88760ba8b7572b614a477b14",
     "cpu-depth-beams.input.json": "f770dadf0fcc241c91b2ea05e001b50dffd28fc618cf593ef8ef232023c1548a",
     "cpu-ego-v2-preset.expected-config.json": "83e237bc85bf5ba2d15ac3538b35fdfbfb09a0bb0a1ec725d75290937ee294d6",
-    "cpu-ego-v2-preset.input.json": "177ea17fa325fbff6e96d8c5fb652910164cc37e6a6b858c4c8f10189d032f01",
+    "cpu-ego-v2-preset.input.json": "60ea8562d3162969f5b91dc29d48ead62eca6e812aea97cef16f24f69d3ccd9c",
     "cpu-explicit-sensor-values.expected-config.json": "e49d7674906bc121b2bd04bf17815757a7486f61d6a5b650217f4e9ee8501ed0",
     "cpu-explicit-sensor-values.input.json": "646c871788c5f28f1d44846ae44c06d4b3a2e1e2c2661a5c9f8e1098148baba9",
     "cpu-implicit-bridge.expected-config.json": "6d6947b14851c06f5beae050adb5012cc0a6a04a9184424d2d70e3eb61b2d4fd",
@@ -32,9 +32,9 @@
     "cpu-raycast-beams.expected-config.json": "644018d4370b1c5bf39166e6c234a6017210eb3bf400aeb82b7da1c4098fabae",
     "cpu-raycast-beams.input.json": "61718085b04713e4d46879439c66477d16e7a598d4f3c5331a73aa8aac274021",
     "cpu-zju-overridden-depth.expected-config.json": "9c710fd1f69f10928f209ff8462542d70e22a7647159a964f063cd3d088acce3",
-    "cpu-zju-overridden-depth.input.json": "4204e38235214aa7f701db4fdc04484054636c1f42d56ebad04b0b6107f28e6d",
+    "cpu-zju-overridden-depth.input.json": "2d3886f2dfc6f597f977d0ac05dbe41aa152d919d629e7b801dade34393f6883",
     "cpu-zju-preset.expected-config.json": "dad6502c4fb54cf47e5b402a6ec6a40c7cce198bc82871a1a39d49f7008cf8ef",
-    "cpu-zju-preset.input.json": "2f58256b12f15950a2b1d78256ba7b67bace07622dc756ea6fb2fdaa0019379b",
+    "cpu-zju-preset.input.json": "874ec51b0cc0f68119622b0a9f393b11929d4a08bed263fe64f023e09e17aa24",
     "default-mixed.expected-config.json": "817247d324798ed50df6eb62c5dc35259d7e37a12aaccc68f9f299ab3b94fc9f",
     "default-mixed.input.json": "a4c7f430bc025e321f6afe2c8cfe2c2e478915707587d1d2213754bd2eda2c0d",
     "empty-world.expected-config.json": "50e5007c4d19b148807c4e4bc026493e6adcd1009c610980db6ee54c4a0ee2b6",
@@ -50,7 +50,7 @@
     "gpu-raycast.expected-config.json": "9147a1455d91e93b0c62bcb9af814d7e96e2cdbda08ad9740b032b1904850734",
     "gpu-raycast.input.json": "fa884848e73963225bba26073ed2bb1ab6d9cd9d3a9e61abfb67b46dba350825",
     "gpu-zju-explicit-fov-grid.expected-config.json": "ae0bd31bdf101732a03840b16cd3e5cab36e75509ce79bd59dbff5f8226896eb",
-    "gpu-zju-explicit-fov-grid.input.json": "ec368364cb24ec1fc64061f837bfacfd2995e08e2bd172aee5a91ec7cc03befd",
+    "gpu-zju-explicit-fov-grid.input.json": "92b417b17788ca1a4d44d6cc78c816d0c58c0ef405142d08166d386a9bec8b7a",
     "hybrid-filter-physical-sensor.expected-config.json": "4528888581bb7dea126c268ac0efbbf4f1a1e6eb2259b117461171963019c4ea",
     "hybrid-filter-physical-sensor.input.json": "74eda4df21d154d9e1d98fa89c1eecf8eeb55e65a3b7c920fddb12808c231c75",
     "index.json": "637a32d0199011323f79e7ca76e71070bcfd59648f1ce86b920d837e2ab311c8",
@@ -118,5 +118,6 @@
   "indexSha256": "637a32d0199011323f79e7ca76e71070bcfd59648f1ce86b920d837e2ab311c8",
   "manifestFile": "manifest.json",
   "manifestMapping": "manifest.json is {cases: <the complete index.json array>} with no case reorder or semantic transformation.",
-  "manifestSha256": "501af0b2f9e1b670247abf86033078a93c7ac7c5f5b5dbc19366ea65840db23a"
+  "manifestSha256": "501af0b2f9e1b670247abf86033078a93c7ac7c5f5b5dbc19366ea65840db23a",
+  "presetSyncNote": "WF-R27 synchronized input preset names zju_cpu_crop->heading_cone_crop and zju_cpu_crop_ego_v2->heading_halfspace_crop with generic robotconfig/world_lidar contract while preserving expected lowered outputs."
 }

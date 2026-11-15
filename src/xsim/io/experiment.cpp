@@ -86,7 +86,7 @@ Json sensor(const Json &authored, const std::string &ns, const std::string &defa
   const auto mode_authored = lidar.value("mode", std::string{});
   auto preset = lidar.value("preset", std::string{});
   require(mode_authored.empty() || mode_authored == "raycast" || mode_authored == "penetrating" || mode_authored == "depth_frustum", "unsupported lidar mode");
-  require(preset.empty() || preset == "bridge_equivalent" || preset == "zju_cpu_crop" || preset == "zju_cpu_crop_ego_v2", "unsupported lidar preset");
+  require(preset.empty() || preset == "bridge_equivalent" || preset == "heading_cone_crop" || preset == "heading_halfspace_crop", "unsupported lidar preset");
   if (!enabled) return nullptr;
   std::string mode = "raycast";
   double rate = 10, range = 20, hfov = 360, vfov = 30, heading_cos = 0, slab = 0;
@@ -95,7 +95,7 @@ Json sensor(const Json &authored, const std::string &ns, const std::string &defa
   if (!preset.empty()) {
     mode = "penetrating"; vfov = 180; buried = true; range = 5;
     if (preset == "bridge_equivalent") range = 8;
-    else { crop = true; slab = 0.5773502691896258; if (preset == "zju_cpu_crop") heading_cos = 0.5; }
+    else { crop = true; slab = 0.5773502691896258; if (preset == "heading_cone_crop") heading_cos = 0.5; }
   }
   if (!mode_authored.empty()) mode = mode_authored;
   if (mode == "depth_frustum") { hfov = 90; vfov = 60; }
@@ -133,7 +133,7 @@ Json experiment_config(const Json &input, int64_t epoch_ns, const std::string &s
   const auto scene_backend = text(input.at("scene"), "simulator");
   require(scene_backend == "xsim" || (hil && scene_backend == "gazebo"), "scene simulator must be xsim");
   const auto &robots = input.at("robots");
-  require(robots.is_array() && robots.size() <= 256, "robots must be the frozen roster");
+  require(robots.is_array() && robots.size() <= 2048, "robots must be the frozen roster");
   auto parameters = input.at("scene").value("parameters", Json::object());
   require(parameters.is_object(), "scene parameters must be an object");
   // Robot projection already lowered Scene scope into the frozen slot bindings.
@@ -273,7 +273,7 @@ Json experiment_robot_bindings(const Json &input, const std::string &slot_id, bo
   require(run_mode == "simulation" || run_mode == "hybrid" || (hil && run_mode == "physical"), "unsupported runMode");
   require(!hil || !slot_id.empty(), "HIL requires one explicit slot");
   const auto &robots = input.at("robots");
-  require(robots.is_array() && robots.size() <= 256, "robots must be the frozen roster");
+  require(robots.is_array() && robots.size() <= 2048, "robots must be the frozen roster");
   Json bindings = Json::object();
   std::set<std::string> ids;
   int matches = 0;

@@ -1,5 +1,6 @@
 #include "io/config.hpp"
 #include "io/native_rpc/server.hpp"
+#include "io/shm/shm_io.hpp"
 #include "io/startup.hpp"
 #include <xgc2/xrpc/bootstrap.hpp>
 #include <fcntl.h>
@@ -16,6 +17,7 @@
 #include <array>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <algorithm>
 namespace {
 struct OwnedFd {
@@ -66,14 +68,14 @@ struct RosShutdown {
 } // namespace
 int main(int argc, char **argv) {
   try {
-    std::string socket, target_id, run_id, slot_id, phase_text, scene_file;
+    std::string socket, target_id, run_id, slot_id, phase_text, scene_file, io_mode, shm_name;
     unsigned sensor_initialization_timeout_ms = 10000;
     bool has_experiment_stdin = false, has_socket = false, has_target = false, has_run = false, has_sensor_timeout = false;
-    bool has_slot = false, has_phase = false, has_scene = false, hil = false;
+    bool has_slot = false, has_phase = false, has_scene = false, has_io_mode = false, has_shm_name = false, hil = false;
     for (int i = 1; i < argc; ++i) {
       const std::string arg = argv[i];
       if (arg == "--help") {
-        std::cout << "xsim --experiment-stdin --run-id RUN --socket SOCKET --target-id TARGET [--slot SLOT] [--hil] [--phase-t0 NS] [--scene-file PATH] [--sensor-init-timeout-ms MS]\n";
+        std::cout << "xsim --experiment-stdin --run-id RUN --socket SOCKET --target-id TARGET [--slot SLOT] [--hil] [--phase-t0 NS] [--scene-file PATH] [--sensor-init-timeout-ms MS] [--io-mode auto|ros|shm|hybrid|none] [--shm-name NAME]\n";
         return 0;
       }
       if (arg == "--hil") {
@@ -95,6 +97,8 @@ int main(int argc, char **argv) {
       else if (arg == "--slot") { value = &slot_id; present = &has_slot; }
       else if (arg == "--phase-t0") { value = &phase_text; present = &has_phase; }
       else if (arg == "--scene-file") { value = &scene_file; present = &has_scene; }
+      else if (arg == "--io-mode") { value = &io_mode; present = &has_io_mode; }
+      else if (arg == "--shm-name") { value = &shm_name; present = &has_shm_name; }
       else if (arg == "--sensor-init-timeout-ms") { value = &timeout; present = &has_sensor_timeout; }
       else throw std::invalid_argument("unknown argument: " + arg);
       if (*present) throw std::invalid_argument("argument occurs more than once: " + arg);
@@ -151,6 +155,19 @@ int main(int argc, char **argv) {
         std::chrono::system_clock::now().time_since_epoch()).count();
     auto config = xsim::resolve_scene_file(xsim::experiment_config(frozen, epoch_ns, slot_id, phase_t0, hil), scene_file);
     config["run_id"] = run_id;
+    if (!shm_name.empty()) config["shm_name"] = shm_name;
+#ifdef XSIM_ROS
+    const std::string effective_io = io_mode.empty() || io_mode == "auto" ? "ros" : io_mode;
+#else
+    const std::string effective_io = io_mode.empty() || io_mode == "auto" ? "none" : io_mode;
+#endif
+    if (effective_io != "ros" && effective_io != "shm" &&
+        effective_io != "hybrid" && effective_io != "none")
+      throw std::invalid_argument("unsupported --io-mode: " + effective_io);
+#ifndef XSIM_ROS
+    if (effective_io == "ros" || effective_io == "hybrid")
+      throw std::invalid_argument("ROS IO boundary is not compiled in this xsim binary");
+#endif
     rpc.robot_bindings = xsim::experiment_robot_bindings(frozen, slot_id, hil);
     rpc.frozen_experiment = true;
     const auto &epoch = config.at("epoch_ns");
@@ -158,11 +175,16 @@ int main(int argc, char **argv) {
         (epoch.is_number_unsigned() && epoch.get<uint64_t>() > uint64_t(std::numeric_limits<int64_t>::max())))
       throw std::invalid_argument("epoch_ns must be an explicit int64 integer from the frozen configuration");
 #ifdef XSIM_ROS
-    const std::array<xgc2::xrpc::DirectoryGrant, 2> ros_directories = {
-      ros_directory("ROS_HOME"), ros_directory("ROS_LOG_DIR")};
-    const auto node_name = config.value("ros_node_name", std::string("xsim"));
-    ros::init(argc, argv, node_name, ros::init_options::NoSigintHandler);
-    RosShutdown ros_shutdown;
+    const bool use_ros_io = (effective_io == "ros" || effective_io == "hybrid");
+    std::optional<std::array<xgc2::xrpc::DirectoryGrant, 2>> ros_directories;
+    std::optional<RosShutdown> ros_shutdown;
+    if (use_ros_io) {
+      ros_directories.emplace(std::array<xgc2::xrpc::DirectoryGrant, 2>{
+          ros_directory("ROS_HOME"), ros_directory("ROS_LOG_DIR")});
+      const auto node_name = config.value("ros_node_name", std::string("xsim"));
+      ros::init(argc, argv, node_name, ros::init_options::NoSigintHandler);
+      ros_shutdown.emplace();
+    }
 #endif
     signal(SIGINT, signal_stop);
     signal(SIGTERM, signal_stop);
@@ -176,8 +198,16 @@ int main(int argc, char **argv) {
                           std::chrono::milliseconds(sensor_initialization_timeout_ms),
                           phase_t0);
     xsim::RuntimeIO io;
+    if (effective_io == "shm") {
+      io = xsim::make_shm_io(config, world, sensors);
+    }
 #ifdef XSIM_ROS
-    io = xsim::make_ros_io(config, world, sensors);
+    else if (effective_io == "ros") {
+      io = xsim::make_ros_io(config, world, sensors);
+    } else if (effective_io == "hybrid") {
+      io = xsim::compose_runtime_io(xsim::make_shm_io(config, world, sensors),
+                                    xsim::make_ros_io(config, world, sensors));
+    }
 #endif
     xsim::Server server(config, socket, std::move(rpc), world, sensors, std::move(io));
     // Keep this descriptor until process exit: a signal handler on another

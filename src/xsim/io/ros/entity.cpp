@@ -321,11 +321,12 @@ void RosEntity::reconcile() {
   command = services->advertiseService(
       topic("command_service", "/mavros/cmd/command"), command_fn);
 }
-void RosEntity::publish(const State &s, const TelemetryRates &rates) {
-  if (!bound.load(std::memory_order_acquire)) return;
+bool RosEntity::publish(const State &s, const TelemetryRates &rates, bool signal_poll) {
+  if (!bound.load(std::memory_order_acquire)) return false;
   auto e = entity.lock();
   if (!e || !e->alive || s.key.generation != e->generation)
-    return;
+    return false;
+  bool any_published = false;
   const bool reset = s.key.generation != last_generation || s.stamp < last_stamp;
   if (reset) schedule.reset();
   const bool fresh = reset || s.stamp != last_stamp;
@@ -346,13 +347,13 @@ void RosEntity::publish(const State &s, const TelemetryRates &rates) {
     m.guided = s.enabled;
     m.system_status = !s.enabled ? 0 : s.armed ? 4 : 3;
     m.mode = s.mode.data();
-    state.publish(m);
+    any_published |= state.publish(m, signal_poll);
   }
   if (flight && (status_changed || last_landed_state != landed_state || extended_due)) {
     auto &x = extended_message;
     x.header.stamp = stamp;
     x.landed_state = landed_state;
-    extended.publish(x);
+    any_published |= extended.publish(x, signal_poll);
   }
   last_enabled = s.enabled;
   last_armed = s.armed;
@@ -383,8 +384,8 @@ void RosEntity::publish(const State &s, const TelemetryRates &rates) {
                            &p.pose.position.z};
         for (int a = 0; a < 3; ++a)
           if (noise[a] > 0) *axes[a] += noise[a] * normal(rng);
-        localization_pose.publish(p);
-        localization_twist.publish(v);
+        any_published |= localization_pose.publish(p, signal_poll);
+        any_published |= localization_twist.publish(v, signal_poll);
       }
       if (local_due) {
         auto &local = local_pose_message;
@@ -393,16 +394,16 @@ void RosEntity::publish(const State &s, const TelemetryRates &rates) {
         local.pose.position.y = s.position.y() - e->config.local_origin.y();
         local.pose.position.z = s.position.z() - e->config.local_origin.z();
         orientation(local.pose.orientation, s.orientation);
-        pose.publish(local);
+        any_published |= pose.publish(local, signal_poll);
         local_twist_message.header.stamp = stamp;
         local_twist_message.twist = v.twist;
-        velocity.publish(local_twist_message);
+        any_published |= velocity.publish(local_twist_message, signal_poll);
         auto &o = odometry_message;
         o.header.stamp = stamp;
         o.pose.pose = local.pose;
         vector(o.twist.twist.linear, s.orientation.conjugate() * s.velocity);
         vector(o.twist.twist.angular, s.omega);
-        odom.publish(o);
+        any_published |= odom.publish(o, signal_poll);
       }
       {
         const bool imu_due = (flight || e->config.kind == Kind::Mecanum) &&
@@ -416,11 +417,11 @@ void RosEntity::publish(const State &s, const TelemetryRates &rates) {
           orientation(m.orientation, s.orientation);
           vector(m.angular_velocity, s.omega);
           vector(m.linear_acceleration, s.specific_force);
-          if (imu_due) imu.publish(m);
+          if (imu_due) any_published |= imu.publish(m, signal_poll);
           if (raw_due) {
             m.orientation = geometry_msgs::Quaternion{};
             m.orientation_covariance[0] = -1.0;
-            raw_imu.publish(m);
+            any_published |= raw_imu.publish(m, signal_poll);
           }
         }
       }
@@ -431,10 +432,11 @@ void RosEntity::publish(const State &s, const TelemetryRates &rates) {
         vector(a.body_rate, s.control.desired_body_rate);
         a.thrust = s.control.normalized_thrust;
         a.type_mask = s.control.type_mask;
-        target.publish(a);
+        any_published |= target.publish(a, signal_poll);
       }
     }
   }
+  return any_published;
 }
 void RosEntity::publish_sensor(const Sample &sample, const std::shared_ptr<const SensorPayload> &payload) {
   if (!bound.load(std::memory_order_acquire)) return;

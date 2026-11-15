@@ -9,6 +9,7 @@ add_library(px4_v1_12_3 STATIC
   ${upstream}/src/lib/mixer/MixerBase/Mixer.cpp
   ${upstream}/src/lib/mixer/MultirotorMixer/MultirotorMixer.cpp)
 target_compile_features(px4_v1_12_3 PUBLIC cxx_std_17)
+target_compile_options(px4_v1_12_3 PRIVATE -O3)
 set_target_properties(px4_v1_12_3 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(px4_v1_12_3 SYSTEM PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -14,6 +14,7 @@ struct GroundContactResult {
   bool constrained{false};
   double normal_impulse{0.0}; // N s, sum of unilateral inelastic impulses
   Eigen::Vector3d base_acceleration_world{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d angular_acceleration_body{Eigen::Vector3d::Zero()};
 };
 
 // Declared FS150 support. iris.sdf base_link_inertia_collision is one box,
@@ -69,14 +70,24 @@ struct Fs150SupportFace {
 // Lowest support corner relative to the world plane. Zero means the face is
 // on ground_z. Landed uses this clearance, not base height.
 inline double fs150SupportClearance(const RigidBodyModel &body, double world_ground_z) {
-  const auto state = body.state();
-  const Eigen::Vector3d &com = body.parameters().body_origin_to_com;
+  const auto &pos = body.com_position();
+  const auto &ori = body.orientation_ref();
+  const auto &levers = body.support_levers();
   double lowest = std::numeric_limits<double>::infinity();
-  for (int i = 0; i < Fs150SupportFace::kCorners; ++i) {
-    const Eigen::Vector3d lever = Fs150SupportFace::corner(i) - com;
-    lowest = std::min(lowest, (state.position + state.orientation * lever).z());
-  }
+  for (int i = 0; i < Fs150SupportFace::kCorners; ++i)
+    lowest = std::min(lowest, (pos + ori * levers[i]).z());
   return lowest - world_ground_z;
+}
+
+inline bool fs150AirborneAbove(const RigidBodyModel &body, double world_ground_z,
+                               double margin) {
+  const auto &pos = body.com_position();
+  const auto &ori = body.orientation_ref();
+  if (!pos.allFinite() || !ori.coeffs().allFinite())
+    return false;
+  if (pos.z() - world_ground_z > body.max_support_lever() + margin + 1e-6)
+    return true;
+  return fs150SupportClearance(body, world_ground_z) > margin;
 }
 
 namespace support_detail {
@@ -149,16 +160,24 @@ inline GroundContactResult resolveFlatGroundContact(RigidBodyModel &body,
   using support_detail::apply_impulse;
   using support_detail::inverse_mass;
   GroundContactResult result;
-  result.base_acceleration_world = body.base_acceleration();
+  const auto endpoints = body.endpoint_accelerations();
+  result.base_acceleration_world = endpoints.base_world;
+  result.angular_acceleration_body = endpoints.angular_body;
   const auto &parameters = body.parameters();
   if (!std::isfinite(world_ground_z) || !std::isfinite(dt) || dt < 0.0)
     return result.valid = false, result;
 
   const double plane = world_ground_z;
+  const auto &com_pos = body.com_position();
+  const auto &com_ori = body.orientation_ref();
+  if (com_pos.allFinite() && com_ori.coeffs().allFinite() &&
+      com_pos.z() - plane > body.max_support_lever() + Fs150SupportFace::kMinDepth + 1e-6)
+    return result;
+
   const Eigen::Vector3d normal = Eigen::Vector3d::UnitZ();
   RigidBodyState state = body.state();
   const Eigen::Vector3d base_velocity_before = body.base_velocity();
-  std::array<Eigen::Vector3d, Fs150SupportFace::kCorners> lever{};
+  const auto &lever = body.support_levers();
   std::array<double, Fs150SupportFace::kCorners> lambda{};
   // Fixed world axes. The plane is horizontal, so Coulomb friction lives in
   // XY. A slip-aligned basis changes every pass and the stored impulse then
@@ -170,8 +189,6 @@ inline GroundContactResult resolveFlatGroundContact(RigidBodyModel &body,
   auto place = [&](int index) {
     return (state.position + state.orientation * lever[index]).eval();
   };
-  for (int i = 0; i < Fs150SupportFace::kCorners; ++i)
-    lever[i] = Fs150SupportFace::corner(i) - parameters.body_origin_to_com;
 
   double lowest = place(0).z();
   for (int i = 1; i < Fs150SupportFace::kCorners; ++i)
@@ -318,7 +335,9 @@ inline GroundContactResult resolveFlatGroundContact(RigidBodyModel &body,
       held = true;
   }
   result.constrained = held;
-  result.base_acceleration_world = body.base_acceleration();
+  const auto post_endpoints = body.endpoint_accelerations();
+  result.base_acceleration_world = post_endpoints.base_world;
+  result.angular_acceleration_body = post_endpoints.angular_body;
   if (dt > 0.0) {
     result.base_acceleration_world += (body.base_velocity() - base_velocity_before) / dt;
     return result;
@@ -360,6 +379,7 @@ inline GroundContactResult resolveFlatGroundContact(RigidBodyModel &body,
   const Eigen::Vector3d &w = state.angular_velocity;
   result.base_acceleration_world =
       linear - state.orientation * (angular.cross(inertia_lever) + w.cross(w.cross(inertia_lever)));
+  result.angular_acceleration_body = angular;
   return result;
 }
 

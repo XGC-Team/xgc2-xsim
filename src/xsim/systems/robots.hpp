@@ -1,14 +1,23 @@
 #pragma once
 #include "core/components.hpp"
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <string_view>
 #include <variant>
 
 namespace xsim {
 struct Flight {
   FlightModel model;
-  std::string mode = "POSCTL";
+  std::array<char, 24> mode{"POSCTL"};
   bool ever_started = false;
   explicit Flight(const Config &c)
       : model(c.initial, c.yaw, c.fcu, c.ground_z) {}
+  void set_mode(std::string_view value) noexcept {
+    mode.fill('\0');
+    const size_t n = std::min(value.size(), mode.size() - 1);
+    std::memcpy(mode.data(), value.data(), n);
+  }
 };
 struct Scout {
   ScoutModel model;

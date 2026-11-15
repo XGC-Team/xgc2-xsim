@@ -27,7 +27,7 @@ struct RosEntity {
   void bind(); // ROS connection worker only; publications become immutable after binding
   bool request_reconcile(); // event thread only; coalesce the desired graph state
   void reconcile(); // ROS connection worker only; bind immutable-generation callbacks
-  void publish(const State &, const TelemetryRates &); // stable publication shard only
+  bool publish(const State &, const TelemetryRates &, bool signal_poll = true); // stable publication shard only
   void publish_sensor(const Sample &, const std::shared_ptr<const SensorPayload> &);
   const Json ros_config;
   std::weak_ptr<Entity> entity;

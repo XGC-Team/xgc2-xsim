@@ -52,13 +52,20 @@ private:
     ControlSample pending_control{};
     bool has_control = false;
   };
+  struct SlotEntry {
+    uint64_t id = 0;
+    Slot slot;
+  };
   struct HoldSample {
     uint64_t id;
     double linear, angular;
   };
   std::unordered_map<std::string, uint64_t> hold_ids_; // public ID -> entity ID of the roster
   std::vector<HoldSample> hold_samples_; // twists of the entities zeroed by this boundary's tick
-  std::unordered_map<uint64_t, Slot> slots_;
+  std::vector<SlotEntry> slots_;
+  std::unordered_map<uint64_t, size_t> slot_index_;
+  uint64_t consumed_control_revision_ = 0;
+  size_t deferred_control_count_ = 0;
   std::vector<uint64_t> flight_ids_, scout_ids_, mecanum_ids_;
   BodyColumns bodies_;
   PlanarColumns scout_poses_, mecanum_poses_;
@@ -93,6 +100,8 @@ private:
   bool started_ = false;
   std::exception_ptr startup_error_;
   xgc2::chassis_hold::ChassisHold hold_; // destroyed before the sink, feedback and wake state
+  Slot *find_slot(uint64_t id);
+  const Slot *find_slot(uint64_t id) const;
   State state(uint64_t, const Slot &) const;
   Result apply(Command &);
   Result apply_control(const ControlSample &, Slot &);

@@ -75,14 +75,18 @@ public:
     cursor_ = 0;
   }
 
+  static void flush_poll_set() {
+    ros::PollManager::instance()->getPollSet().signal();
+  }
+
   explicit operator bool() const { return bool(publication_); }
-  template <typename M> void publish(const M &message) {
-    if (!publication_) return;
+  template <typename M> bool publish(const M &message, bool signal_poll = true) {
+    if (!publication_) return false;
     const auto subscribers = publication_->getNumSubscribers();
     if (!subscribers) {
       publication_->incrementSequence();
       metrics_->no_subscribers.fetch_add(1, std::memory_order_relaxed);
-      return;
+      return false;
     }
 
     Slot *available = nullptr;
@@ -114,7 +118,7 @@ public:
       // Sum of observed ages at rejected handoffs, not time spent blocking.
       metrics_->backpressure_ns.fetch_add(oldest_buffer_ns,
                                          std::memory_order_relaxed);
-      return;
+      return false;
     }
 
     const auto serialization_started = Clock::now();
@@ -150,13 +154,14 @@ public:
     // consume the serialized representation; Header.seq is rewritten by ROS.
     available->submitted = serialized;
     publication_->publish(prepared);
-    ros::PollManager::instance()->getPollSet().signal();
+    if (signal_poll) ros::PollManager::instance()->getPollSet().signal();
     const uint64_t queue_time = elapsed(serialized, Clock::now());
     metrics_->queue_ns.fetch_add(queue_time, std::memory_order_relaxed);
     update_max(metrics_->queue_ns_max, queue_time);
     metrics_->accepted.fetch_add(1, std::memory_order_relaxed);
     metrics_->bytes_estimate.fetch_add(uint64_t(length) * subscribers,
                                        std::memory_order_relaxed);
+    return true;
   }
 
 private:

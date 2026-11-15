@@ -9,8 +9,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <stdexcept>
+#include <memory>
 #include <optional>
+#include <stdexcept>
 #include <vector>
 
 namespace xgc_lightweight {
@@ -44,6 +45,20 @@ struct RigidBodyParameters {
         throw std::invalid_argument("FS150 asset needs homogeneous motor physics");
     }
   }
+
+  bool operator==(const RigidBodyParameters &o) const {
+    if (mass != o.mass || thrust_coefficient != o.thrust_coefficient ||
+        moment_ratio != o.moment_ratio || motor_tau_up != o.motor_tau_up ||
+        motor_tau_down != o.motor_tau_down || max_rotor_speed != o.max_rotor_speed ||
+        gravity != o.gravity || inertia != o.inertia ||
+        rotor_yaw_sign != o.rotor_yaw_sign ||
+        body_origin_to_com != o.body_origin_to_com)
+      return false;
+    for (int i = 0; i < 4; ++i)
+      if (rotor_position[i] != o.rotor_position[i])
+        return false;
+    return true;
+  }
 };
 
 // Provenance (paths relative to devops/products/ros1/simulator/gazebo-sim):
@@ -62,7 +77,70 @@ struct RigidBodyParameters {
 // This is the renderer's Iris-equivalent model, NOT real-airframe calibration.
 // Rotor spin gyroscopic effects, air drag, rolling moments, wind and contacts
 // are deliberately absent. The FCU wrapper owns ground/contact behaviour.
-inline RigidBodyParameters fs150EquivalentParameters() { return {}; }
+inline const RigidBodyParameters &fs150EquivalentParameters() {
+  static const RigidBodyParameters value{};
+  return value;
+}
+
+namespace detail {
+struct PreparedRigidPlant {
+  RigidBodyParameters params;
+  Eigen::Matrix3d inverse_inertia{Eigen::Matrix3d::Zero()};
+  double expm1_up_1ms{0.0};
+  double expm1_up_2ms{0.0};
+  double expm1_down_1ms{0.0};
+  double expm1_down_2ms{0.0};
+  std::array<Eigen::Vector3d, 4> support_levers{};
+  double max_support_lever{0.0};
+};
+
+inline void validate_rigid_parameters(const RigidBodyParameters &p) {
+  const auto positive = [](double x) { return std::isfinite(x) && x > 0.0; };
+  if (!positive(p.mass) || !positive(p.thrust_coefficient) ||
+      !positive(p.motor_tau_up) || !positive(p.motor_tau_down) ||
+      !positive(p.max_rotor_speed) || !std::isfinite(p.gravity) ||
+      p.gravity < 0.0 || !std::isfinite(p.moment_ratio) || p.moment_ratio < 0.0 ||
+      !p.inertia.allFinite() || !p.body_origin_to_com.allFinite() ||
+      !p.rotor_yaw_sign.allFinite())
+    throw std::invalid_argument("invalid rigid-body parameters");
+  if (!p.inertia.isApprox(p.inertia.transpose(), 1e-12) ||
+      Eigen::LLT<Eigen::Matrix3d>(p.inertia).info() != Eigen::Success)
+    throw std::invalid_argument("inertia must be symmetric positive definite");
+  for (int i = 0; i < 4; ++i)
+    if (!p.rotor_position[i].allFinite() || std::abs(p.rotor_yaw_sign[i]) != 1.0)
+      throw std::invalid_argument("invalid rotor position or reaction sign");
+  const double max_force = p.thrust_coefficient * p.max_rotor_speed *
+                           p.max_rotor_speed;
+  if (!std::isfinite(max_force) || !std::isfinite(4.0 * max_force / p.mass))
+    throw std::invalid_argument("unrepresentable rotor thrust");
+}
+
+inline PreparedRigidPlant makePreparedPlant(const RigidBodyParameters &p) {
+  validate_rigid_parameters(p);
+  PreparedRigidPlant out;
+  out.params = p;
+  out.inverse_inertia = p.inertia.llt().solve(Eigen::Matrix3d::Identity());
+  if (!out.inverse_inertia.allFinite())
+    throw std::invalid_argument("inertia inverse is not representable");
+  out.expm1_up_1ms = std::expm1(-0.001 / p.motor_tau_up);
+  out.expm1_up_2ms = std::expm1(-0.002 / p.motor_tau_up);
+  out.expm1_down_1ms = std::expm1(-0.001 / p.motor_tau_down);
+  out.expm1_down_2ms = std::expm1(-0.002 / p.motor_tau_down);
+  for (int i = 0; i < 4; ++i) {
+    const double sx = (i & 1) ? 0.5 : -0.5;
+    const double sy = (i & 2) ? 0.5 : -0.5;
+    out.support_levers[i] =
+        Eigen::Vector3d(sx * 0.47, sy * 0.47, -0.033) - p.body_origin_to_com;
+    out.max_support_lever = std::max(out.max_support_lever, out.support_levers[i].norm());
+  }
+  return out;
+}
+
+inline const PreparedRigidPlant &canonicalPreparedFs150() {
+  static const PreparedRigidPlant value = makePreparedPlant(fs150EquivalentParameters());
+  return value;
+}
+} // namespace detail
 
 struct RigidBodyState {
   Eigen::Vector3d position{Eigen::Vector3d::Zero()}; // COM, world ENU, m
@@ -104,25 +182,50 @@ struct BodyColumns {
 // with substeps <=2 ms (and <=.1 rad of rotation at the initial angular rate).
 class RigidBodyModel {
 public:
+  struct EndpointAccelerations {
+    Eigen::Vector3d com_world{Eigen::Vector3d::Zero()};
+    Eigen::Vector3d angular_body{Eigen::Vector3d::Zero()};
+    Eigen::Vector3d base_world{Eigen::Vector3d::Zero()};
+  };
+
   explicit RigidBodyModel(
       const Eigen::Vector3d &initial_base_position, double yaw = 0.0,
-      const RigidBodyParameters &params = fs150EquivalentParameters())
-      : parameters_(params) {
-    validate_parameters(parameters_);
+      const RigidBodyParameters &params = fs150EquivalentParameters()) {
+    if (&params == &fs150EquivalentParameters() ||
+        params == fs150EquivalentParameters()) {
+      prepared_ = &detail::canonicalPreparedFs150();
+    } else {
+      custom_prepared_ = std::make_shared<const detail::PreparedRigidPlant>(
+          detail::makePreparedPlant(params));
+      prepared_ = custom_prepared_.get();
+    }
     if (!initial_base_position.allFinite() || !std::isfinite(yaw))
       throw std::invalid_argument("nonfinite initial rigid-body pose");
-    inverse_inertia_ = parameters_.inertia.llt().solve(Eigen::Matrix3d::Identity());
-    if (!inverse_inertia_.allFinite())
-      throw std::invalid_argument("inertia inverse is not representable");
+    const auto &p = parameters();
     auto &state_ = *local_;
     state_.orientation = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ());
     state_.position = initial_base_position +
-                      state_.orientation * parameters_.body_origin_to_com;
+                      state_.orientation * p.body_origin_to_com;
     if (!state_.position.allFinite())
       throw std::invalid_argument("overflow in initial COM position");
   }
 
   RigidBodyState state() const { return columns_ ? columns_->get(index_) : *local_; }
+  const Eigen::Vector3d &com_position() const {
+    return columns_ ? columns_->position[index_] : local_->position;
+  }
+  const Eigen::Vector3d &com_velocity() const {
+    return columns_ ? columns_->velocity[index_] : local_->velocity;
+  }
+  const Eigen::Quaterniond &orientation_ref() const {
+    return columns_ ? columns_->orientation[index_] : local_->orientation;
+  }
+  const Eigen::Vector3d &angular_velocity_ref() const {
+    return columns_ ? columns_->angular_velocity[index_] : local_->angular_velocity;
+  }
+  const Eigen::Vector4d &rotor_speed_ref() const {
+    return columns_ ? columns_->rotor_speed[index_] : local_->rotor_speed;
+  }
   void bind(BodyColumns &columns, size_t index) {
     const auto s = state(); columns_ = &columns; index_ = index;
     columns_->set(index_, s); local_.reset();
@@ -131,8 +234,12 @@ public:
   void assign_state(const RigidBodyState &s) {
     if (columns_) columns_->set(index_, s); else local_ = s;
   }
-  const RigidBodyParameters &parameters() const { return parameters_; }
-  const Eigen::Matrix3d &inverse_inertia() const { return inverse_inertia_; }
+  const RigidBodyParameters &parameters() const { return prepared_->params; }
+  const Eigen::Matrix3d &inverse_inertia() const { return prepared_->inverse_inertia; }
+  const std::array<Eigen::Vector3d, 4> &support_levers() const {
+    return prepared_->support_levers;
+  }
+  double max_support_lever() const { return prepared_->max_support_lever; }
 
   // Controlled initialization/reset entry. Validates before mutation and
   // normalizes a finite nonzero quaternion; COM coordinates are not shifted.
@@ -154,8 +261,9 @@ public:
       throw std::invalid_argument("invalid rotor command or dt (expected [0,.1])");
     if (dt == 0.0)
       return;
+    const auto &p = parameters();
     const Eigen::Vector4d target = target_rotor_speed.cwiseMax(0.0).cwiseMin(
-        parameters_.max_rotor_speed);
+        p.max_rotor_speed);
     RigidBodyState next = state();
     double remaining = dt;
     unsigned int substeps = 0;
@@ -174,98 +282,92 @@ public:
     assign_state(next);
   }
 
+  EndpointAccelerations endpoint_accelerations() const {
+    const auto &p = parameters();
+    const auto &ori = orientation_ref();
+    const auto &w = angular_velocity_ref();
+    const auto &rotors = rotor_speed_ref();
+    const Eigen::Vector4d f = p.thrust_coefficient * rotors.array().square().matrix();
+    const Eigen::Quaterniond qn = ori.normalized();
+    const Eigen::Vector3d lin =
+        Eigen::Vector3d(0.0, 0.0, -p.gravity) +
+        qn * Eigen::Vector3d(0.0, 0.0, f.sum() / p.mass);
+    const Eigen::Vector3d ang = angular_acceleration_from_forces(f, w);
+    const Eigen::Vector3d &r = p.body_origin_to_com;
+    const Eigen::Vector3d base =
+        lin - ori * (ang.cross(r) + w.cross(w.cross(r)));
+    return {lin, ang, base};
+  }
+
   // Instantaneous endpoint accelerations, including gravity in world ENU.
   Eigen::Vector3d acceleration_world() const {
-    return linear_acceleration(state());
+    return endpoint_accelerations().com_world;
   }
   Eigen::Vector3d angular_acceleration_body() const {
-    return angular_acceleration(state());
+    return angular_acceleration_from_forces(forces_from(rotor_speed_ref()),
+                                            angular_velocity_ref());
   }
   Eigen::Vector3d base_position() const {
-    const auto state_ = state();
-    return state_.position - state_.orientation * parameters_.body_origin_to_com;
+    return com_position() - orientation_ref() * parameters().body_origin_to_com;
   }
   Eigen::Vector3d base_velocity() const {
-    const auto state_ = state();
-    return state_.velocity - state_.orientation *
-        state_.angular_velocity.cross(parameters_.body_origin_to_com);
+    return com_velocity() - orientation_ref() *
+        angular_velocity_ref().cross(parameters().body_origin_to_com);
   }
   Eigen::Vector3d base_acceleration() const {
-    const auto state_ = state();
-    const Eigen::Vector3d &r = parameters_.body_origin_to_com;
-    const Eigen::Vector3d &w = state_.angular_velocity;
-    return acceleration_world() - state_.orientation *
-        (angular_acceleration_body().cross(r) + w.cross(w.cross(r)));
+    return endpoint_accelerations().base_world;
   }
 
 private:
-  static void validate_parameters(const RigidBodyParameters &p) {
-    const auto positive = [](double x) { return std::isfinite(x) && x > 0.0; };
-    if (!positive(p.mass) || !positive(p.thrust_coefficient) ||
-        !positive(p.motor_tau_up) || !positive(p.motor_tau_down) ||
-        !positive(p.max_rotor_speed) || !std::isfinite(p.gravity) ||
-        p.gravity < 0.0 || !std::isfinite(p.moment_ratio) || p.moment_ratio < 0.0 ||
-        !p.inertia.allFinite() || !p.body_origin_to_com.allFinite() ||
-        !p.rotor_yaw_sign.allFinite())
-      throw std::invalid_argument("invalid rigid-body parameters");
-    if (!p.inertia.isApprox(p.inertia.transpose(), 1e-12) ||
-        Eigen::LLT<Eigen::Matrix3d>(p.inertia).info() != Eigen::Success)
-      throw std::invalid_argument("inertia must be symmetric positive definite");
-    for (int i = 0; i < 4; ++i)
-      if (!p.rotor_position[i].allFinite() || std::abs(p.rotor_yaw_sign[i]) != 1.0)
-        throw std::invalid_argument("invalid rotor position or reaction sign");
-    const double max_force = p.thrust_coefficient * p.max_rotor_speed *
-                             p.max_rotor_speed;
-    if (!std::isfinite(max_force) || !std::isfinite(4.0 * max_force / p.mass))
-      throw std::invalid_argument("unrepresentable rotor thrust");
-  }
-
   void validate_state(const RigidBodyState &s) const {
     const double qnorm = s.orientation.norm();
+    const double max_w = parameters().max_rotor_speed;
     if (!s.position.allFinite() || !s.velocity.allFinite() ||
         !s.orientation.coeffs().allFinite() || !std::isfinite(qnorm) ||
         qnorm < 1e-12 || !s.angular_velocity.allFinite() ||
         !s.rotor_speed.allFinite() || (s.rotor_speed.array() < 0.0).any() ||
-        (s.rotor_speed.array() > parameters_.max_rotor_speed).any())
+        (s.rotor_speed.array() > max_w).any())
       throw std::invalid_argument("invalid rigid-body state");
   }
 
   Eigen::Vector4d motor_at(const Eigen::Vector4d &initial,
                          const Eigen::Vector4d &target, double t) const {
     Eigen::Vector4d speed;
+    const auto &p = parameters();
     std::optional<double> response_up, response_down;
+    if (t == 0.001) {
+      response_up = prepared_->expm1_up_1ms;
+      response_down = prepared_->expm1_down_1ms;
+    } else if (t == 0.002) {
+      response_up = prepared_->expm1_up_2ms;
+      response_down = prepared_->expm1_down_2ms;
+    }
     for (int i = 0; i < 4; ++i) {
       const bool increasing = target[i] > initial[i];
-      const double tau = increasing ? parameters_.motor_tau_up
-                                    : parameters_.motor_tau_down;
+      const double tau = increasing ? p.motor_tau_up : p.motor_tau_down;
       auto &response = increasing ? response_up : response_down;
       if (!response)
         response = std::expm1(-t / tau);
       // expm1 avoids cancellation for tiny dt. This is a convex interpolation.
       speed[i] = initial[i] + (target[i] - initial[i]) * (-*response);
-      speed[i] = std::clamp(speed[i], 0.0, parameters_.max_rotor_speed);
+      speed[i] = std::clamp(speed[i], 0.0, p.max_rotor_speed);
     }
     return speed;
   }
 
-  Eigen::Vector4d forces(const RigidBodyState &s) const {
-    return parameters_.thrust_coefficient * s.rotor_speed.array().square().matrix();
+  Eigen::Vector4d forces_from(const Eigen::Vector4d &rotor_speed) const {
+    return parameters().thrust_coefficient * rotor_speed.array().square().matrix();
   }
-  Eigen::Vector3d linear_acceleration(const RigidBodyState &s) const {
-    return Eigen::Vector3d(0.0, 0.0, -parameters_.gravity) +
-           s.orientation.normalized() *
-               Eigen::Vector3d(0.0, 0.0, forces(s).sum() / parameters_.mass);
-  }
-  Eigen::Vector3d angular_acceleration(const RigidBodyState &s) const {
-    const Eigen::Vector4d f = forces(s);
+  Eigen::Vector3d angular_acceleration_from_forces(
+      const Eigen::Vector4d &f, const Eigen::Vector3d &w) const {
+    const auto &p = parameters();
     Eigen::Vector3d torque = Eigen::Vector3d::Zero();
-    for (int i = 0; i < 4; ++i)
-      torque += parameters_.rotor_position[i].cross(Eigen::Vector3d(0, 0, f[i])) +
-                Eigen::Vector3d(0, 0, parameters_.rotor_yaw_sign[i] *
-                                           parameters_.moment_ratio * f[i]);
-    return inverse_inertia_ *
-           (torque - s.angular_velocity.cross(parameters_.inertia *
-                                             s.angular_velocity));
+    for (int i = 0; i < 4; ++i) {
+      torque.x() += p.rotor_position[i].y() * f[i];
+      torque.y() -= p.rotor_position[i].x() * f[i];
+      torque.z() += p.rotor_yaw_sign[i] * p.moment_ratio * f[i];
+    }
+    return prepared_->inverse_inertia * (torque - w.cross(p.inertia * w));
   }
 
   struct Derivative {
@@ -273,10 +375,16 @@ private:
     Eigen::Vector4d quaternion; // Eigen coefficient order x,y,z,w
   };
   Derivative derivative(const RigidBodyState &s) const {
+    const auto &p = parameters();
+    const Eigen::Vector4d f = forces_from(s.rotor_speed);
+    const Eigen::Vector3d lin =
+        Eigen::Vector3d(0.0, 0.0, -p.gravity) +
+        s.orientation.normalized() * Eigen::Vector3d(0.0, 0.0, f.sum() / p.mass);
+    const Eigen::Vector3d ang =
+        angular_acceleration_from_forces(f, s.angular_velocity);
     const Eigen::Quaterniond spin(0.0, s.angular_velocity.x(),
                                  s.angular_velocity.y(), s.angular_velocity.z());
-    return {s.velocity, linear_acceleration(s), angular_acceleration(s),
-            0.5 * (s.orientation * spin).coeffs()};
+    return {s.velocity, lin, ang, 0.5 * (s.orientation * spin).coeffs()};
   }
   static RigidBodyState stage(const RigidBodyState &s, const Derivative &d,
                              double t, const Eigen::Vector4d &motor) {
@@ -311,8 +419,8 @@ private:
     s.rotor_speed = end;
   }
 
-  RigidBodyParameters parameters_;
-  Eigen::Matrix3d inverse_inertia_;
+  std::shared_ptr<const detail::PreparedRigidPlant> custom_prepared_;
+  const detail::PreparedRigidPlant *prepared_{nullptr};
   std::optional<RigidBodyState> local_{RigidBodyState{}};
   BodyColumns *columns_{nullptr};
   size_t index_{0};

@@ -54,6 +54,10 @@ public:
   void bind(BodyColumns &columns, size_t index) { body_.bind(columns, index); }
   void rebind(size_t index) { body_.rebind(index); }
   RigidBodyState body_state() const { return body_.state(); }
+  RigidBodyModel &body_model() { return body_; }
+  const RigidBodyModel &body_model() const { return body_; }
+  FlightController &controller() { return controller_; }
+  const FlightController &controller() const { return controller_; }
   bool setpoint(const MaskedPva &value) {
     const auto any = [](const Eigen::Vector3d &v) {
       return std::isfinite(v.x()) || std::isfinite(v.y()) || std::isfinite(v.z());
@@ -105,19 +109,20 @@ public:
   // 1 cm is the gap from the support face to the world plane. A level body
   // rests with its base 0.033 m above ground_z, so base-versus-plane is not
   // this test.
-  bool landed() const { return fs150SupportClearance(body_, ground_z_) <= kLandedHeight; }
+  bool landed() const { return !fs150AirborneAbove(body_, ground_z_, kLandedHeight); }
   xgc2_math::TranslationalState state() const { return {body_.base_position(), body_.base_velocity()}; }
   const Eigen::Vector3d &acceleration() const { return acceleration_; }
-  Eigen::Quaterniond orientation() const { return body_.state().orientation; }
-  Eigen::Vector3d angular_velocity_body() const { return body_.state().angular_velocity; }
-  Eigen::Vector4d rotor_speed() const { return body_.state().rotor_speed; }
+  const Eigen::Quaterniond &orientation() const { return body_.orientation_ref(); }
+  const Eigen::Vector3d &angular_velocity_body() const { return body_.angular_velocity_ref(); }
+  const Eigen::Vector4d &rotor_speed() const { return body_.rotor_speed_ref(); }
   Eigen::Vector3d specific_force_body() const {
     return orientation().conjugate() *
            (acceleration_ - Eigen::Vector3d(0.0, 0.0, -body_.parameters().gravity));
   }
   double yaw() const {
-    const auto r = orientation().toRotationMatrix();
-    return std::atan2(r(1, 0), r(0, 0));
+    const auto &q = orientation();
+    return std::atan2(2.0 * (q.w() * q.z() + q.x() * q.y()),
+                      1.0 - 2.0 * (q.y() * q.y() + q.z() * q.z()));
   }
   double yaw_rate() const { return yaw_rate_; }
   const FlightControlOutput &control_output() const { return control_output_; }
@@ -202,12 +207,12 @@ private:
       throw std::invalid_argument("flight model: dt must be in [0,.02]");
   }
   bool constrain_ground(double dt) {
-    const Eigen::Vector3d omega_before = body_.state().angular_velocity;
+    const Eigen::Vector3d omega_before = body_.angular_velocity_ref();
     const auto result = resolveFlatGroundContact(body_, ground_z_, dt);
     acceleration_ = result.base_acceleration_world;
-    angular_acceleration_body_ = body_.angular_acceleration_body();
+    angular_acceleration_body_ = result.angular_acceleration_body;
     if (result.valid && dt > 0.0)
-      angular_acceleration_body_ += (body_.state().angular_velocity - omega_before) / dt;
+      angular_acceleration_body_ += (body_.angular_velocity_ref() - omega_before) / dt;
     return result.valid && result.constrained;
   }
   FlightFeedback current_feedback() const {

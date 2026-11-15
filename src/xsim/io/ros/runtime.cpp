@@ -79,6 +79,8 @@ struct RosRuntime {
   std::shared_ptr<PublicationMetrics> cloud_metrics = std::make_shared<PublicationMetrics>();
   std::shared_ptr<PublicationMetrics> clock_metrics = std::make_shared<PublicationMetrics>();
   Lane telemetry;
+  bool telemetry_batch_active = false;
+  bool telemetry_batch_dirty = false;
   std::thread cloud;
   std::atomic<bool> running{false};
   std::atomic<uint64_t> frames{0}, coalesced{0}, prepare_ns{0}, prepare_ns_max{0}, errors{0};
@@ -396,14 +398,30 @@ struct RosRuntime {
       try {
         const auto started = Clock::now();
         // This captured frame owns every state; no scan or roster polling.
+        // Defer PollSet::signal() across all entities so one telemetry frame
+        // wakes roscpp's poll thread once instead of O(entities * topics) times.
+        telemetry_batch_active = true;
+        telemetry_batch_dirty = false;
         for (const auto &state : frame->states)
           if (auto e = state.entity.lock(); e && e->alive && e->io && e->io->publish)
             e->io->publish(state, *rates);
+        telemetry_batch_active = false;
+        if (telemetry_batch_dirty) {
+          telemetry_batch_dirty = false;
+          BufferedPublisher::flush_poll_set();
+        }
         const auto ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started).count());
         prepare_ns += ns;
         auto previous = prepare_ns_max.load();
         while (ns > previous && !prepare_ns_max.compare_exchange_weak(previous, ns)) {}
-      } catch (const std::exception &failure) { publication_error(failure); }
+      } catch (const std::exception &failure) {
+        telemetry_batch_active = false;
+        if (telemetry_batch_dirty) {
+          telemetry_batch_dirty = false;
+          BufferedPublisher::flush_poll_set();
+        }
+        publication_error(failure);
+      }
       frame.reset(); // An idle telemetry worker must not retain an old roster.
       rates.reset();
     }
@@ -452,7 +470,12 @@ RuntimeIO make_ros_io(const Json &config, World &world, Sensors &sensors) {
                                          runtime->telemetry_metrics, runtime->cloud_metrics, phase);
     entity->io = std::make_shared<EntityIO>(EntityIO{
       [ros, runtime] { if (ros->request_reconcile()) runtime->wake_connection(); },
-      [ros, runtime](const State &state, const TelemetryRates &rates) { if (runtime->peer_ready) ros->publish(state, rates); },
+      [ros, runtime](const State &state, const TelemetryRates &rates) {
+        if (!runtime->peer_ready) return;
+        const bool batched = runtime->telemetry_batch_active;
+        if (ros->publish(state, rates, !batched) && batched)
+          runtime->telemetry_batch_dirty = true;
+      },
       [ros](const Sample &sample, const std::shared_ptr<const SensorPayload> &payload) {
         // The cloud owner starts after binding and is joined on an outage.
         // A claimed completion finishes on its immutable publication even if
