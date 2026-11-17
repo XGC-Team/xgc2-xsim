@@ -396,6 +396,13 @@ Result World::apply(Command &c) {
   }
   if (c.op == Op::Arm)
     r.success = f.model.request_arm(c.arm, c.action == 1);
+  else if (c.op == Op::Reboot) {
+    r.success = f.model.request_reboot();
+    if (r.success) {
+      cancel_pending_controls({e.id, e.generation});
+      f.set_mode("POSCTL");
+    }
+  }
   else if (c.op == Op::Mode) {
     FlightMode mode;
     if (c.mode == "OFFBOARD")

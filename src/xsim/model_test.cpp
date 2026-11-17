@@ -46,9 +46,95 @@ void fly_raw(FlightModel &model, const FlightAttitudeSetpoint &target, int steps
     assert(model.step(0.001) == FlightEvent::None);
   }
 }
+void fcu_reboot() {
+  FlightControllerParameters parameters;
+  assert(parameters.set("MOT_SLEW_MAX", 0.5));
+  assert(parameters.set("MC_ROLLRATE_I", 0.3));
+  assert(parameters.set("MPC_XY_VEL_I_ACC", 0.7));
+  FlightModel model({2, -3, 4}, 0.4, parameters);
+  BodyColumns columns;
+  model.bind(columns, columns.append(model.body_state()));
+  auto physical = model.body_state();
+  physical.position = {5, 6, 7};
+  physical.velocity = {0.3, -0.2, 0.1};
+  physical.orientation = Eigen::AngleAxisd(0.2, Eigen::Vector3d::UnitX()) *
+                         Eigen::AngleAxisd(0.6, Eigen::Vector3d::UnitZ());
+  physical.angular_velocity = {0.1, 0.2, -0.1};
+  physical.rotor_speed = {200, 210, 220, 230};
+  model.body_model().set_state(physical);
+  const auto target = position_setpoint({8, 9, 10});
+  assert(model.setpoint(target) && model.request_mode(FlightMode::Offboard));
+  model.step(0.002);
+  model.step(0.002); // enter stream-loss hysteresis
+  FlightAttitudeSetpoint attitude;
+  attitude.body_rate = {0.6, -0.4, 0.2};
+  attitude.thrust = 0.8;
+  assert(model.attitude_setpoint(attitude)); // also leave a not-yet-consumed input
+  const FlightFeedback feedback{model.state().position, model.state().velocity,
+      model.acceleration(), model.orientation(), model.angular_velocity_body(), Eigen::Vector3d::Zero()};
+  FlightFeedback steady;
+  const auto nearby = position_setpoint({0.1, 0.1, 0.1});
+  for (int i = 0; i != 20; ++i)
+    model.controller().command_pva(steady, nearby, 0.002, false, false);
+  // Settle the nondefault slew limit before seeding a nonsaturated rate
+  // integral; saturation correctly prevents the original controller winding up.
+  for (int i = 0; i != 300; ++i)
+    model.controller().command_rate(steady, Eigen::Vector3d::Zero(), 0.5, 0.002, false);
+  for (int i = 0; i != 20; ++i)
+    model.controller().command_rate(steady, {0.15, 0.1, 0.05}, 0.5, 0.002, false);
+  const auto integral = model.controller().rate_status();
+  assert(std::abs(integral.rollspeed_integ) + std::abs(integral.pitchspeed_integ) +
+         std::abs(integral.yawspeed_integ) > 1e-6);
+  const auto before = model.body_state();
+  const auto unchanged = [&] {
+    const auto after = model.body_state();
+    assert(after.position == before.position && after.velocity == before.velocity);
+    assert(after.orientation.coeffs() == before.orientation.coeffs());
+    assert(after.angular_velocity == before.angular_velocity && after.rotor_speed == before.rotor_speed);
+  };
+  assert(model.request_reboot());
+  unchanged();
+  assert(!model.armed() && model.mode() == FlightMode::Hold);
+  assert(!model.request_mode(FlightMode::Offboard));
+  assert(model.control_output().allocation.target_rotor_speed.isZero());
+  const auto cleared = model.controller().rate_status();
+  assert(cleared.rollspeed_integ == 0 && cleared.pitchspeed_integ == 0 && cleared.yawspeed_integ == 0);
+  for (const auto &row : parameters.snapshot()) {
+    assert(model.parameters().get(row.name) == row.effective);
+  }
+  // A full controller reboot also clears previous mixer/slew/saturation and
+  // position-loop state. Identical fresh input matches a fresh controller.
+  FlightController fresh(model.body_model().parameters(), parameters);
+  const auto expected = fresh.command_pva(feedback, target, 0.002, false, false);
+  const auto actual = model.controller().command_pva(feedback, target, 0.002, false, false);
+  assert(actual.acceleration_command == expected.acceleration_command);
+  assert(actual.normalized_torque_frd == expected.normalized_torque_frd);
+  assert(actual.allocation.motor_commands == expected.allocation.motor_commands);
+  assert(actual.allocation.saturation_status == expected.allocation.saturation_status);
+  unchanged();
+  assert(model.setpoint(target) && model.request_mode(FlightMode::Offboard));
+  assert(model.request_arm(true));
+  model.step(0.002);
+  const auto armed_body = model.body_state();
+  const auto armed_output = model.control_output();
+  const auto armed_integral = model.controller().rate_status();
+  assert(!model.request_reboot());
+  assert(model.armed() && model.mode() == FlightMode::Offboard);
+  assert(model.body_state().position == armed_body.position);
+  assert(model.body_state().velocity == armed_body.velocity);
+  assert(model.body_state().orientation.coeffs() == armed_body.orientation.coeffs());
+  assert(model.body_state().rotor_speed == armed_body.rotor_speed);
+  assert(model.control_output().allocation.motor_commands == armed_output.allocation.motor_commands);
+  assert(model.controller().rate_status().rollspeed_integ == armed_integral.rollspeed_integ);
+  // Reboot did not detach the model from the world's physical columns.
+  const double velocity_x = model.state().velocity.x();
+  columns.velocity[0].x() += 0.25;
+  assert(std::abs(model.state().velocity.x() - velocity_x - 0.25) < 1e-12);
+}
 }
 
 int main() {
+  fcu_reboot();
   // World dense vectors may move their models: mixer callback storage and
   // original integral/motor histories must remain attached to each instance.
   std::vector<FlightModel> models;

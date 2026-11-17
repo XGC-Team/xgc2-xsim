@@ -4,7 +4,7 @@
 namespace xsim {
 enum class Op {
   Add, Remove, Pause, Resume, Step, Reset, Provider, SetEnabled,
-  Arm, Mode, Pva, Attitude, Velocity
+  Arm, Mode, Reboot, Pva, Attitude, Velocity
 };
 
 // Numeric input only. Reliable requests add their completion state in Command.

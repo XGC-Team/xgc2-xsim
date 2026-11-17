@@ -293,21 +293,22 @@ void RosEntity::reconcile() {
       command_fn = [weak = entity, gen, this](auto &req, auto &res) {
         res.success = false;
         res.result = 3;
-        if (req.command != 400)
+        const bool reboot = req.command == 246;
+        if (req.command != 400 && !reboot)
           return true;
-        if (req.param1 != 0 && req.param1 != 1) {
+        if (reboot ? req.param1 != 1 : req.param1 != 0 && req.param1 != 1) {
           res.result = 2;
           return true;
         }
         if (req.broadcast || req.confirmation ||
-            (req.param2 != 0 && req.param2 != 21196) || req.param3 ||
+            (reboot ? req.param2 != 0 : req.param2 != 0 && req.param2 != 21196) || req.param3 ||
             req.param4 || req.param5 || req.param6 || req.param7)
           return true;
         auto e = weak.lock();
         res.result = 4;
         if (!e || !current(e, gen))
           return true;
-        auto t = ticket(e, Op::Arm, gen);
+        auto t = ticket(e, reboot ? Op::Reboot : Op::Arm, gen);
         t->arm = req.param1 == 1;
         t->action = req.param2 == 21196 ? 1 : 0;
         world.submit(t);

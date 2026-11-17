@@ -236,6 +236,92 @@ void stop_partial_step() {
   world.stop();
   assert(queued->phase == 3 && !queued->result.interrupted);
 }
+
+void fcu_reboot() {
+  World world(1700000000000000000LL);
+  auto first = add(world, Kind::FS150, "reboot");
+  auto second = add(world, Kind::FS150, "independent");
+  enabled(world, first, true);
+  enabled(world, second, true);
+  for (unsigned i = 0; i != 20; ++i) world.advance();
+  const Key key{first->id, first->generation};
+  const auto input = [&](Key owner) {
+    auto request = command(Op::Pva, owner);
+    request->pva.coordinate_frame = 1;
+    request->pva.type_mask = 3527;
+    request->pva.velocity[0] = 1.0;
+    return request;
+  };
+  execute(world, input(key));
+  auto offboard = command(Op::Mode, key);
+  offboard->mode = "OFFBOARD";
+  execute(world, offboard);
+  assert(offboard->result.success);
+  auto future = input(key);
+  future->at = world.metrics.sim_ns + 10000000;
+  world.submit(future);
+  auto other_future = input({second->id, second->generation});
+  other_future->at = future->at;
+  world.submit(other_future);
+  // Cover both an already-deferred mailbox value and its new unread value.
+  world.submit_control(*first, *future);
+  world.boundary();
+  world.submit_control(*first, *future);
+  const auto before = entity_state(world, first->id);
+  const auto other_before = entity_state(world, second->id);
+  const auto stamp = world.metrics.sim_ns.load();
+  const auto steps = world.metrics.steps.load();
+  auto reboot = command(Op::Reboot, key);
+  reboot->capture_state = true;
+  execute(world, reboot);
+  assert(reboot->result.success && reboot->result.has_state && reboot->result.enabled);
+  const auto after = reboot->result.state;
+  assert(after.key.id == key.id && after.key.generation == key.generation);
+  assert(first->alive && first->enabled && first->generation == key.generation);
+  assert(after.position == before.position && after.velocity == before.velocity);
+  assert(after.orientation.coeffs() == before.orientation.coeffs());
+  assert(after.omega == before.omega && after.rotors == before.rotors);
+  assert(after.control.allocation.target_rotor_speed.isZero());
+  assert(!after.armed && std::string(after.mode.data()) == "POSCTL");
+  assert(world.metrics.sim_ns == stamp && world.metrics.steps == steps);
+  const auto other_after = entity_state(world, second->id);
+  assert(other_after.position == other_before.position && other_after.velocity == other_before.velocity);
+  assert(other_after.key.generation == other_before.key.generation);
+  assert(future->phase == 3 && other_future->phase == 0);
+  for (unsigned i = 0; i != 6; ++i) { world.advance(); world.boundary(); }
+  assert(other_future->phase == 2 && other_future->result.success);
+  auto mode = command(Op::Mode, key);
+  mode->mode = "OFFBOARD";
+  execute(world, mode);
+  assert(!mode->result.success); // Neither old mailbox nor deferred request survived.
+  execute(world, input(key));
+  mode = command(Op::Mode, key);
+  mode->mode = "OFFBOARD";
+  execute(world, mode);
+  assert(mode->result.success);
+  auto arm = command(Op::Arm, key);
+  arm->arm = true;
+  execute(world, arm);
+  assert(arm->result.success);
+  auto pending = input(key);
+  pending->at = world.metrics.sim_ns + 10000000;
+  world.submit(pending);
+  const auto armed_before = entity_state(world, first->id);
+  auto refused = command(Op::Reboot, key);
+  execute(world, refused);
+  assert(!refused->result.success && refused->result.reason == 2);
+  assert(pending->phase == 0); // Refusal does not discard the armed FCU's controls.
+  const auto armed_after = entity_state(world, first->id);
+  assert(armed_after.armed && armed_after.mode == armed_before.mode);
+  assert(armed_after.position == armed_before.position && armed_after.velocity == armed_before.velocity);
+  assert(armed_after.control.allocation.motor_commands == armed_before.control.allocation.motor_commands);
+  auto removal = command(Op::Remove, key);
+  execute(world, removal);
+  assert(removal->result.success && !first->alive && world.capture().states.size() == 1);
+  first.reset();
+  removal->retired.reset();
+  assert(after.entity.expired());
+}
 } // namespace
 
 int main() {
@@ -244,5 +330,6 @@ int main() {
   toggle_without_reset(Kind::Mecanum, "mecanum");
   batch_and_ready();
   stop_partial_step();
+  fcu_reboot();
   std::cout << "world management snapshots, non-reset enable, interrupted steps and native startup passed\n";
 }

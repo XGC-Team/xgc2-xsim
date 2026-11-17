@@ -98,6 +98,22 @@ public:
     armed_ = value;
     return true;
   }
+  // FCU-only reboot on the world thread. Reconstructing the controller also
+  // clears mixer/saturation history; the bound physical body remains intact.
+  bool request_reboot() {
+    if (armed_)
+      return false;
+    FlightController fresh(body_.parameters(), parameters());
+    controller_ = std::move(fresh);
+    setpoint_ = {};
+    attitude_setpoint_ = {};
+    control_output_ = {};
+    mode_ = FlightMode::Hold;
+    received_since_step_ = offboard_available_ = loss_pending_ = false;
+    attitude_control_ = false;
+    loss_age_ = 0.0;
+    return true;
+  }
   bool request_mode(FlightMode value) {
     if (value == FlightMode::Offboard && !stream_available())
       return false;
