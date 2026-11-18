@@ -49,13 +49,19 @@ Server::Server(const Json &config, const std::string &path, RpcOptions options,
         ? options.robot_bindings.at(name).get<std::string>()
         : j.value("public_id", name);
     if (!safe_request_id(id)) throw std::invalid_argument("invalid public entity ID");
+    // Resource preparation is synchronous. Start the queue deadline when the
+    // prepared entity is ready to submit.
+    auto prepared = prepare(j, id);
     auto t = std::make_shared<Command>();
     t->op = Op::Add;
-    t->prepared = prepare(j, id);
+    t->prepared = std::move(prepared);
     world_.submit(t);
     world_.apply_commands();
-    if (!t->result.success)
-      throw std::runtime_error("initial entity rejected");
+    if (!t->result.success) {
+      if (t->phase.load() == 3)
+        throw std::runtime_error("initial entity " + id + " timed out waiting for the world");
+      throw std::runtime_error("initial entity " + id + " rejected, reason " + std::to_string(t->result.reason));
+    }
     if (options.frozen_experiment) {
       auto enable = std::make_shared<Command>();
       enable->op = Op::SetEnabled;

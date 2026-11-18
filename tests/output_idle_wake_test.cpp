@@ -67,6 +67,8 @@ int main() {
   unsigned frames = 0, samples = 0;
   RuntimeIO io;
   io.attach_entity = [&](const std::shared_ptr<Entity> &item, const Json &) {
+    // Frozen entities may take longer to attach their I/O than a queued command may wait.
+    std::this_thread::sleep_until(ControlSample{}.deadline);
     item->io = std::make_shared<EntityIO>();
     item->io->publish = [&](const State &, const TelemetryRates &) {
       std::lock_guard<std::mutex> lock(mutex);
