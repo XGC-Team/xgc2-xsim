@@ -133,7 +133,7 @@ void World::finish(const Ticket &t, Result r) {
 }
 void World::cancel_pending_controls(Key key) {
   if (auto *found = find_slot(key.id)) {
-    found->has_control = false;
+    found->pending_controls_count = 0;
     ControlSample discarded;
     found->entity->controls.take(discarded);
   }
@@ -488,31 +488,58 @@ void World::apply_controls() {
     return;
   const auto now = Clock::now();
   size_t remaining_deferred = 0;
+  ControlSample incoming;
   for (auto &entry : slots_) {
     auto &slot = entry.slot;
     auto &entity = *slot.entity;
-    if (entity.controls.take(slot.pending_control)) {
-      if (slot.has_control) ++metrics.input_misses;
-      slot.has_control = true;
+    const bool received = entity.controls.take(incoming);
+    if (!received && slot.pending_controls_count == 0) continue;
+
+    // Read old deferred values before the latest publication. A newer due sample
+    // supersedes all earlier ones. A future sample must not hide the next due
+    // sample; intermediate later predictions can still be coalesced.
+    const ControlSample *due = nullptr, *next = nullptr, *latest = nullptr;
+    size_t valid = 0;
+    const auto consider = [&](const ControlSample &sample) {
+      if (now >= sample.deadline || !entity.enabled ||
+          sample.key.generation != entity.generation) return;
+      ++valid;
+      if (sample.at <= time_) {
+        due = &sample;
+        next = latest = nullptr;
+      } else if (!next || sample.at <= next->at) {
+        next = &sample;
+        latest = nullptr;
+      } else {
+        latest = &sample;
+      }
+    };
+    for (size_t i = 0; i < slot.pending_controls_count; ++i)
+      consider(slot.pending_controls[i]);
+    if (received) consider(incoming);
+
+    if (due) {
+      try {
+        if (apply_control(*due, slot).success) ++revision_;
+      } catch (const std::exception &) {
+        // Keep the same numeric exception boundary as reliable requests.
+        ++metrics.input_misses;
+      }
     }
-    if (!slot.has_control) continue;
-    const auto &input = slot.pending_control;
-    if (now >= input.deadline || !entity.enabled ||
-        input.key.generation != entity.generation) {
-      slot.has_control = false;
-      continue;
-    }
-    if (input.at > time_) {
+    // Retained pointers follow source order, so forward compaction cannot
+    // overwrite the successor before it is copied.
+    slot.pending_controls_count = 0;
+    if (next) {
+      if (next != &slot.pending_controls[0]) slot.pending_controls[0] = *next;
+      ++slot.pending_controls_count;
       ++remaining_deferred;
-      continue;
     }
-    slot.has_control = false;
-    try {
-      if (apply_control(input, slot).success) ++revision_;
-    } catch (const std::exception &) {
-      // Keep the same numeric exception boundary as reliable requests.
-      ++metrics.input_misses;
+    if (latest) {
+      if (latest != &slot.pending_controls[1]) slot.pending_controls[1] = *latest;
+      ++slot.pending_controls_count;
     }
+    const size_t superseded = valid - slot.pending_controls_count - (due ? 1 : 0);
+    if (superseded) metrics.input_misses += superseded;
   }
   consumed_control_revision_ = rev;
   deferred_control_count_ = remaining_deferred;

@@ -49,8 +49,9 @@ private:
   struct Slot {
     std::shared_ptr<Entity> entity;
     size_t dense = 0;
-    ControlSample pending_control{};
-    bool has_control = false;
+    // In publication order: the next scheduled control, then the newest later successor.
+    std::array<ControlSample, 2> pending_controls{};
+    size_t pending_controls_count = 0;
   };
   struct SlotEntry {
     uint64_t id = 0;
