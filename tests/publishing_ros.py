@@ -362,9 +362,9 @@ def topic_specs(count):
     from sensor_msgs.msg import Imu, PointCloud2
     specs = {}
     definitions = [('pose', PoseStamped, 'localization', 125), ('twist', TwistStamped, 'localization', 125),
-                   ('mavros/local_position/pose', PoseStamped, 'local', 30),
-                   ('mavros/local_position/velocity_local', TwistStamped, 'local', 30),
-                   ('mavros/local_position/odom', Odometry, 'local', 30),
+                   ('mavros/local_position/pose', PoseStamped, 'local', 100),
+                   ('mavros/local_position/velocity_local', TwistStamped, 'local', 100),
+                   ('mavros/local_position/odom', Odometry, 'local', 100),
                    ('mavros/imu/data', Imu, 'imu', 30), ('mavros/imu/data_raw', Imu, 'imu_raw', 30),
                    ('mavros/state', State, 'state', 1), ('mavros/extended_state', ExtendedState, 'extended_state', 1),
                    ('mavros/setpoint_raw/target_attitude', AttitudeTarget, 'target', 10),

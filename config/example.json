@@ -11,7 +11,7 @@
   "publish_workers": 2,
   "telemetry_rates_hz": {
     "localization": 125,
-    "local": 30,
+    "local": 100,
     "imu": 30,
     "imu_raw": 30,
     "state": 1,

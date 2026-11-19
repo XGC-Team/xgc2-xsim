@@ -15,8 +15,8 @@ struct TelemetryRates {
   static constexpr size_t count = size_t(TelemetryGroup::Count);
   inline static constexpr std::array<const char *, count> names{
       "localization", "local", "imu", "imu_raw", "state", "extended_state", "target"};
-  std::array<double, count> hz{125, 30, 30, 30, 1, 1, 10};
-  std::array<int64_t, count> periods{8000000, 33333333, 33333333, 33333333,
+  std::array<double, count> hz{125, 100, 30, 30, 1, 1, 10};
+  std::array<int64_t, count> periods{8000000, 10000000, 33333333, 33333333,
                                      1000000000, 1000000000, 100000000};
 
   TelemetryRates patched(const nlohmann::json &values) const {

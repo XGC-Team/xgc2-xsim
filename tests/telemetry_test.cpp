@@ -9,7 +9,7 @@ using Json = nlohmann::json;
 
 int main() {
   const TelemetryRates defaults;
-  const Json expected{{"localization", 125}, {"local", 30}, {"imu", 30},
+  const Json expected{{"localization", 125}, {"local", 100}, {"imu", 30},
                       {"imu_raw", 30}, {"state", 1}, {"extended_state", 1},
                       {"target", 10}};
   assert(defaults.json() == expected);
@@ -39,13 +39,14 @@ int main() {
   for (int64_t stamp = 0; stamp < 10000000000LL; stamp += 8000000)
     for (size_t i = 0; i < counts.size(); ++i)
       if (schedule.due(TelemetryGroup(i), stamp, defaults)) ++counts[i];
-  assert((counts == std::array<size_t, TelemetryRates::count>{1250, 300, 300, 300, 10, 10, 100}));
+  assert((counts == std::array<size_t, TelemetryRates::count>{1250, 1000, 300, 300, 10, 10, 100}));
 
   // A 30 Hz request on a 100 Hz source must not drift down to 25 Hz.
   TelemetrySchedule noninteger;
+  const auto local30 = defaults.patched({{"local", 30}});
   size_t local_count = 0;
   for (int64_t stamp = 0; stamp < 10000000000LL; stamp += 10000000)
-    if (noninteger.due(TelemetryGroup::Local, stamp, defaults)) ++local_count;
+    if (noninteger.due(TelemetryGroup::Local, stamp, local30)) ++local_count;
   assert(local_count == 300);
 
   // Snapshot jitter must not make a same-frequency output skip fresh frames.
