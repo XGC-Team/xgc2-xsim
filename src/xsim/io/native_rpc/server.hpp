@@ -1,5 +1,6 @@
 #pragma once
 #include "io/runtime_io.hpp"
+#include "io/receipt_clock.hpp"
 #include "systems/sensors.hpp"
 #include <csignal>
 #include <deque>
@@ -16,6 +17,7 @@ struct RpcOptions {
   int retained_parent_fd = -1;
   Json robot_bindings = Json::object();
   bool frozen_experiment = false;
+  bool publish_receipt_clock = false;
 };
 class Server {
 public:
@@ -92,6 +94,7 @@ private:
   Sensors &sensors_;
   xgc2::chassis_hold::HttpAdapter hold_http_;
   std::unique_ptr<xgc2::xrpc::HttpServer> transport_;
+  std::unique_ptr<ReceiptClock> receipt_clock_;  // Retire before releasing the Unix endpoint.
   std::unordered_map<std::string, Request> requests_;
   std::mutex view_mutex_;
   std::shared_ptr<const Frame> latest_;

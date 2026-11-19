@@ -83,6 +83,11 @@ Server::Server(const Json &config, const std::string &path, RpcOptions options,
       [this](xgc2::xrpc::HttpRequest request, xgc2::xrpc::HttpReply reply) {
         http_request(std::move(request), std::move(reply));
       }, limits_, xgc2::xrpc::HttpIdentity{instance_, {"/v1/describe"}}, options.retained_parent_fd));
+  if (options.publish_receipt_clock) {
+    receipt_clock_ = std::make_unique<ReceiptClock>(options.retained_parent_fd, path);
+    receipt_clock_->bind();
+    receipt_clock_->publish(latest_->stamp);
+  }
   transport_->set_wakeup_handler([this] { harvest(); reconcile_entities(); answer_ready_waiters(); });
 }
 
@@ -383,6 +388,7 @@ void Server::output() {
         notified_revision = frame->revision;
         transport_->wake(); // readiness or the world revision changed
       }
+      if (receipt_clock_) receipt_clock_->publish(frame->stamp);
       if (io_.publish_frame) io_.publish_frame(*frame);
       const auto rates = std::atomic_load(&telemetry_rates_);
       // Clock and telemetry dispatch precede this frame's scan submissions.

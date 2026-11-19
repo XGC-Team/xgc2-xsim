@@ -209,6 +209,9 @@ int main(int argc, char **argv) {
                                     xsim::make_ros_io(config, world, sensors));
     }
 #endif
+    rpc.publish_receipt_clock = effective_io == "ros" && !hil && slot_id.empty() &&
+        frozen.value("runMode", std::string{}) == "simulation" &&
+        frozen.value("experimentType", std::string{}) != "onboard";
     xsim::Server server(config, socket, std::move(rpc), world, sensors, std::move(io));
     // Keep this descriptor until process exit: a signal handler on another
     // thread may already have read its value when the server is shutting down.
