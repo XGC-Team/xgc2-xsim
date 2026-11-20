@@ -121,6 +121,7 @@ public:
     return true;
   }
   bool armed() const { return armed_; }
+  const MaskedPva &pva_setpoint() const { return setpoint_; }
   FlightMode mode() const { return mode_; }
   // 1 cm is the gap from the support face to the world plane. A level body
   // rests with its base 0.033 m above ground_z, so base-versus-plane is not
